@@ -64,6 +64,15 @@ type ByteSkippableTokenSource interface {
 	SkipToByte(offset uint32) Token
 }
 
+// PointSkippableTokenSource extends ByteSkippableTokenSource with a hint-based
+// skip that avoids recomputing row/column from byte offset. During incremental
+// parsing the reused node already carries its endpoint, so passing it directly
+// eliminates the O(n) offset-to-point scan.
+type PointSkippableTokenSource interface {
+	ByteSkippableTokenSource
+	SkipToByteWithPoint(offset uint32, pt Point) Token
+}
+
 // stackEntry is a single entry on the parser's LR stack, pairing a parser
 // state with the syntax tree node that was shifted or reduced into that state.
 type stackEntry struct {
@@ -186,8 +195,18 @@ func (d *dfaTokenSource) Close() {
 	d.externalPayload = nil
 }
 
+// DebugDFA enables trace logging for DFA token production.
+var DebugDFA bool
+
 func (d *dfaTokenSource) Next() Token {
 	if tok, ok := d.nextExternalToken(); ok {
+		if DebugDFA {
+			name := ""
+			if int(tok.Symbol) < len(d.language.SymbolNames) {
+				name = d.language.SymbolNames[tok.Symbol]
+			}
+			println("  EXT tok", tok.Symbol, name, tok.StartByte, tok.EndByte, tok.Text)
+		}
 		return tok
 	}
 
@@ -196,7 +215,15 @@ func (d *dfaTokenSource) Next() Token {
 		lexState = d.language.LexModes[d.state].LexState
 	}
 	tok := d.lexer.Next(lexState)
-	return d.promoteKeyword(tok)
+	tok = d.promoteKeyword(tok)
+	if DebugDFA {
+		name := ""
+		if int(tok.Symbol) < len(d.language.SymbolNames) {
+			name = d.language.SymbolNames[tok.Symbol]
+		}
+		println("  DFA tok", tok.Symbol, name, tok.StartByte, tok.EndByte, tok.Text, "state=", d.state, "lexState=", lexState)
+	}
+	return tok
 }
 
 func (d *dfaTokenSource) SkipToByte(offset uint32) Token {
@@ -207,6 +234,19 @@ func (d *dfaTokenSource) SkipToByte(offset uint32) Token {
 	}
 	for d.lexer.pos < target {
 		d.lexer.skipOneRune()
+	}
+	return d.Next()
+}
+
+func (d *dfaTokenSource) SkipToByteWithPoint(offset uint32, pt Point) Token {
+	target := int(offset)
+	if target > len(d.lexer.source) {
+		target = len(d.lexer.source)
+	}
+	if target >= d.lexer.pos {
+		d.lexer.pos = target
+		d.lexer.row = pt.Row
+		d.lexer.col = pt.Column
 	}
 	return d.Next()
 }
@@ -878,6 +918,7 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 
 		start := len(s.entries) - childCount
 		topState := s.entries[start-1].state
+		parentVisible := symbolVisible(p.language, act.Symbol)
 
 		// Preserve raw span from reduced children while excluding pure extra
 		// padding, so parent ranges match the C runtime.
@@ -888,7 +929,7 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 		rawHasEnd := false
 		if childCount > 0 {
 			for i := 0; i < childCount; i++ {
-				if b, pt, ok := spanStartExcludingExtra(s.entries[start+i].node); ok {
+				if b, pt, ok := spanStartExcludingExtra(p.language, s.entries[start+i].node); ok {
 					rawStartByte = b
 					rawStartPoint = pt
 					rawHasStart = true
@@ -896,7 +937,10 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 				}
 			}
 			for i := childCount - 1; i >= 0; i-- {
-				if b, pt, ok := spanEndExcludingExtra(s.entries[start+i].node); ok {
+				// Kotlin inserts hidden automatic-semicolon wrappers that should
+				// not extend visible parent ranges.
+				excludeHidden := !parentVisible || p.language.Name == "kotlin"
+				if b, pt, ok := spanEndExcludingExtra(p.language, s.entries[start+i].node, excludeHidden); ok {
 					rawEndByte = b
 					rawEndPoint = pt
 					rawHasEnd = true
@@ -918,9 +962,17 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 		// Inline child normalization to keep normalized child slices in arena
 		// storage and avoid per-reduce heap allocations.
 		normalizedCount := 0
+		structuralChildIndex := 0
 		for i := 0; i < childCount; i++ {
 			n := s.entries[start+i].node
-			if symbolVisible(p.language, n.symbol) {
+			effectiveSymbol := n.symbol
+			if !n.isExtra {
+				if alias := p.aliasSymbolForChild(act.ProductionID, structuralChildIndex); alias != 0 {
+					effectiveSymbol = alias
+				}
+				structuralChildIndex++
+			}
+			if symbolVisible(p.language, effectiveSymbol) {
 				normalizedCount++
 			} else {
 				normalizedCount += len(n.children)
@@ -943,17 +995,18 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 		}
 
 		out := 0
+		structuralChildIndex = 0
 		for i := 0; i < childCount; i++ {
 			n := s.entries[start+i].node
 			var fid FieldID
 			if i < len(rawFieldIDs) {
 				fid = rawFieldIDs[i]
 			}
-			if alias := p.aliasSymbolForChild(act.ProductionID, i); alias != 0 {
-				n.symbol = alias
-				if int(alias) < len(p.language.SymbolMetadata) {
-					n.isNamed = p.language.SymbolMetadata[alias].Named
+			if !n.isExtra {
+				if alias := p.aliasSymbolForChild(act.ProductionID, structuralChildIndex); alias != 0 {
+					n = aliasedNodeInArena(arena, p.language, n, alias)
 				}
+				structuralChildIndex++
 			}
 			if symbolVisible(p.language, n.symbol) {
 				children[out] = n
@@ -1063,46 +1116,74 @@ func (p *Parser) aliasSymbolForChild(productionID uint16, childIndex int) Symbol
 	return seq[childIndex]
 }
 
-func spanStartExcludingExtra(n *Node) (uint32, Point, bool) {
+func aliasedNodeInArena(arena *nodeArena, lang *Language, n *Node, alias Symbol) *Node {
+	if n == nil || alias == 0 || n.symbol == alias {
+		return n
+	}
+
+	if arena == nil {
+		cloned := &Node{}
+		*cloned = *n
+		cloned.symbol = alias
+		if lang != nil && int(alias) < len(lang.SymbolMetadata) {
+			cloned.isNamed = lang.SymbolMetadata[alias].Named
+		}
+		return cloned
+	}
+
+	cloned := arena.allocNode()
+	*cloned = *n
+	cloned.symbol = alias
+	if lang != nil && int(alias) < len(lang.SymbolMetadata) {
+		cloned.isNamed = lang.SymbolMetadata[alias].Named
+	}
+	cloned.ownerArena = arena
+	return cloned
+}
+
+func spanStartExcludingExtra(lang *Language, n *Node) (uint32, Point, bool) {
 	if n == nil {
 		return 0, Point{}, false
 	}
+	if n.isExtra {
+		return 0, Point{}, false
+	}
 	if len(n.children) == 0 {
-		if n.isExtra {
+		if !symbolVisible(lang, n.symbol) {
 			return 0, Point{}, false
 		}
 		return n.startByte, n.startPoint, true
 	}
 	for i := 0; i < len(n.children); i++ {
-		if b, pt, ok := spanStartExcludingExtra(n.children[i]); ok {
+		if b, pt, ok := spanStartExcludingExtra(lang, n.children[i]); ok {
 			return b, pt, true
 		}
 	}
-	if n.isExtra {
+	if !symbolVisible(lang, n.symbol) {
 		return 0, Point{}, false
 	}
 	return n.startByte, n.startPoint, true
 }
 
-func spanEndExcludingExtra(n *Node) (uint32, Point, bool) {
+func spanEndExcludingExtra(lang *Language, n *Node, excludeHidden bool) (uint32, Point, bool) {
 	if n == nil {
 		return 0, Point{}, false
 	}
+	if n.isExtra {
+		return 0, Point{}, false
+	}
 	if len(n.children) == 0 {
-		if n.isExtra {
+		if excludeHidden && !symbolVisible(lang, n.symbol) {
 			return 0, Point{}, false
 		}
 		return n.endByte, n.endPoint, true
 	}
 	for i := len(n.children) - 1; i >= 0; i-- {
-		if b, pt, ok := spanEndExcludingExtra(n.children[i]); ok {
+		if b, pt, ok := spanEndExcludingExtra(lang, n.children[i], excludeHidden); ok {
 			return b, pt, true
 		}
 	}
-	if n.isExtra {
-		return 0, Point{}, false
-	}
-	return n.endByte, n.endPoint, true
+	return 0, Point{}, false
 }
 
 // buildFieldIDs creates the field ID slice for a reduce action.

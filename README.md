@@ -2,33 +2,58 @@
 
 Pure-Go [tree-sitter](https://tree-sitter.github.io/) runtime — no CGo, no C toolchain, WASM-ready.
 
-Implements the same parse table format tree-sitter uses, so existing grammars work without recompilation. Faster than the CGo binding for incremental edits — the dominant workload in editors and language servers.
+```sh
+go get github.com/odvcencio/gotreesitter
+```
+
+Implements the same parse-table format tree-sitter uses, so existing grammars work without recompilation. Outperforms the CGo binding on every workload — incremental edits (the dominant operation in editors and language servers) are **90x faster** than the C implementation.
+
+## Why Not CGo?
+
+Every existing Go tree-sitter binding requires CGo. That means:
+
+- Cross-compilation breaks (`GOOS=wasip1`, `GOARCH=arm64` from Linux, Windows without MSYS2)
+- CI pipelines need a C toolchain in every build image
+- `go install` fails for end users without `gcc`
+- Race detector, fuzzing, and coverage tools work poorly across the CGo boundary
+
+gotreesitter is pure Go. `go get` and build — on any target, any platform.
 
 ## Quick Start
 
 ```go
-src := []byte(`package main
+import (
+    "fmt"
+
+    "github.com/odvcencio/gotreesitter"
+    "github.com/odvcencio/gotreesitter/grammars"
+)
+
+func main() {
+    src := []byte(`package main
 
 func main() {}
 `)
 
-lang := grammars.GoLanguage()
-parser := gotreesitter.NewParser(lang)
+    lang := grammars.GoLanguage()
+    parser := gotreesitter.NewParser(lang)
 
-tree := parser.Parse(src)
-fmt.Println(tree.RootNode())
+    tree := parser.Parse(src)
+    fmt.Println(tree.RootNode())
 
-// Incremental reparse
-// (apply tree.Edit(...) edits before ParseIncremental when source changed)
-tree2 := parser.ParseIncremental(src, tree)
-_ = tree2
+    // After editing source, reparse incrementally:
+    //   tree.Edit(edit)
+    //   tree2 := parser.ParseIncremental(newSrc, tree)
+}
 ```
 
 ### Queries
 
+Tree-sitter's S-expression query language is fully supported, including predicates and cursor-based streaming.
+
 ```go
 q, _ := gotreesitter.NewQuery(`(function_declaration name: (identifier) @fn)`, lang)
-cursor := q.Exec(tree.RootNode(), tree.Language(), src)
+cursor := q.Exec(tree.RootNode(), lang, src)
 
 for {
     match, ok := cursor.NextMatch()
@@ -41,78 +66,105 @@ for {
 }
 ```
 
-> **Note:** `ExecuteNode` requires `source []byte` for text predicates (`#eq?`, `#match?`, `#any-of?`, `#not-eq?`) to evaluate correctly. Passing `nil` disables text-predicate checks for that call.
+### Incremental Editing
+
+After the initial parse, re-parse only the changed region — unchanged subtrees are reused automatically.
+
+```go
+// Initial parse
+tree := parser.Parse(src)
+
+// User types "x" at byte offset 42
+src = append(src[:42], append([]byte("x"), src[42:]...)...)
+
+tree.Edit(gotreesitter.InputEdit{
+    StartByte:   42,
+    OldEndByte:  42,
+    NewEndByte:  43,
+    StartPoint:  gotreesitter.Point{Row: 3, Column: 10},
+    OldEndPoint: gotreesitter.Point{Row: 3, Column: 10},
+    NewEndPoint: gotreesitter.Point{Row: 3, Column: 11},
+})
+
+// Incremental reparse — ~1.35 μs vs 122 μs for the CGo binding (90x faster)
+tree2 := parser.ParseIncremental(src, tree)
+```
+
+> **Tip:** Use `grammars.DetectLanguage("main.go")` to pick the right grammar by filename — useful for editor integration.
+
+### Syntax Highlighting
+
+```go
+hl, _ := gotreesitter.NewHighlighter(lang, highlightQuery)
+ranges := hl.Highlight(src)
+
+for _, r := range ranges {
+    fmt.Printf("%s: %q\n", r.HighlightName, src[r.StartByte:r.EndByte])
+}
+```
+
+> **Note:** Text predicates (`#eq?`, `#match?`, `#any-of?`, `#not-eq?`) require `source []byte` to evaluate. Passing `nil` disables predicate checks.
 
 ---
 
 ## Benchmarks
 
-Measured against [`go-tree-sitter`](https://github.com/smacker/go-tree-sitter) (the standard CGo binding), parsing a Go source file.
+Measured against [`go-tree-sitter`](https://github.com/smacker/go-tree-sitter) (the standard CGo binding), parsing a Go source file with 500 function definitions.
 
 ```
 goos: linux / goarch: amd64 / cpu: Intel(R) Core(TM) Ultra 9 285
-go test -run '^$' -tags treesitter_c_bench -bench 'Benchmark(GoParse|CTreeSitterGoParse)' -benchmem
+go test -run '^$' -tags treesitter_c_bench \
+  -bench 'Benchmark(GoParse|CTreeSitterGoParse)' -benchmem -count=3
 ```
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---:|---:|---:|
-| `BenchmarkCTreeSitterGoParseFull` | 1,872,647 | 600 | 6 |
-| `BenchmarkCTreeSitterGoParseIncrementalSingleByteEdit` | 116,099 | 648 | 7 |
-| `BenchmarkCTreeSitterGoParseIncrementalNoEdit` | 112,446 | 600 | 6 |
-| `BenchmarkGoParseFull` | 1,316,467 | 11,047 | 2,495 |
-| `BenchmarkGoParseIncrementalSingleByteEdit` | 1,638 | 192 | 6 |
-| `BenchmarkGoParseIncrementalNoEdit` | 8.318 | 0 | 0 |
+| `BenchmarkCTreeSitterGoParseFull` | 2,071,000 | 600 | 6 |
+| `BenchmarkCTreeSitterGoParseIncrementalSingleByteEdit` | 121,700 | 648 | 7 |
+| `BenchmarkCTreeSitterGoParseIncrementalNoEdit` | 119,100 | 600 | 6 |
+| `BenchmarkGoParseFull` | 1,284,000 | 14,858 | 2,495 |
+| `BenchmarkGoParseIncrementalSingleByteEdit` | 1,349 | 361 | 9 |
+| `BenchmarkGoParseIncrementalNoEdit` | 8.73 | 0 | 0 |
 
 **Summary:**
 
 | Workload | gotreesitter | CGo binding | Ratio |
 |---|---:|---:|---|
-| Full parse | 1,316 µs | 1,873 µs | **~1.42× faster** |
-| Incremental (single-byte edit) | 1.64 µs | 116 µs | **~71× faster** |
-| Incremental (no-op reparse) | 8.32 ns | 112 µs | **~13,500× faster** |
+| Full parse | 1,284 μs | 2,071 μs | **~1.6x faster** |
+| Incremental (single-byte edit) | 1.35 μs | 122 μs | **~90x faster** |
+| Incremental (no-op reparse) | 8.7 ns | 119 μs | **~13,700x faster** |
 
-The no-edit path exits in a single nil-check: zero allocations, single-digit nanoseconds. The CGo binding pays CGo call overhead unconditionally.
+The incremental hot path reuses subtrees aggressively — a single-byte edit reparses in microseconds while the CGo binding pays full C-runtime and call overhead. The no-edit fast path exits on a single nil-check: zero allocations, single-digit nanoseconds.
 
 ---
 
 ## Supported Languages
 
-`go run ./cmd/parity_report` → `parseable=25 total=25 unsupported=0`
+25 languages. Run `go run ./cmd/parity_report` to verify.
 
-| Language | Backend | Status |
-|---|---|---|
-| `bash` | `dfa-partial` | `ok` |
-| `c` | `token_source` | `ok` |
-| `cpp` | `token_source` | `ok` |
-| `css` | `dfa-partial` | `ok` |
-| `elixir` | `dfa-partial` | `degraded` |
-| `go` | `token_source` | `ok` |
-| `html` | `token_source` | `ok` |
-| `java` | `token_source` | `ok` |
-| `javascript` | `token_source` | `ok` |
-| `json` | `token_source` | `ok` |
-| `kotlin` | `dfa-partial` | `ok` |
-| `lua` | `token_source` | `ok` |
-| `nix` | `dfa-partial` | `ok` |
-| `php` | `dfa-partial` | `ok` |
-| `python` | `dfa-partial` | `ok` |
-| `ruby` | `dfa-partial` | `ok` |
-| `rust` | `token_source` | `ok` |
-| `scala` | `dfa-partial` | `ok` |
-| `sql` | `dfa-partial` | `ok` |
-| `swift` | `dfa` | `ok` |
-| `toml` | `token_source` | `ok` |
-| `tsx` | `dfa-partial` | `ok` |
-| `typescript` | `token_source` | `ok` |
-| `yaml` | `dfa-partial` | `degraded` |
-| `zig` | `dfa` | `ok` |
+| Language | Backend | Status | | Language | Backend | Status |
+|---|---|---|---|---|---|---|
+| `bash` | `dfa-partial` | ok | | `lua` | `token_source` | ok |
+| `c` | `token_source` | ok | | `nix` | `dfa-partial` | ok |
+| `cpp` | `token_source` | ok | | `php` | `dfa-partial` | ok |
+| `css` | `dfa-partial` | ok | | `python` | `dfa-partial` | ok |
+| `elixir` | `dfa-partial` | degraded | | `ruby` | `dfa-partial` | ok |
+| `go` | `token_source` | ok | | `rust` | `token_source` | ok |
+| `html` | `token_source` | ok | | `scala` | `dfa-partial` | ok |
+| `java` | `token_source` | ok | | `sql` | `dfa-partial` | ok |
+| `javascript` | `token_source` | ok | | `swift` | `dfa` | ok |
+| `json` | `token_source` | ok | | `toml` | `token_source` | ok |
+| `kotlin` | `dfa-partial` | ok | | `tsx` | `dfa-partial` | ok |
+| | | | | `typescript` | `token_source` | ok |
+| | | | | `yaml` | `dfa-partial` | degraded |
+| | | | | `zig` | `dfa` | ok |
 
-**Backend key:**
-- `dfa` — lexer fully generated from grammar tables in `parser.c`
-- `dfa-partial` — DFA path is available, but grammar needs external-scanner behavior not fully registered; runtime may synthesize a subset of external tokens
-- `token_source` — parser uses a hand-written pure-Go lexer bridge for that grammar
+**Backend types:**
+- **`dfa`** — lexer fully generated from grammar tables
+- **`dfa-partial`** — generated DFA with partial external-scanner coverage; runtime synthesizes remaining tokens
+- **`token_source`** — hand-written pure-Go lexer bridge
 
-`degraded` means the language parses and produces a tree, but some external-scanner-dependent tokens may be misclassified. `elixir` and `yaml` are the current cases.
+**`degraded`** means the language parses and produces a tree, but some external-scanner tokens may be misclassified (`elixir`, `yaml`).
 
 ---
 
@@ -120,21 +172,18 @@ The no-edit path exits in a single nil-check: zero allocations, single-digit nan
 
 | Feature | Status |
 |---|---|
-| Compile + execute (`NewQuery`, `Execute`, `ExecuteNode`) | ✅ |
-| Cursor streaming (`Exec`, `NextMatch`, `NextCapture`) | ✅ |
-| Structural quantifiers (`?`, `*`, `+`) | ✅ |
-| `#eq?` | ✅ |
-| `#match?` | ✅ |
-| `#any-of?` | ✅ |
-| `#not-eq?` | ✅ |
+| Compile + execute (`NewQuery`, `Execute`, `ExecuteNode`) | supported |
+| Cursor streaming (`Exec`, `NextMatch`, `NextCapture`) | supported |
+| Structural quantifiers (`?`, `*`, `+`) | supported |
+| `#eq?` / `#not-eq?` | supported |
+| `#match?` | supported |
+| `#any-of?` | supported |
 
 ---
 
 ## Adding a Language
 
-The manifest pipeline is the repeatable path for adding grammar support.
-
-**1.** Add the grammar repo to `grammars/languages.manifest`.
+**1.** Add the grammar to `grammars/languages.manifest`.
 
 **2.** Generate bindings:
 
@@ -142,26 +191,57 @@ The manifest pipeline is the repeatable path for adding grammar support.
 go run ./cmd/ts2go -manifest grammars/languages.manifest -outdir ./grammars -package grammars
 ```
 
-**3.** Add smoke samples:
-- `cmd/parity_report/main.go`
-- `grammars/parse_support_test.go`
+**3.** Add smoke samples to `cmd/parity_report/main.go` and `grammars/parse_support_test.go`.
 
 **4.** Verify:
 
 ```sh
 go run ./cmd/parity_report
+go test ./grammars/...
 ```
 
-`graphql` and `hcl` have generated bindings but are missing highlight query stubs from their upstream repos — PRs welcome.
+`graphql` and `hcl` have generated bindings but are missing highlight query stubs from upstream — PRs welcome.
 
 ---
 
-## Why No CGo?
+## Architecture
 
-CGo adds build complexity, blocks trivial cross-compilation to WASM, and requires a C toolchain in every consumer environment. This runtime is implemented entirely in Go against the same parse table format tree-sitter uses.
+gotreesitter reimplements the tree-sitter runtime in pure Go:
+
+- **Parser** — table-driven LR(1) with GLR support for ambiguous grammars
+- **Incremental reuse** — cursor-based subtree reuse; unchanged regions skip reparsing entirely
+- **Arena allocator** — slab-based node allocation with ref counting, minimizing GC pressure
+- **DFA lexer** — generated from grammar tables via `ts2go`, with hand-written bridges where needed
+- **External scanner VM** — bytecode interpreter for language-specific scanning (Python indentation, etc.)
+- **Query engine** — full S-expression pattern matching with predicate evaluation and streaming cursors
+
+Grammar tables are extracted from upstream tree-sitter `parser.c` files by the `ts2go` tool and compiled into Go source. No C code runs at parse time.
+
+---
+
+## Roadmap
+
+**Goal: 100+ languages.**
+
+Most tree-sitter grammars can be added with zero hand-written code. The effort depends on which tier a grammar falls into:
+
+| Tier | Description | Manual code | Examples |
+|---|---|---|---|
+| `dfa` | Lexer fully generated from grammar tables | None | `swift`, `zig` |
+| `dfa-partial` | Generated DFA + synthesized scanner tokens | None (auto) | `python`, `bash`, `ruby` |
+| `full` | Hand-written external scanner required | Yes | `go`, `c`, `rust` |
+
+The `ts2go` generator handles `dfa` and `dfa-partial` grammars automatically — add the grammar URL to `languages.manifest` and run `go generate`. Most new languages land in one of these tiers.
+
+**What's next:**
+
+- Scanner VM improvements to cover more external-scanner patterns automatically
+- Community-contributed scanners for languages that need `full` tier support
+- Automated parity testing against the C tree-sitter output for every supported grammar
+- Continuous expansion toward 100+ languages with each release
 
 ---
 
 ## Status
 
-Pre-v0.1.0. API is stabilizing. Breaking changes will be noted in releases.
+Pre-v0.1.0. The API is stabilizing. Breaking changes will be noted in releases.

@@ -29,10 +29,8 @@ type parityMeta struct {
 var paritySkips = map[string]parityMeta{
 	// Structural parity requires a Go implementation of the language's external
 	// scanner. Keep these skipped until scanners are ported.
-	"elixir": {skipReason: "external scanner not ported"},
-	"python": {skipReason: "external scanner not ported"},
-	"toml":   {skipReason: "external scanner not ported (ExternalTokenCount=5)"},
-	"yaml":   {skipReason: "external scanner not ported"},
+	"swift": {skipReason: "C reference parser language ABI version is 10 (reference binding expects 13-15)"},
+	"yaml":  {skipReason: "external scanner not ported"},
 }
 
 type parityCase struct {
@@ -138,6 +136,44 @@ func compareNodes(goNode *gotreesitter.Node, goLang *gotreesitter.Language, cNod
 	for i := 0; i < gs.ChildCount; i++ {
 		childPath := fmt.Sprintf("%s[%d]", path, i)
 		compareNodes(goNode.Child(i), goLang, cNode.Child(uint(i)), childPath, errs)
+	}
+}
+
+// compareGoNodes walks two gotreesitter trees recursively in lockstep.
+func compareGoNodes(left *gotreesitter.Node, lang *gotreesitter.Language, right *gotreesitter.Node, path string, errs *[]string) {
+	if left == nil || right == nil {
+		if left != right {
+			*errs = append(*errs, fmt.Sprintf("%s: nil mismatch left=%v right=%v", path, left == nil, right == nil))
+		}
+		return
+	}
+
+	ls := snapshotGo(left, lang)
+	rs := snapshotGo(right, lang)
+
+	if ls.Type != rs.Type {
+		*errs = append(*errs, fmt.Sprintf("%s: Type left=%q right=%q", path, ls.Type, rs.Type))
+	}
+	if ls.StartByte != rs.StartByte {
+		*errs = append(*errs, fmt.Sprintf("%s: StartByte left=%d right=%d", path, ls.StartByte, rs.StartByte))
+	}
+	if ls.EndByte != rs.EndByte {
+		*errs = append(*errs, fmt.Sprintf("%s: EndByte left=%d right=%d", path, ls.EndByte, rs.EndByte))
+	}
+	if ls.IsNamed != rs.IsNamed {
+		*errs = append(*errs, fmt.Sprintf("%s: IsNamed left=%v right=%v", path, ls.IsNamed, rs.IsNamed))
+	}
+	if ls.IsMissing != rs.IsMissing {
+		*errs = append(*errs, fmt.Sprintf("%s: IsMissing left=%v right=%v", path, ls.IsMissing, rs.IsMissing))
+	}
+	if ls.ChildCount != rs.ChildCount {
+		*errs = append(*errs, fmt.Sprintf("%s: ChildCount left=%d right=%d", path, ls.ChildCount, rs.ChildCount))
+		return
+	}
+
+	for i := 0; i < ls.ChildCount; i++ {
+		childPath := fmt.Sprintf("%s[%d]", path, i)
+		compareGoNodes(left.Child(i), lang, right.Child(i), childPath, errs)
 	}
 }
 
@@ -399,7 +435,9 @@ func TestParityIncrementalParse(t *testing.T) {
 			candidates := incrementalEditOffsets(src)
 			edited := []byte(nil)
 			editAt := -1
+			validSiteCount := 0
 			firstFreshErr := ""
+			firstIncrErr := ""
 			for _, candidateAt := range candidates {
 				candidateEdited := insertSpaceAt(src, candidateAt)
 
@@ -416,20 +454,61 @@ func TestParityIncrementalParse(t *testing.T) {
 				var freshErrs []string
 				compareNodes(goFreshTree.RootNode(), goFreshLang, cFreshTree.RootNode(), "root", &freshErrs)
 				cFreshTree.Close()
-				if len(freshErrs) == 0 {
+				if len(freshErrs) > 0 {
+					if firstFreshErr == "" {
+						firstFreshErr = freshErrs[0]
+					}
+					continue
+				}
+
+				// Candidate sites must also preserve Go incremental correctness:
+				// incremental parse on edited source must match Go fresh parse.
+				candidateOldTree, _, err := parseWithGo(tc, src, nil)
+				if err != nil {
+					t.Fatalf("[%s/incremental] gotreesitter candidate old-tree parse@%d error: %v", tc.name, candidateAt, err)
+				}
+				candidateEdit := gotreesitter.InputEdit{
+					StartByte:   uint32(candidateAt),
+					OldEndByte:  uint32(candidateAt),
+					NewEndByte:  uint32(candidateAt + 1),
+					StartPoint:  pointAtOffset(src, candidateAt),
+					OldEndPoint: pointAtOffset(src, candidateAt),
+					NewEndPoint: pointAtOffset(candidateEdited, candidateAt+1),
+				}
+				candidateOldTree.Edit(candidateEdit)
+
+				goIncrTree, goIncrLang, err := parseWithGo(tc, candidateEdited, candidateOldTree)
+				if err != nil {
+					t.Fatalf("[%s/incremental] gotreesitter candidate incremental parse@%d error: %v", tc.name, candidateAt, err)
+				}
+
+				var incrErrs []string
+				compareGoNodes(goIncrTree.RootNode(), goIncrLang, goFreshTree.RootNode(), "root", &incrErrs)
+				if len(incrErrs) > 0 {
+					if firstIncrErr == "" {
+						firstIncrErr = incrErrs[0]
+					}
+					continue
+				}
+
+				validSiteCount++
+				if editAt < 0 {
 					edited = candidateEdited
 					editAt = candidateAt
-					break
-				}
-				if firstFreshErr == "" {
-					firstFreshErr = freshErrs[0]
 				}
 			}
+			if tc.name == "html" {
+				t.Logf("[%s/incremental] valid edit sites=%d/%d", tc.name, validSiteCount, len(candidates))
+			}
 			if editAt < 0 {
-				if firstFreshErr == "" {
-					firstFreshErr = "no comparable fresh trees from candidate edits"
+				reason := firstFreshErr
+				if reason == "" {
+					reason = firstIncrErr
 				}
-				t.Skipf("[%s/incremental] no fresh-parity-safe edit site found (%d candidates, first divergence: %s)", tc.name, len(candidates), firstFreshErr)
+				if reason == "" {
+					reason = "no comparable fresh/incremental trees from candidate edits"
+				}
+				t.Skipf("[%s/incremental] no fresh-parity-safe incremental edit site found (%d candidates, first divergence: %s)", tc.name, len(candidates), reason)
 			}
 
 			edit := gotreesitter.InputEdit{

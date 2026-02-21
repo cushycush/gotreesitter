@@ -194,8 +194,24 @@ func (ts *GenericTokenSource) buildSymbolTables() {
 		}
 
 		if isTokenNameWord(name) {
-			if _, exists := ts.keywordSymbols[name]; !exists {
+			if prev, exists := ts.keywordSymbols[name]; !exists {
 				ts.keywordSymbols[name] = sym
+			} else {
+				// Some grammars expose duplicate word-like tokens with the same
+				// lexeme where one symbol is named and the other is anonymous
+				// (e.g. TypeScript "number"). Prefer the anonymous token so
+				// generic tokenization aligns with the C runtime shape.
+				prevNamed := true
+				if int(prev) < len(ts.lang.SymbolMetadata) {
+					prevNamed = ts.lang.SymbolMetadata[prev].Named
+				}
+				currNamed := true
+				if i < len(ts.lang.SymbolMetadata) {
+					currNamed = ts.lang.SymbolMetadata[i].Named
+				}
+				if prevNamed && !currNamed {
+					ts.keywordSymbols[name] = sym
+				}
 			}
 			continue
 		}

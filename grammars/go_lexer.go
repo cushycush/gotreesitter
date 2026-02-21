@@ -365,6 +365,30 @@ func (ts *GoTokenSource) SkipToByte(offset uint32) gotreesitter.Token {
 	}
 }
 
+// SkipToByteWithPoint jumps to offset using the provided Point, avoiding the
+// O(n) offset-to-point scan that SkipToByte performs.
+func (ts *GoTokenSource) SkipToByteWithPoint(offset uint32, pt gotreesitter.Point) gotreesitter.Token {
+	target := int(offset)
+	if target > len(ts.src) {
+		target = len(ts.src)
+		offset = uint32(target)
+	}
+	if target > ts.scanBase && len(ts.pending) == 0 {
+		ts.lastOffset = target
+		ts.lastRow = pt.Row
+		ts.lastCol = pt.Column
+		ts.done = false
+		ts.initScanner(target)
+	}
+
+	for {
+		tok := ts.Next()
+		if tok.Symbol == 0 || tok.StartByte >= offset {
+			return tok
+		}
+	}
+}
+
 // identToken handles identifiers, keywords, and special names.
 func (ts *GoTokenSource) identToken(offset int, lit string) gotreesitter.Token {
 	endOffset := offset + len(lit)

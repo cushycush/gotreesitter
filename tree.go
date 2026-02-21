@@ -31,6 +31,9 @@ type Node struct {
 // Symbol returns the node's grammar symbol.
 func (n *Node) Symbol() Symbol { return n.symbol }
 
+// ParseState returns the parser state associated with this node.
+func (n *Node) ParseState() StateID { return n.parseState }
+
 // IsNamed reports whether this is a named node (as opposed to anonymous syntax like punctuation).
 func (n *Node) IsNamed() bool { return n.isNamed }
 

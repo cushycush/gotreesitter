@@ -176,7 +176,15 @@ func (ts *TomlTokenSource) Next() gotreesitter.Token {
 				if ts.cur.eof() {
 					ts.emittedEOFLineEnd = true
 				}
-				return makeToken(ts.lineEndSym, ts.src, start, ts.cur.offset, startPt, ts.cur.point())
+				// Match C scanner behavior: line-ending external token is a
+				// marker at the boundary, not a token spanning the newline byte.
+				return gotreesitter.Token{
+					Symbol:     ts.lineEndSym,
+					StartByte:  uint32(start),
+					EndByte:    uint32(start),
+					StartPoint: startPt,
+					EndPoint:   startPt,
+				}
 			}
 			continue
 		}

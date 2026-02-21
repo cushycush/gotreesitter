@@ -208,6 +208,9 @@ func (p *Parser) tryReuseSubtree(s *glrStack, lookahead Token, ts TokenSource, i
 			}, true
 		}
 
+		if skipper, ok := ts.(PointSkippableTokenSource); ok {
+			return skipper.SkipToByteWithPoint(n.EndByte(), n.EndPoint()), true
+		}
 		if skipper, ok := ts.(ByteSkippableTokenSource); ok {
 			return skipper.SkipToByte(n.EndByte()), true
 		}
