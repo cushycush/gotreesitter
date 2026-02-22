@@ -1569,3 +1569,17 @@ func TestMatchRealisticHighlightQuery(t *testing.T) {
 		t.Errorf("@punctuation.bracket: got %d matches, want 2", len(texts))
 	}
 }
+
+// buildFieldedTree creates a tree with field annotations:
+// program > function_declaration(name: identifier)
+func buildFieldedTree(lang *Language) *Tree {
+	source := []byte("func main 42")
+	ident := leaf(Symbol(1), true, 5, 9)
+	funcDecl := parent(Symbol(3), true,
+		[]*Node{ident},
+		[]FieldID{1}) // fieldID 1 = "name"
+	program := parent(Symbol(7), true,
+		[]*Node{funcDecl},
+		[]FieldID{0})
+	return NewTree(program, source, lang)
+}
