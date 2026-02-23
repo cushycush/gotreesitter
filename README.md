@@ -49,7 +49,7 @@ func main() {}
 
 ### Queries
 
-Tree-sitter's S-expression query language is fully supported, including predicates and cursor-based streaming.
+Tree-sitter's S-expression query language is supported, including predicates and cursor-based streaming. See [Known Limitations](#known-limitations) for current caveats.
 
 ```go
 q, _ := gotreesitter.NewQuery(`(function_declaration name: (identifier) @fn)`, lang)
@@ -99,11 +99,45 @@ hl, _ := gotreesitter.NewHighlighter(lang, highlightQuery)
 ranges := hl.Highlight(src)
 
 for _, r := range ranges {
-    fmt.Printf("%s: %q\n", r.HighlightName, src[r.StartByte:r.EndByte])
+    fmt.Printf("%s: %q\n", r.Capture, src[r.StartByte:r.EndByte])
 }
 ```
 
 > **Note:** Text predicates (`#eq?`, `#match?`, `#any-of?`, `#not-eq?`) require `source []byte` to evaluate. Passing `nil` disables predicate checks.
+
+### Symbol Tagging
+
+Extract definitions and references from source code:
+
+```go
+entry := grammars.DetectLanguage("main.go")
+lang := entry.Language()
+
+tagger, _ := gotreesitter.NewTagger(lang, entry.TagsQuery)
+tags := tagger.Tag(src)
+
+for _, tag := range tags {
+    fmt.Printf("%s %s at %d:%d\n", tag.Kind, tag.Name,
+        tag.NameRange.StartPoint.Row, tag.NameRange.StartPoint.Column)
+}
+```
+
+### Parse Quality
+
+Each `LangEntry` exposes a `Quality` field indicating how trustworthy the parse output is:
+
+| Quality | Meaning |
+|---|---|
+| `full` | Token source or DFA with external scanner — full fidelity |
+| `partial` | DFA-partial — missing external scanner, tree may have silent gaps |
+| `none` | Cannot parse |
+
+```go
+entries := grammars.AllLanguages()
+for _, e := range entries {
+    fmt.Printf("%s: %s\n", e.Name, e.Quality)
+}
+```
 
 ---
 
@@ -145,22 +179,26 @@ The incremental hot path reuses subtrees aggressively — a single-byte edit rep
 
 ## Supported Languages
 
-90 grammars ship in the registry. Run `go run ./cmd/parity_report` for live per-language status.
+205 grammars ship in the registry. Run `go run ./cmd/parity_report` for live per-language status.
 
 Current summary:
-- **88 clean** — parse without errors
-- **2 degraded** — parse and produce a tree, but with recoverable syntax errors (known limitations)
+- **204 clean** — parse without errors
+- **1 degraded** — `norg` (requires external scanner with 122 tokens, not yet implemented)
 - **0 unsupported**
 
-**Full language list:**
-`ada`, `agda`, `angular`, `apex`, `arduino`, `asm`, `astro`, `authzed`, `awk`, `bash`, `bass`, `beancount`, `bibtex`, `bicep`, `bitbake`, `blade`, `brightscript`, `c`, `c_sharp`, `caddy`, `cairo`, `capnp`, `chatito`, `circom`, `cmake`, `comment`, `commonlisp`, `cooklang`, `corn`, `cpon`, `cpp`, `css`, `csv`, `cuda`, `cue`, `cylc`, `d`, `dart`, `desktop`, `devicetree`, `diff`, `disassembly`, `djot`, `dockerfile`, `doxygen`, `dtd`, `earthfile`, `ebnf`, `editorconfig`, `eds`, `eex`, `elixir`, `elm`, `elsa`, `embedded_template`, `enforce`, `erlang`, `facility`, `faust`, `fennel`, `fidl`, `firrtl`, `foam`, `go`, `graphql`, `haskell`, `hcl`, `html`, `java`, `javascript`, `json`, `julia`, `kotlin`, `lua`, `nix`, `ocaml`, `php`, `python`, `regex`, `ruby`, `rust`, `scala`, `sql`, `swift`, `toml`, `tsx`, `typescript`, `verilog`, `yaml`, `zig`
+Quality breakdown:
+- **116 full** — token source or DFA with complete external scanner
+- **89 partial** — DFA-partial (missing external scanner, tree may have silent gaps)
 
-**Backend types:**
-- **`dfa`** — lexer fully generated from grammar tables
-- **`dfa-partial`** — generated DFA with partial external-scanner coverage; runtime synthesizes remaining tokens
-- **`token_source`** — hand-written pure-Go lexer bridge
+Backend breakdown:
+- **92 dfa** — lexer fully generated from grammar tables
+- **89 dfa-partial** — generated DFA without external scanner
+- **24 token_source** — hand-written or generic pure-Go lexer bridge
 
-**`degraded`** means the language parses and produces a tree, but the smoke test reports recoverable syntax errors. Current degraded set: `comment` (parser extra-token limitation), `swift` (upstream grammar parity gap).
+12 languages have hand-written Go external scanners: python, elixir, comment, doxygen, foam, nginx, nushell, r, xml, yuck, purescript, typst.
+
+**Full language list (205):**
+`ada`, `agda`, `angular`, `apex`, `arduino`, `asm`, `astro`, `authzed`, `awk`, `bash`, `bass`, `beancount`, `bibtex`, `bicep`, `bitbake`, `blade`, `brightscript`, `c`, `c_sharp`, `caddy`, `cairo`, `capnp`, `chatito`, `circom`, `clojure`, `cmake`, `cobol`, `comment`, `commonlisp`, `cooklang`, `corn`, `cpon`, `cpp`, `crystal`, `css`, `csv`, `cuda`, `cue`, `cylc`, `d`, `dart`, `desktop`, `devicetree`, `dhall`, `diff`, `disassembly`, `djot`, `dockerfile`, `dot`, `doxygen`, `dtd`, `earthfile`, `ebnf`, `editorconfig`, `eds`, `eex`, `elisp`, `elixir`, `elm`, `elsa`, `embedded_template`, `enforce`, `erlang`, `facility`, `faust`, `fennel`, `fidl`, `firrtl`, `fish`, `foam`, `forth`, `fortran`, `fsharp`, `gdscript`, `git_config`, `git_rebase`, `gitattributes`, `gitcommit`, `gitignore`, `gleam`, `glsl`, `gn`, `go`, `godot_resource`, `gomod`, `graphql`, `groovy`, `hack`, `hare`, `haskell`, `haxe`, `hcl`, `heex`, `hlsl`, `html`, `http`, `hurl`, `hyprlang`, `ini`, `janet`, `java`, `javascript`, `jinja2`, `jq`, `jsdoc`, `json`, `json5`, `jsonnet`, `julia`, `just`, `kconfig`, `kdl`, `kotlin`, `ledger`, `less`, `linkerscript`, `liquid`, `llvm`, `lua`, `luau`, `make`, `markdown`, `markdown_inline`, `matlab`, `mermaid`, `meson`, `mojo`, `move`, `nginx`, `nickel`, `nim`, `ninja`, `nix`, `norg`, `nushell`, `objc`, `ocaml`, `odin`, `org`, `pascal`, `pem`, `perl`, `php`, `pkl`, `powershell`, `prisma`, `prolog`, `promql`, `properties`, `proto`, `pug`, `puppet`, `purescript`, `python`, `ql`, `r`, `racket`, `regex`, `rego`, `requirements`, `rescript`, `robot`, `ron`, `rst`, `ruby`, `rust`, `scala`, `scheme`, `scss`, `smithy`, `solidity`, `sparql`, `sql`, `squirrel`, `ssh_config`, `starlark`, `svelte`, `swift`, `tablegen`, `tcl`, `teal`, `templ`, `textproto`, `thrift`, `tlaplus`, `tmux`, `todotxt`, `toml`, `tsx`, `turtle`, `twig`, `typescript`, `typst`, `uxntal`, `v`, `verilog`, `vhdl`, `vimdoc`, `vue`, `wgsl`, `wolfram`, `xml`, `yaml`, `yuck`, `zig`
 
 ---
 
@@ -171,9 +209,30 @@ Current summary:
 | Compile + execute (`NewQuery`, `Execute`, `ExecuteNode`) | supported |
 | Cursor streaming (`Exec`, `NextMatch`, `NextCapture`) | supported |
 | Structural quantifiers (`?`, `*`, `+`) | supported |
+| Alternation (`[...]`) | supported |
+| Field matching (`name: (identifier)`) | supported |
 | `#eq?` / `#not-eq?` | supported |
-| `#match?` | supported |
-| `#any-of?` | supported |
+| `#match?` / `#not-match?` | supported |
+| `#any-of?` / `#not-any-of?` | supported |
+| `#lua-match?` | supported |
+| `#has-ancestor?` / `#not-has-ancestor?` | supported |
+| `#not-has-parent?` | supported |
+| `#is?` / `#is-not?` | supported |
+| `#set!` / `#offset!` directives | parsed and accepted |
+
+---
+
+## Known Limitations
+
+### Query compiler gaps
+
+As of February 23, 2026, all shipped highlight and tags queries compile in this repo (`156/156` non-empty `HighlightQuery` entries, `69/69` non-empty `TagsQuery` entries).
+
+No known query-syntax gaps currently block shipped highlight or tags queries.
+
+### DFA-partial languages
+
+89 languages require an external scanner that has not been ported to Go. These parse successfully using the DFA lexer alone, but tokens that require the external scanner are silently skipped. The tree structure is valid but may have gaps. Check `entry.Quality` to distinguish `full` from `partial`.
 
 ---
 
@@ -198,8 +257,6 @@ go run ./cmd/parity_report
 go test ./grammars/...
 ```
 
-`graphql` and `hcl` have generated bindings but are missing highlight query stubs from upstream — PRs welcome.
-
 ---
 
 ## Architecture
@@ -211,7 +268,9 @@ gotreesitter reimplements the tree-sitter runtime in pure Go:
 - **Arena allocator** — slab-based node allocation with ref counting, minimizing GC pressure
 - **DFA lexer** — generated from grammar tables via `ts2go`, with hand-written bridges where needed
 - **External scanner VM** — bytecode interpreter for language-specific scanning (Python indentation, etc.)
-- **Query engine** — full S-expression pattern matching with predicate evaluation and streaming cursors
+- **Query engine** — S-expression pattern matching with predicate evaluation and streaming cursors
+- **Highlighter** — query-based syntax highlighting with incremental support
+- **Tagger** — symbol definition/reference extraction using tags queries
 
 Grammar tables are extracted from upstream tree-sitter `parser.c` files by the `ts2go` tool, serialized into compressed binary blobs, and lazy-loaded on first language use. No C code runs at parse time.
 
@@ -258,29 +317,37 @@ GOTREESITTER_GRAMMAR_TRANSITION_INTERN_LIMIT=20000
 
 ---
 
-## Roadmap
+## Testing
 
-**Goal: 100+ languages.**
+The test suite includes:
 
-Most tree-sitter grammars can be added with zero hand-written code. The effort depends on which tier a grammar falls into:
+- **Smoke tests** — all 205 grammars parse a sample without crashing or producing ERROR nodes
+- **Correctness snapshots** — golden S-expression tests for 20 core languages catch parser and grammar regressions
+- **Highlight validation** — end-to-end test that compiled highlight queries produce highlight ranges
+- **Query tests** — pattern matching, predicates, cursors, field-based matching
+- **Parser tests** — incremental reparsing, error recovery, GLR ambiguity resolution
+- **Fuzzing** — `FuzzGoParseDoesNotPanic` for parser robustness
 
-| Tier | Description | Manual code | Examples |
-|---|---|---|---|
-| `dfa` | Lexer fully generated from grammar tables | None | `ada`, `zig`, `verilog` |
-| `dfa-partial` | Generated DFA + synthesized scanner tokens | None (auto) | `python`, `bash`, `ruby` |
-| `full` | Hand-written external scanner required | Yes | `go`, `c`, `rust` |
-
-The `ts2go` generator handles `dfa` and `dfa-partial` grammars automatically — add the grammar URL to `languages.manifest` and run `go generate`. Most new languages land in one of these tiers.
-
-**What's next:**
-
-- Scanner VM improvements to cover more external-scanner patterns automatically
-- Community-contributed scanners for languages that need `full` tier support
-- Automated parity testing against the C tree-sitter output for every supported grammar
-- Continuous expansion toward 100+ languages with each release
+```sh
+go test ./... -race -count=1
+```
 
 ---
 
-## Status
+## Roadmap
 
-Pre-v0.1.0. The API is stabilizing. Breaking changes will be noted in releases.
+**Current: v0.1.0** — 205 grammars, stable parser, incremental reparsing, query engine, highlighting, tagging.
+
+**Next:**
+
+- Query engine parity hardening — field-negation semantics, metadata directive behavior, and additional edge-case parity with upstream tree-sitter query execution
+- More hand-written external scanners for high-value `dfa-partial` languages
+- `Parse() (*Tree, error)` — return errors instead of silent nil trees
+- Automated parity testing against the C tree-sitter output
+- Fuzzing expansion to cover more languages and the query engine
+
+---
+
+## License
+
+[MIT](LICENSE)

@@ -21,6 +21,46 @@ var highlightNoRangesExpected = map[string]bool{
 	"tsx":     true, // sample has limited syntax for broad TSX highlight rules
 }
 
+func TestAllHighlightQueriesCompile(t *testing.T) {
+	entries := AllLanguages()
+
+	var withQuery int
+	var compileErrs int
+
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.HighlightQuery) == "" {
+			continue
+		}
+		withQuery++
+		if _, err := gotreesitter.NewQuery(entry.HighlightQuery, entry.Language()); err != nil {
+			compileErrs++
+			t.Errorf("%s: highlight query compile error: %v", entry.Name, err)
+		}
+	}
+
+	t.Logf("highlight compile audit: with_query=%d compile_errors=%d", withQuery, compileErrs)
+}
+
+func TestAllTagsQueriesCompile(t *testing.T) {
+	entries := AllLanguages()
+
+	var withQuery int
+	var compileErrs int
+
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.TagsQuery) == "" {
+			continue
+		}
+		withQuery++
+		if _, err := gotreesitter.NewTagger(entry.Language(), entry.TagsQuery); err != nil {
+			compileErrs++
+			t.Errorf("%s: tags query compile error: %v", entry.Name, err)
+		}
+	}
+
+	t.Logf("tags compile audit: with_query=%d compile_errors=%d", withQuery, compileErrs)
+}
+
 func TestHighlightQueriesProduceResults(t *testing.T) {
 	entries := AllLanguages()
 
@@ -67,10 +107,7 @@ func TestHighlightQueriesProduceResults(t *testing.T) {
 
 			h, err := gotreesitter.NewHighlighter(lang, entry.HighlightQuery, opts...)
 			if err != nil {
-				// Many highlight queries use features our query compiler
-				// doesn't support yet. Log these rather than failing.
-				t.Skipf("query compilation not supported: %v", err)
-				return
+				t.Fatalf("compile highlight query: %v", err)
 			}
 
 			ranges := h.Highlight([]byte(sample))

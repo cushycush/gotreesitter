@@ -537,6 +537,69 @@ func TestParsePredicateAnyOfRejectsCaptureArg(t *testing.T) {
 	}
 }
 
+func TestParsePredicateNotMatch(t *testing.T) {
+	lang := queryTestLanguage()
+	q, err := NewQuery(`(identifier) @name (#not-match? @name "^z")`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if len(q.patterns[0].predicates) != 1 {
+		t.Fatalf("predicates: got %d, want 1", len(q.patterns[0].predicates))
+	}
+	if q.patterns[0].predicates[0].kind != predicateNotMatch {
+		t.Fatalf("predicate kind: got %d, want %d", q.patterns[0].predicates[0].kind, predicateNotMatch)
+	}
+}
+
+func TestParsePredicateNotAnyOf(t *testing.T) {
+	lang := queryTestLanguage()
+	q, err := NewQuery(`(identifier) @name (#not-any-of? @name "foo" "bar")`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if len(q.patterns[0].predicates) != 1 {
+		t.Fatalf("predicates: got %d, want 1", len(q.patterns[0].predicates))
+	}
+	if q.patterns[0].predicates[0].kind != predicateNotAnyOf {
+		t.Fatalf("predicate kind: got %d, want %d", q.patterns[0].predicates[0].kind, predicateNotAnyOf)
+	}
+}
+
+func TestParsePredicateLuaMatch(t *testing.T) {
+	lang := queryTestLanguage()
+	q, err := NewQuery(`(identifier) @name (#lua-match? @name "^[%l]+$")`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if len(q.patterns[0].predicates) != 1 {
+		t.Fatalf("predicates: got %d, want 1", len(q.patterns[0].predicates))
+	}
+	if q.patterns[0].predicates[0].kind != predicateLuaMatch {
+		t.Fatalf("predicate kind: got %d, want %d", q.patterns[0].predicates[0].kind, predicateLuaMatch)
+	}
+}
+
+func TestParsePredicateAncestorPredicates(t *testing.T) {
+	lang := queryTestLanguage()
+	q, err := NewQuery(`(identifier) @name (#has-ancestor? @name function_declaration)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if len(q.patterns[0].predicates) != 1 {
+		t.Fatalf("predicates: got %d, want 1", len(q.patterns[0].predicates))
+	}
+	if q.patterns[0].predicates[0].kind != predicateHasAncestor {
+		t.Fatalf("predicate kind: got %d, want %d", q.patterns[0].predicates[0].kind, predicateHasAncestor)
+	}
+}
+
+func TestParsePredicateUnsupportedErrors(t *testing.T) {
+	lang := queryTestLanguage()
+	if _, err := NewQuery(`(identifier) @name (#does-not-exist? @name)`, lang); err == nil {
+		t.Fatal("expected error for unsupported predicate")
+	}
+}
+
 func TestParseParenthesizedStringPattern(t *testing.T) {
 	lang := queryTestLanguage()
 	q, err := NewQuery(`("(") @punctuation.bracket`, lang)
@@ -564,8 +627,8 @@ func TestParseGroupWrapperWithDirectivePredicate(t *testing.T) {
 	if len(q.patterns[0].predicates) != 1 {
 		t.Fatalf("predicates: got %d, want 1", len(q.patterns[0].predicates))
 	}
-	if q.patterns[0].predicates[0].kind != predicateNoop {
-		t.Fatalf("predicate kind: got %d, want %d", q.patterns[0].predicates[0].kind, predicateNoop)
+	if q.patterns[0].predicates[0].kind != predicateSet {
+		t.Fatalf("predicate kind: got %d, want %d", q.patterns[0].predicates[0].kind, predicateSet)
 	}
 }
 
@@ -626,10 +689,82 @@ func TestParseAlternationBranchCaptures(t *testing.T) {
 	}
 }
 
+func TestParseAlternationComplexBranchPreserved(t *testing.T) {
+	lang := queryTestLanguage()
+	q, err := NewQuery(`[(function_declaration name: (identifier) @fname) (number) @num]`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if q.PatternCount() != 1 {
+		t.Fatalf("PatternCount: got %d, want 1", q.PatternCount())
+	}
+	step := q.patterns[0].steps[0]
+	if len(step.alternatives) != 2 {
+		t.Fatalf("alternatives: got %d, want 2", len(step.alternatives))
+	}
+	if len(step.alternatives[0].steps) == 0 {
+		t.Fatal("expected first alternation branch to preserve nested steps")
+	}
+	if len(step.alternatives[0].steps) != 2 {
+		t.Fatalf("branch steps: got %d, want 2", len(step.alternatives[0].steps))
+	}
+	if step.alternatives[1].captureID < 0 {
+		t.Fatal("expected simple branch capture to be preserved")
+	}
+}
+
 func TestParseErrorPseudoNodeAllowed(t *testing.T) {
 	lang := queryTestLanguage()
 	if _, err := NewQuery(`(ERROR) @error`, lang); err != nil {
 		t.Fatalf("parse error: %v", err)
+	}
+}
+
+func TestParseUnknownIdentifierErrors(t *testing.T) {
+	lang := queryTestLanguage()
+	if _, err := NewQuery(`(m) @keyword`, lang); err == nil {
+		t.Fatal("expected parse error for unknown node type")
+	}
+}
+
+func TestParseTopLevelAnchorErrors(t *testing.T) {
+	lang := queryTestLanguage()
+	if _, err := NewQuery(`. (identifier) @id`, lang); err == nil {
+		t.Fatal("expected parse error for top-level anchor")
+	}
+}
+
+func TestParseFieldFallbackParentPrefixedName(t *testing.T) {
+	lang := &Language{
+		Name: "test_field_fallback",
+		SymbolNames: []string{
+			"",
+			"option",
+		},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "", Visible: false, Named: false},
+			{Name: "option", Visible: true, Named: true},
+		},
+		FieldNames: []string{
+			"",
+			"option_key",
+		},
+		FieldCount: 1,
+	}
+
+	q, err := NewQuery(`(option (_ key: _ @k))`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if q.PatternCount() != 1 {
+		t.Fatalf("PatternCount: got %d, want 1", q.PatternCount())
+	}
+	steps := q.patterns[0].steps
+	if len(steps) != 3 {
+		t.Fatalf("steps: got %d, want 3", len(steps))
+	}
+	if steps[2].field != FieldID(1) {
+		t.Fatalf("field: got %d, want %d", steps[2].field, FieldID(1))
 	}
 }
 
@@ -662,6 +797,79 @@ func TestParseNestedWithMultipleChildren(t *testing.T) {
 	}
 }
 
+func TestParseAnchorBeforeFirstChild(t *testing.T) {
+	lang := queryTestLanguage()
+	q, err := NewQuery(`(program . (identifier) @first)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	steps := q.patterns[0].steps
+	if len(steps) != 2 {
+		t.Fatalf("steps: got %d, want 2", len(steps))
+	}
+	if !steps[1].anchorBefore {
+		t.Fatal("expected anchorBefore on first child step")
+	}
+}
+
+func TestParseAnchorAfterChild(t *testing.T) {
+	lang := queryTestLanguage()
+	q, err := NewQuery(`(program (number) @num .)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	steps := q.patterns[0].steps
+	if len(steps) != 2 {
+		t.Fatalf("steps: got %d, want 2", len(steps))
+	}
+	if !steps[1].anchorAfter {
+		t.Fatal("expected anchorAfter on child step")
+	}
+}
+
+func TestParseAnchorBetweenChildren(t *testing.T) {
+	lang := queryTestLanguage()
+	q, err := NewQuery(`(program (identifier) @a . (number) @b)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	steps := q.patterns[0].steps
+	if len(steps) != 3 {
+		t.Fatalf("steps: got %d, want 3", len(steps))
+	}
+	if !steps[2].anchorBefore {
+		t.Fatal("expected anchorBefore on second sibling")
+	}
+	if steps[1].anchorAfter {
+		t.Fatal("did not expect anchorAfter on first sibling for between-child anchor")
+	}
+}
+
+func TestParseFieldNegationConstraint(t *testing.T) {
+	lang := queryTestLanguage()
+	q, err := NewQuery(`(function_declaration !parameters name: (identifier) @name)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	steps := q.patterns[0].steps
+	if len(steps) != 2 {
+		t.Fatalf("steps: got %d, want 2", len(steps))
+	}
+	if len(steps[0].absentFields) != 1 {
+		t.Fatalf("absentFields: got %d, want 1", len(steps[0].absentFields))
+	}
+	if steps[0].absentFields[0] != FieldID(5) {
+		t.Fatalf("absentFields[0]: got %d, want 5 (parameters)", steps[0].absentFields[0])
+	}
+}
+
+func TestParseFieldNegationUnknownFieldErrors(t *testing.T) {
+	lang := queryTestLanguage()
+	if _, err := NewQuery(`(function_declaration !does_not_exist)`, lang); err == nil {
+		t.Fatal("expected parse error for unknown negated field")
+	}
+}
+
 func TestParseCaptureOutsideParen(t *testing.T) {
 	// Capture after closing paren: (identifier) @name
 	lang := queryTestLanguage()
@@ -675,6 +883,30 @@ func TestParseCaptureOutsideParen(t *testing.T) {
 	}
 	if q.captures[step.captureID] != "func" {
 		t.Errorf("capture: got %q, want %q", q.captures[step.captureID], "func")
+	}
+}
+
+func TestParseMultipleCapturesOnSingleStep(t *testing.T) {
+	lang := queryTestLanguage()
+	q, err := NewQuery(`(identifier) @symbol @spell`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if q.PatternCount() != 1 {
+		t.Fatalf("PatternCount: got %d, want 1", q.PatternCount())
+	}
+	step := q.patterns[0].steps[0]
+	if len(step.captureIDs) != 2 {
+		t.Fatalf("captureIDs: got %d, want 2", len(step.captureIDs))
+	}
+	if q.captures[step.captureIDs[0]] != "symbol" {
+		t.Fatalf("capture[0]: got %q, want %q", q.captures[step.captureIDs[0]], "symbol")
+	}
+	if q.captures[step.captureIDs[1]] != "spell" {
+		t.Fatalf("capture[1]: got %q, want %q", q.captures[step.captureIDs[1]], "spell")
+	}
+	if step.captureID != step.captureIDs[0] {
+		t.Fatalf("captureID compatibility field: got %d, want %d", step.captureID, step.captureIDs[0])
 	}
 }
 
@@ -783,6 +1015,36 @@ func TestMatchSimpleNodeType(t *testing.T) {
 	}
 	if m.Captures[0].Node.Text(tree.Source()) != "main" {
 		t.Errorf("Capture text: got %q, want %q", m.Captures[0].Node.Text(tree.Source()), "main")
+	}
+}
+
+func TestMatchMultipleCapturesOnSingleNode(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	q, err := NewQuery(`(identifier) @symbol @spell`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	matches := q.Execute(tree)
+	if len(matches) != 1 {
+		t.Fatalf("matches: got %d, want 1", len(matches))
+	}
+	if len(matches[0].Captures) != 2 {
+		t.Fatalf("captures: got %d, want 2", len(matches[0].Captures))
+	}
+	if matches[0].Captures[0].Name != "symbol" {
+		t.Fatalf("capture[0] name: got %q, want %q", matches[0].Captures[0].Name, "symbol")
+	}
+	if matches[0].Captures[1].Name != "spell" {
+		t.Fatalf("capture[1] name: got %q, want %q", matches[0].Captures[1].Name, "spell")
+	}
+	if matches[0].Captures[0].Node != matches[0].Captures[1].Node {
+		t.Fatal("captures should point to the same node")
+	}
+	if got := matches[0].Captures[0].Node.Text(tree.Source()); got != "main" {
+		t.Fatalf("capture node text: got %q, want %q", got, "main")
 	}
 }
 
@@ -918,6 +1180,117 @@ func TestMatchPredicateAnyOfNoMatch(t *testing.T) {
 	}
 }
 
+func TestMatchPredicateNotMatch(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	q, err := NewQuery(`(identifier) @name (#not-match? @name "^zz")`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	matches := q.Execute(tree)
+	if len(matches) != 1 {
+		t.Fatalf("matches: got %d, want 1", len(matches))
+	}
+}
+
+func TestMatchPredicateNotAnyOf(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	q, err := NewQuery(`(identifier) @name (#not-any-of? @name "root" "entry")`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	matches := q.Execute(tree)
+	if len(matches) != 1 {
+		t.Fatalf("matches: got %d, want 1", len(matches))
+	}
+}
+
+func TestMatchPredicateLuaMatch(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	q, err := NewQuery(`(identifier) @name (#lua-match? @name "^[%l]+$")`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	matches := q.Execute(tree)
+	if len(matches) != 1 {
+		t.Fatalf("matches: got %d, want 1", len(matches))
+	}
+}
+
+func TestMatchPredicateHasAncestor(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	q, err := NewQuery(`(identifier) @name (#has-ancestor? @name function_declaration)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	matches := q.Execute(tree)
+	if len(matches) != 1 {
+		t.Fatalf("matches: got %d, want 1", len(matches))
+	}
+}
+
+func TestMatchPredicateNotHasAncestor(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	q, err := NewQuery(`(identifier) @name (#not-has-ancestor? @name function_declaration)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	matches := q.Execute(tree)
+	if len(matches) != 0 {
+		t.Fatalf("matches: got %d, want 0", len(matches))
+	}
+}
+
+func TestMatchPredicateNotHasParent(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	q, err := NewQuery(`(identifier) @name (#not-has-parent? @name parameter_list)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	matches := q.Execute(tree)
+	if len(matches) != 1 {
+		t.Fatalf("matches: got %d, want 1", len(matches))
+	}
+}
+
+func TestMatchPredicateIsAndIsNot(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	q1, err := NewQuery(`(identifier) @variable.parameter (#is? @variable.parameter parameter)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if got := len(q1.Execute(tree)); got != 1 {
+		t.Fatalf("matches (#is?): got %d, want 1", got)
+	}
+
+	q2, err := NewQuery(`(identifier) @variable.parameter (#is-not? local)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if got := len(q2.Execute(tree)); got != 0 {
+		t.Fatalf("matches (#is-not?): got %d, want 0", got)
+	}
+}
+
 func TestMatchFieldConstrained(t *testing.T) {
 	lang := queryTestLanguage()
 	tree := buildSimpleTree(lang)
@@ -999,6 +1372,153 @@ func TestMatchAlternation(t *testing.T) {
 	}
 	if !texts["false"] {
 		t.Error("missing match for 'false'")
+	}
+}
+
+func TestMatchAlternationComplexBranch(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	q, err := NewQuery(`[(function_declaration name: (identifier) @fname) (number) @num]`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	matches := q.Execute(tree)
+	if len(matches) != 2 {
+		t.Fatalf("matches: got %d, want 2", len(matches))
+	}
+
+	captureMap := make(map[string]string)
+	for _, m := range matches {
+		for _, c := range m.Captures {
+			captureMap[c.Name] = c.Node.Text(tree.Source())
+		}
+	}
+	if captureMap["fname"] != "main" {
+		t.Fatalf("fname: got %q, want %q", captureMap["fname"], "main")
+	}
+	if captureMap["num"] != "42" {
+		t.Fatalf("num: got %q, want %q", captureMap["num"], "42")
+	}
+}
+
+func TestMatchAnchorBeforeFirstNamedChild(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	q, err := NewQuery(`(function_declaration . (identifier) @name)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	matches := q.Execute(tree)
+	if len(matches) != 1 {
+		t.Fatalf("matches: got %d, want 1", len(matches))
+	}
+	if len(matches[0].Captures) != 1 {
+		t.Fatalf("captures: got %d, want 1", len(matches[0].Captures))
+	}
+	if got := matches[0].Captures[0].Node.Text(tree.Source()); got != "main" {
+		t.Fatalf("capture text: got %q, want %q", got, "main")
+	}
+}
+
+func TestMatchAnchorAfterLastNamedChild(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildProgramTreeWithIdentifiers(lang)
+
+	q, err := NewQuery(`(program (number) @last .)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	matches := q.Execute(tree)
+	if len(matches) != 1 {
+		t.Fatalf("matches: got %d, want 1", len(matches))
+	}
+	if len(matches[0].Captures) != 1 {
+		t.Fatalf("captures: got %d, want 1", len(matches[0].Captures))
+	}
+	if got := matches[0].Captures[0].Node.Text(tree.Source()); got != "1" {
+		t.Fatalf("capture text: got %q, want %q", got, "1")
+	}
+}
+
+func TestMatchAnchorBetweenSiblingsBacktracks(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildProgramTreeWithIdentifiers(lang)
+
+	// First identifier ("a") is not adjacent to number; the matcher should
+	// backtrack to "b" so . constraint can match "1".
+	q, err := NewQuery(`(program (identifier) @left . (number) @right)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	matches := q.Execute(tree)
+	if len(matches) != 1 {
+		t.Fatalf("matches: got %d, want 1", len(matches))
+	}
+	if len(matches[0].Captures) != 2 {
+		t.Fatalf("captures: got %d, want 2", len(matches[0].Captures))
+	}
+	if got := matches[0].Captures[0].Node.Text(tree.Source()); got != "b" {
+		t.Fatalf("left capture: got %q, want %q", got, "b")
+	}
+	if got := matches[0].Captures[1].Node.Text(tree.Source()); got != "1" {
+		t.Fatalf("right capture: got %q, want %q", got, "1")
+	}
+}
+
+func TestMatchAnchorBetweenSiblingsNoMatch(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildProgramTreeWithIdentifiers(lang)
+
+	q, err := NewQuery(`(program (number) @num . (identifier) @id)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	matches := q.Execute(tree)
+	if len(matches) != 0 {
+		t.Fatalf("matches: got %d, want 0", len(matches))
+	}
+}
+
+func TestMatchFieldNegationRejectsPresentField(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	q, err := NewQuery(`(function_declaration !parameters name: (identifier) @name)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	matches := q.Execute(tree)
+	if len(matches) != 0 {
+		t.Fatalf("matches: got %d, want 0", len(matches))
+	}
+}
+
+func TestMatchFieldNegationAllowsAbsentField(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	q, err := NewQuery(`(function_declaration !function name: (identifier) @name)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	matches := q.Execute(tree)
+	if len(matches) != 1 {
+		t.Fatalf("matches: got %d, want 1", len(matches))
+	}
+	if len(matches[0].Captures) != 1 {
+		t.Fatalf("captures: got %d, want 1", len(matches[0].Captures))
+	}
+	if got := matches[0].Captures[0].Node.Text(tree.Source()); got != "main" {
+		t.Fatalf("capture text: got %q, want %q", got, "main")
 	}
 }
 
