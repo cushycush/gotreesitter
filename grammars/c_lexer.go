@@ -25,6 +25,11 @@ type CTokenSource struct {
 	escapeSymbol        gotreesitter.Symbol
 	characterSymbol     gotreesitter.Symbol
 	primitiveTypeSymbol gotreesitter.Symbol
+	preprocEndSymbol    gotreesitter.Symbol // preproc_include_token2: line terminator for preprocessor directives
+	preprocArgSymbol    gotreesitter.Symbol
+
+	// Preprocessor state tracking
+	preprocState int // 0=normal, 1=afterDirective, 2=afterName (expect arg)
 
 	keywordSymbols map[string]gotreesitter.Symbol
 	literalSymbols map[string]gotreesitter.Symbol
@@ -63,6 +68,8 @@ func NewCTokenSource(src []byte, lang *gotreesitter.Language) (*CTokenSource, er
 	ts.escapeSymbol = tl.optional("escape_sequence")
 	ts.characterSymbol = tl.optional("character")
 	ts.primitiveTypeSymbol = tl.optional("primitive_type")
+	ts.preprocEndSymbol = tl.optional("preproc_include_token2")
+	ts.preprocArgSymbol = tl.optional("preproc_arg")
 
 	if ts.eofSymbol, _ = lang.SymbolByName("end"); ts.eofSymbol == 0 {
 		ts.eofSymbol = 0
@@ -99,10 +106,30 @@ func (ts *CTokenSource) Next() gotreesitter.Token {
 	}
 
 	for {
-		ts.cur.skipWhitespace()
+		ts.cur.skipSpacesAndTabs() // NOT skipWhitespace — preserve \n
 		if ts.cur.eof() {
 			ts.done = true
 			return ts.eofToken()
+		}
+
+		b := ts.cur.peekByte()
+
+		// Newline handling: in preprocessor context, emit as directive terminator
+		if b == '\n' {
+			if ts.preprocState > 0 && ts.preprocEndSymbol != 0 {
+				ts.preprocState = 0
+				return ts.preprocEndToken()
+			}
+			ts.preprocState = 0
+			ts.cur.advanceByte()
+			continue
+		}
+
+		// In preprocessor "expect arg" state: scan rest of line as preproc_arg
+		if ts.preprocState == 2 && ts.preprocArgSymbol != 0 {
+			if tok, ok := ts.preprocArgToken(); ok {
+				return tok
+			}
 		}
 
 		if tok, ok := ts.commentToken(); ok {
@@ -118,14 +145,22 @@ func (ts *CTokenSource) Next() gotreesitter.Token {
 			return tok
 		}
 
-		b := ts.cur.peekByte()
 		if isCIdentStart(b) {
-			return ts.identifierOrKeywordToken()
+			tok := ts.identifierOrKeywordToken()
+			// After directive keyword, next identifier is the macro name
+			if ts.preprocState == 1 {
+				ts.preprocState = 2 // now expect preproc_arg
+			}
+			return tok
 		}
 		if isASCIIDigit(b) {
 			return ts.numberToken()
 		}
 		if tok, ok := ts.literalToken(); ok {
+			// Detect #define start (needs preproc_arg + line terminator)
+			if ts.isPreprocDefine(tok.Text) {
+				ts.preprocState = 1
+			}
 			return tok
 		}
 
@@ -145,6 +180,7 @@ func (ts *CTokenSource) SkipToByte(offset uint32) gotreesitter.Token {
 
 	ts.pending = nil
 	ts.done = false
+	ts.preprocState = 0
 
 	if target < ts.cur.offset {
 		ts.cur = newSourceCursor(ts.src)
@@ -174,7 +210,7 @@ func (ts *CTokenSource) buildSymbolTables() {
 		sym := gotreesitter.Symbol(i)
 
 		switch name {
-		case "identifier", "number_literal", "comment", "string_content", "escape_sequence", "character", "primitive_type", "preproc_arg", "preproc_directive", "preproc_include_token2", "system_lib_string":
+		case "identifier", "number_literal", "comment", "string_content", "escape_sequence", "character", "primitive_type", "preproc_directive", "preproc_include_token2", "system_lib_string":
 			continue
 		}
 		if isSyntheticTokenName(name) {
@@ -496,6 +532,53 @@ func (ts *CTokenSource) eofToken() gotreesitter.Token {
 		StartPoint: pt,
 		EndPoint:   pt,
 	}
+}
+
+// preprocEndToken emits a preprocessor line terminator token for \n.
+// The C grammar uses preproc_include_token2 as the directive delimiter.
+func (ts *CTokenSource) preprocEndToken() gotreesitter.Token {
+	start := ts.cur.offset
+	startPt := ts.cur.point()
+	ts.cur.advanceByte() // consume '\n'
+	return makeToken(ts.preprocEndSymbol, ts.src, start, ts.cur.offset, startPt, ts.cur.point())
+}
+
+// preprocArgToken scans the rest of the line (until \n) as a preproc_arg token.
+func (ts *CTokenSource) preprocArgToken() (gotreesitter.Token, bool) {
+	ts.cur.skipSpacesAndTabs()
+	if ts.cur.eof() || ts.cur.peekByte() == '\n' {
+		return gotreesitter.Token{}, false
+	}
+
+	start := ts.cur.offset
+	startPt := ts.cur.point()
+
+	// Scan until newline or EOF, handling backslash-newline continuations
+	for !ts.cur.eof() {
+		b := ts.cur.peekByte()
+		if b == '\n' {
+			break
+		}
+		if b == '\\' && ts.cur.offset+1 < len(ts.src) && ts.src[ts.cur.offset+1] == '\n' {
+			ts.cur.advanceByte() // backslash
+			ts.cur.advanceByte() // newline
+			continue
+		}
+		ts.cur.advanceRune()
+	}
+
+	if ts.cur.offset <= start {
+		return gotreesitter.Token{}, false
+	}
+
+	// Leave preprocState > 0 so the following \n is emitted as a token
+	return makeToken(ts.preprocArgSymbol, ts.src, start, ts.cur.offset, startPt, ts.cur.point()), true
+}
+
+// isPreprocDefine returns true for #define directives which need
+// preproc_arg and preproc_include_token2 (line terminator) tokens.
+func (ts *CTokenSource) isPreprocDefine(text string) bool {
+	return text == "#define"
 }
 
 func isCIdentStart(b byte) bool {

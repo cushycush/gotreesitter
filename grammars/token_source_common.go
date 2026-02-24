@@ -74,6 +74,19 @@ func (c *sourceCursor) skipWhitespace() {
 	}
 }
 
+// skipSpacesAndTabs skips horizontal whitespace only (spaces, tabs, \r, \f).
+// Use this instead of skipWhitespace when newlines are significant tokens.
+func (c *sourceCursor) skipSpacesAndTabs() {
+	for !c.eof() {
+		switch c.peekByte() {
+		case ' ', '\t', '\r', '\f':
+			c.advanceByte()
+		default:
+			return
+		}
+	}
+}
+
 func isASCIIAlpha(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
