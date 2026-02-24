@@ -163,10 +163,7 @@ func TestGLRForkPicksHigherPrecedence(t *testing.T) {
 	lang := buildAmbiguousLanguage()
 	parser := NewParser(lang)
 
-	tree := parser.Parse([]byte("x"))
-	if tree == nil {
-		t.Fatal("Parse returned nil tree")
-	}
+	tree := mustParse(t, parser, []byte("x"))
 	root := tree.RootNode()
 	if root == nil {
 		t.Fatal("tree has nil root")

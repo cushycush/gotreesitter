@@ -7,7 +7,7 @@ func TestTreeEditShiftsNodes(t *testing.T) {
 	parser := NewParser(lang)
 
 	// Parse "1+2"
-	tree := parser.Parse([]byte("1+2"))
+	tree := mustParse(t, parser,[]byte("1+2"))
 	root := tree.RootNode()
 	if root == nil {
 		t.Fatal("nil root")
@@ -40,7 +40,7 @@ func TestParseIncremental(t *testing.T) {
 	parser := NewParser(lang)
 
 	// Parse "1+2"
-	tree := parser.Parse([]byte("1+2"))
+	tree := mustParse(t, parser,[]byte("1+2"))
 
 	// Edit: change to "1+3"
 	tree.Edit(InputEdit{
@@ -53,7 +53,7 @@ func TestParseIncremental(t *testing.T) {
 	})
 
 	// Incremental re-parse with new source.
-	newTree := parser.ParseIncremental([]byte("1+3"), tree)
+	newTree := mustParseIncremental(t, parser,[]byte("1+3"), tree)
 	root := newTree.RootNode()
 	if root == nil {
 		t.Fatal("incremental parse returned nil root")
@@ -88,7 +88,7 @@ func TestHighlightIncremental(t *testing.T) {
 
 	// Parse for incremental use.
 	parser := NewParser(lang)
-	tree := parser.Parse(source1)
+	tree := mustParse(t, parser,source1)
 
 	// Edit: "1+2" -> "1+3"
 	tree.Edit(InputEdit{
@@ -124,7 +124,7 @@ func TestParseIncrementalReusesUnchangedLeaf(t *testing.T) {
 	parser := NewParser(lang)
 
 	oldSource := []byte("1+2+3")
-	tree := parser.Parse(oldSource)
+	tree := mustParse(t, parser,oldSource)
 	root := tree.RootNode()
 	if root == nil {
 		t.Fatal("initial parse returned nil root")
@@ -145,7 +145,7 @@ func TestParseIncrementalReusesUnchangedLeaf(t *testing.T) {
 	})
 
 	newSource := []byte("1+4+3")
-	newTree := parser.ParseIncremental(newSource, tree)
+	newTree := mustParseIncremental(t, parser,newSource, tree)
 	newRoot := newTree.RootNode()
 	if newRoot == nil {
 		t.Fatal("incremental parse returned nil root")
@@ -168,13 +168,13 @@ func TestParseIncrementalReusesRootWhenUnchanged(t *testing.T) {
 	parser := NewParser(lang)
 
 	source := []byte("1+2")
-	tree := parser.Parse(source)
+	tree := mustParse(t, parser,source)
 	if tree.RootNode() == nil {
 		t.Fatal("initial parse returned nil root")
 	}
 
 	// No edits: incremental parse should be able to reuse the whole root subtree.
-	newTree := parser.ParseIncremental(source, tree)
+	newTree := mustParseIncremental(t, parser,source, tree)
 	if newTree.RootNode() == nil {
 		t.Fatal("incremental parse returned nil root")
 	}
@@ -189,7 +189,7 @@ func TestParseIncrementalReusesRootAfterUndo(t *testing.T) {
 	parser := NewParser(lang)
 
 	source := []byte("1+2+3")
-	tree := parser.Parse(source)
+	tree := mustParse(t, parser,source)
 	oldRoot := tree.RootNode()
 	if oldRoot == nil {
 		t.Fatal("initial parse returned nil root")
@@ -207,7 +207,7 @@ func TestParseIncrementalReusesRootAfterUndo(t *testing.T) {
 	tree.Edit(edit)
 	tree.Edit(edit)
 
-	newTree := parser.ParseIncremental(source, tree)
+	newTree := mustParseIncremental(t, parser,source, tree)
 	if newTree.RootNode() == nil {
 		t.Fatal("incremental parse returned nil root")
 	}
@@ -223,7 +223,7 @@ func TestTreeEditNodesAfterEdit(t *testing.T) {
 	lang := buildArithmeticLanguage()
 	parser := NewParser(lang)
 
-	tree := parser.Parse([]byte("1+2+3"))
+	tree := mustParse(t, parser,[]byte("1+2+3"))
 	root := tree.RootNode()
 	if root == nil {
 		t.Fatal("nil root")
@@ -253,7 +253,7 @@ func TestParseIncrementalReleaseKeepsBorrowedNodesAlive(t *testing.T) {
 	parser := NewParser(lang)
 
 	oldSrc := []byte("1+2+3")
-	oldTree := parser.Parse(oldSrc)
+	oldTree := mustParse(t, parser,oldSrc)
 	oldRoot := oldTree.RootNode()
 	if oldRoot == nil {
 		t.Fatal("initial parse returned nil root")
@@ -273,7 +273,7 @@ func TestParseIncrementalReleaseKeepsBorrowedNodesAlive(t *testing.T) {
 	})
 
 	newSrc := []byte("1+4+3")
-	newTree := parser.ParseIncremental(newSrc, oldTree)
+	newTree := mustParseIncremental(t, parser,newSrc, oldTree)
 	newRight := newTree.RootNode().Child(2)
 	if newRight == nil {
 		t.Fatal("missing right leaf in incremental tree")
@@ -287,7 +287,7 @@ func TestParseIncrementalReleaseKeepsBorrowedNodesAlive(t *testing.T) {
 
 	// Force arena churn to validate that borrowed nodes are retained correctly.
 	for i := 0; i < 2000; i++ {
-		tmp := parser.Parse([]byte("7+8"))
+		tmp := mustParse(t, parser, []byte("7+8"))
 		if tmp.RootNode() == nil {
 			t.Fatalf("tmp parse %d returned nil root", i)
 		}

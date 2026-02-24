@@ -18,11 +18,15 @@ func ParseFile(filename string, source []byte) (*gotreesitter.BoundTree, error) 
 	parser := gotreesitter.NewParser(lang)
 
 	var tree *gotreesitter.Tree
+	var err error
 	if entry.TokenSourceFactory != nil {
 		ts := entry.TokenSourceFactory(source, lang)
-		tree = parser.ParseWithTokenSource(source, ts)
+		tree, err = parser.ParseWithTokenSource(source, ts)
 	} else {
-		tree = parser.Parse(source)
+		tree, err = parser.Parse(source)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", filename, err)
 	}
 
 	return gotreesitter.Bind(tree), nil

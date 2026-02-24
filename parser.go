@@ -2,6 +2,8 @@ package gotreesitter
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"sync"
 	"unicode/utf8"
 )
@@ -86,13 +88,13 @@ const errorSymbol = Symbol(65535)
 // Parse tokenizes and parses source using the built-in DFA lexer, returning
 // a syntax tree. This works for hand-built grammars that provide LexStates.
 // For real grammars that need a custom lexer, use ParseWithTokenSource.
-// If the input is empty, it returns a tree with a nil root.
-func (p *Parser) Parse(source []byte) *Tree {
-	if !p.languageCompatible() {
-		return NewTree(nil, source, p.language)
+// If the input is empty, it returns a tree with a nil root and no error.
+func (p *Parser) Parse(source []byte) (*Tree, error) {
+	if err := p.checkLanguageCompatible(); err != nil {
+		return nil, err
 	}
-	if !p.canUseDFALexer() {
-		return NewTree(nil, source, p.language)
+	if err := p.checkDFALexer(); err != nil {
+		return nil, err
 	}
 	lexer := NewLexer(p.language.LexStates, source)
 	ts := &dfaTokenSource{
@@ -103,28 +105,28 @@ func (p *Parser) Parse(source []byte) *Tree {
 	if p.language.ExternalScanner != nil {
 		ts.externalPayload = p.language.ExternalScanner.Create()
 	}
-	return p.parseInternal(source, ts, nil, nil, arenaClassFull)
+	return p.parseInternal(source, ts, nil, nil, arenaClassFull), nil
 }
 
 // ParseWithTokenSource parses source using a custom token source.
 // This is used for real grammars where the lexer DFA isn't available
 // as data tables (e.g., Go grammar using go/scanner as a bridge).
-func (p *Parser) ParseWithTokenSource(source []byte, ts TokenSource) *Tree {
-	if !p.languageCompatible() {
-		return NewTree(nil, source, p.language)
+func (p *Parser) ParseWithTokenSource(source []byte, ts TokenSource) (*Tree, error) {
+	if err := p.checkLanguageCompatible(); err != nil {
+		return nil, err
 	}
-	return p.parseInternal(source, ts, nil, nil, arenaClassFull)
+	return p.parseInternal(source, ts, nil, nil, arenaClassFull), nil
 }
 
 // ParseIncremental re-parses source after edits were applied to oldTree.
 // It reuses unchanged subtrees from the old tree for better performance.
 // Call oldTree.Edit() for each edit before calling this method.
-func (p *Parser) ParseIncremental(source []byte, oldTree *Tree) *Tree {
-	if !p.languageCompatible() {
-		return NewTree(nil, source, p.language)
+func (p *Parser) ParseIncremental(source []byte, oldTree *Tree) (*Tree, error) {
+	if err := p.checkLanguageCompatible(); err != nil {
+		return nil, err
 	}
-	if !p.canUseDFALexer() {
-		return NewTree(nil, source, p.language)
+	if err := p.checkDFALexer(); err != nil {
+		return nil, err
 	}
 	lexer := NewLexer(p.language.LexStates, source)
 	ts := &dfaTokenSource{
@@ -135,16 +137,16 @@ func (p *Parser) ParseIncremental(source []byte, oldTree *Tree) *Tree {
 	if p.language.ExternalScanner != nil {
 		ts.externalPayload = p.language.ExternalScanner.Create()
 	}
-	return p.parseIncrementalInternal(source, oldTree, ts)
+	return p.parseIncrementalInternal(source, oldTree, ts), nil
 }
 
 // ParseIncrementalWithTokenSource is like ParseIncremental but uses a custom
 // token source.
-func (p *Parser) ParseIncrementalWithTokenSource(source []byte, oldTree *Tree, ts TokenSource) *Tree {
-	if !p.languageCompatible() {
-		return NewTree(nil, source, p.language)
+func (p *Parser) ParseIncrementalWithTokenSource(source []byte, oldTree *Tree, ts TokenSource) (*Tree, error) {
+	if err := p.checkLanguageCompatible(); err != nil {
+		return nil, err
 	}
-	return p.parseIncrementalInternal(source, oldTree, ts)
+	return p.parseIncrementalInternal(source, oldTree, ts), nil
 }
 
 func (p *Parser) canUseDFALexer() bool {
@@ -153,6 +155,29 @@ func (p *Parser) canUseDFALexer() bool {
 
 func (p *Parser) languageCompatible() bool {
 	return p.language != nil && p.language.CompatibleWithRuntime()
+}
+
+// ErrNoLanguage is returned when a Parser has no language configured.
+var ErrNoLanguage = errors.New("parser has no language configured")
+
+// checkLanguageCompatible returns an error if the parser's language is nil or
+// incompatible with the runtime.
+func (p *Parser) checkLanguageCompatible() error {
+	if p.language == nil {
+		return ErrNoLanguage
+	}
+	if !p.language.CompatibleWithRuntime() {
+		return fmt.Errorf("language version %d incompatible with parser", p.language.LanguageVersion)
+	}
+	return nil
+}
+
+// checkDFALexer returns an error if the parser's language has no DFA lexer tables.
+func (p *Parser) checkDFALexer() error {
+	if p.language == nil || len(p.language.LexStates) == 0 {
+		return fmt.Errorf("no DFA lexer available for language (use ParseWithTokenSource instead)")
+	}
+	return nil
 }
 
 func (p *Parser) parseIncrementalInternal(source []byte, oldTree *Tree, ts TokenSource) *Tree {

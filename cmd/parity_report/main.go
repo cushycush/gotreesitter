@@ -284,9 +284,9 @@ func runSmokeParse(
 		if factory == nil {
 			return false, false
 		}
-		tree = p.ParseWithTokenSource(src, factory(src, lang))
+		tree, _ = p.ParseWithTokenSource(src, factory(src, lang))
 	case grammars.ParseBackendDFA, grammars.ParseBackendDFAPartial:
-		tree = p.Parse(src)
+		tree, _ = p.Parse(src)
 	default:
 		return false, false
 	}
@@ -303,7 +303,10 @@ func probeGeneric(src []byte, lang *gotreesitter.Language) string {
 		return "generic init failed: " + err.Error()
 	}
 	p := gotreesitter.NewParser(lang)
-	tree := p.ParseWithTokenSource(src, ts)
+	tree, parseErr := p.ParseWithTokenSource(src, ts)
+	if parseErr != nil {
+		return "generic parse error: " + parseErr.Error()
+	}
 	if tree == nil || tree.RootNode() == nil {
 		return "generic parse nil root"
 	}

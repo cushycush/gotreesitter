@@ -70,7 +70,7 @@ func BenchmarkGoParseFull(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		ts.Reset(src)
-		tree := parser.ParseWithTokenSource(src, ts)
+		tree, _ := parser.ParseWithTokenSource(src, ts)
 		if tree.RootNode() == nil {
 			b.Fatal("parse returned nil root")
 		}
@@ -92,7 +92,7 @@ func BenchmarkGoParseIncrementalSingleByteEdit(b *testing.B) {
 	end := pointAtOffset(src, editAt+1)
 
 	ts := mustGoTokenSource(b, src, lang)
-	tree := parser.ParseWithTokenSource(src, ts)
+	tree, _ := parser.ParseWithTokenSource(src, ts)
 	if tree.RootNode() == nil {
 		b.Fatal("initial parse returned nil root")
 	}
@@ -121,7 +121,7 @@ func BenchmarkGoParseIncrementalSingleByteEdit(b *testing.B) {
 		tree.Edit(edit)
 		ts.Reset(src)
 		old := tree
-		tree = parser.ParseIncrementalWithTokenSource(src, tree, ts)
+		tree, _ = parser.ParseIncrementalWithTokenSource(src, tree, ts)
 		if tree.RootNode() == nil {
 			b.Fatal("incremental parse returned nil root")
 		}
@@ -138,7 +138,7 @@ func BenchmarkGoParseIncrementalNoEdit(b *testing.B) {
 	src := makeGoBenchmarkSource(benchmarkFuncCount(b))
 	ts := mustGoTokenSource(b, src, lang)
 
-	tree := parser.ParseWithTokenSource(src, ts)
+	tree, _ := parser.ParseWithTokenSource(src, ts)
 	if tree.RootNode() == nil {
 		b.Fatal("initial parse returned nil root")
 	}
@@ -150,7 +150,7 @@ func BenchmarkGoParseIncrementalNoEdit(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		ts.Reset(src)
 		old := tree
-		tree = parser.ParseIncrementalWithTokenSource(src, tree, ts)
+		tree, _ = parser.ParseIncrementalWithTokenSource(src, tree, ts)
 		if tree.RootNode() == nil {
 			b.Fatal("incremental parse returned nil root")
 		}

@@ -63,7 +63,10 @@ func TestParseCWithTokenSource(t *testing.T) {
 		t.Fatalf("NewCTokenSource failed: %v", err)
 	}
 
-	tree := parser.ParseWithTokenSource(src, ts)
+	tree, err := parser.ParseWithTokenSource(src, ts)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
 	if tree == nil || tree.RootNode() == nil {
 		t.Fatal("parse returned nil root")
 	}

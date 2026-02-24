@@ -180,14 +180,18 @@ func TestSupportedLanguagesParseSmoke(t *testing.T) {
 		source := []byte(sample)
 
 		var tree *gotreesitter.Tree
+		var parseErr error
 		switch report.Backend {
 		case ParseBackendTokenSource:
 			ts := entry.TokenSourceFactory(source, lang)
-			tree = parser.ParseWithTokenSource(source, ts)
+			tree, parseErr = parser.ParseWithTokenSource(source, ts)
 		case ParseBackendDFA, ParseBackendDFAPartial:
-			tree = parser.Parse(source)
+			tree, parseErr = parser.Parse(source)
 		default:
 			t.Fatalf("unknown backend %q for %q", report.Backend, report.Name)
+		}
+		if parseErr != nil {
+			t.Fatalf("%s parse failed: %v", report.Name, parseErr)
 		}
 
 		if tree == nil || tree.RootNode() == nil {

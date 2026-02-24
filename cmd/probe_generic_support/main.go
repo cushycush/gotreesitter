@@ -57,7 +57,7 @@ func main() {
 		}
 
 		p := gotreesitter.NewParser(lang)
-		tree := p.ParseWithTokenSource(src, ts)
+		tree, _ := p.ParseWithTokenSource(src, ts)
 		if tree != nil && tree.RootNode() != nil && !tree.RootNode().HasError() {
 			fmt.Printf("%s\tPASS\tgeneric token source parses smoke sample\n", entry.Name)
 		} else {

@@ -96,17 +96,24 @@ func (tg *Tagger) TagIncremental(source []byte, oldTree *Tree) ([]Tag, *Tree) {
 }
 
 func (tg *Tagger) parse(source []byte, oldTree *Tree) *Tree {
+	var tree *Tree
+	var err error
 	if tg.tokenSourceFactory != nil {
 		ts := tg.tokenSourceFactory(source)
 		if oldTree != nil {
-			return tg.parser.ParseIncrementalWithTokenSource(source, oldTree, ts)
+			tree, err = tg.parser.ParseIncrementalWithTokenSource(source, oldTree, ts)
+		} else {
+			tree, err = tg.parser.ParseWithTokenSource(source, ts)
 		}
-		return tg.parser.ParseWithTokenSource(source, ts)
+	} else if oldTree != nil {
+		tree, err = tg.parser.ParseIncremental(source, oldTree)
+	} else {
+		tree, err = tg.parser.Parse(source)
 	}
-	if oldTree != nil {
-		return tg.parser.ParseIncremental(source, oldTree)
+	if err != nil {
+		return NewTree(nil, source, tg.lang)
 	}
-	return tg.parser.Parse(source)
+	return tree
 }
 
 func (tg *Tagger) tagTree(tree *Tree) []Tag {

@@ -85,14 +85,18 @@ func TestCorrectnessSnapshots(t *testing.T) {
 			src := []byte(sample)
 
 			var tree *gotreesitter.Tree
+			var parseErr error
 			switch report.Backend {
 			case ParseBackendTokenSource:
 				ts := entry.TokenSourceFactory(src, lang)
-				tree = parser.ParseWithTokenSource(src, ts)
+				tree, parseErr = parser.ParseWithTokenSource(src, ts)
 			case ParseBackendDFA, ParseBackendDFAPartial:
-				tree = parser.Parse(src)
+				tree, parseErr = parser.Parse(src)
 			default:
 				t.Fatalf("unsupported backend %q", report.Backend)
+			}
+			if parseErr != nil {
+				t.Fatalf("parse failed: %v", parseErr)
 			}
 
 			if tree == nil || tree.RootNode() == nil {

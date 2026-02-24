@@ -273,10 +273,7 @@ func TestParserSingleNumber(t *testing.T) {
 	lang := buildArithmeticLanguage()
 	parser := NewParser(lang)
 
-	tree := parser.Parse([]byte("42"))
-	if tree == nil {
-		t.Fatal("Parse returned nil tree")
-	}
+	tree := mustParse(t, parser, []byte("42"))
 	root := tree.RootNode()
 	if root == nil {
 		t.Fatal("tree has nil root")
@@ -322,10 +319,7 @@ func TestParserSimpleExpression(t *testing.T) {
 	lang := buildArithmeticLanguage()
 	parser := NewParser(lang)
 
-	tree := parser.Parse([]byte("1+2"))
-	if tree == nil {
-		t.Fatal("Parse returned nil tree")
-	}
+	tree := mustParse(t, parser, []byte("1+2"))
 	root := tree.RootNode()
 	if root == nil {
 		t.Fatal("tree has nil root")
@@ -379,10 +373,7 @@ func TestParserChainedExpression(t *testing.T) {
 	parser := NewParser(lang)
 
 	// "1+2+3" should parse as left-associative: ((1)+2)+3
-	tree := parser.Parse([]byte("1+2+3"))
-	if tree == nil {
-		t.Fatal("Parse returned nil tree")
-	}
+	tree := mustParse(t, parser, []byte("1+2+3"))
 	root := tree.RootNode()
 	if root == nil {
 		t.Fatal("tree has nil root")
@@ -434,10 +425,7 @@ func TestParserEmptyInput(t *testing.T) {
 	lang := buildArithmeticLanguage()
 	parser := NewParser(lang)
 
-	tree := parser.Parse([]byte(""))
-	if tree == nil {
-		t.Fatal("Parse returned nil tree for empty input")
-	}
+	tree := mustParse(t, parser, []byte(""))
 
 	// Empty input should produce a tree with nil root (nothing to parse).
 	root := tree.RootNode()
@@ -452,10 +440,7 @@ func TestParserWhitespace(t *testing.T) {
 	parser := NewParser(lang)
 
 	// Whitespace between tokens should be handled correctly.
-	tree := parser.Parse([]byte("  1  +  2  "))
-	if tree == nil {
-		t.Fatal("Parse returned nil tree")
-	}
+	tree := mustParse(t, parser, []byte("  1  +  2  "))
 	root := tree.RootNode()
 	if root == nil {
 		t.Fatal("tree has nil root")
@@ -487,10 +472,7 @@ func TestParserErrorRecovery(t *testing.T) {
 
 	// "+1" starts with PLUS which is invalid in state 0.
 	// The parser should create an error node for "+" and then parse "1".
-	tree := parser.Parse([]byte("+1"))
-	if tree == nil {
-		t.Fatal("Parse returned nil tree")
-	}
+	tree := mustParse(t, parser, []byte("+1"))
 	root := tree.RootNode()
 	if root == nil {
 		t.Fatal("tree has nil root for error input")
@@ -516,7 +498,7 @@ func TestParserRecoverAction(t *testing.T) {
 	}
 
 	parser := NewParser(lang)
-	tree := parser.Parse([]byte("1"))
+	tree := mustParse(t, parser, []byte("1"))
 	root := tree.RootNode()
 	if root == nil {
 		t.Fatal("tree root is nil after recover action")
@@ -556,8 +538,8 @@ func TestParserAncestorRecoverActionPreservesLeftExpression(t *testing.T) {
 	lang := buildArithmeticRecoverLanguage()
 	parser := NewParser(lang)
 
-	tree := parser.Parse([]byte("1+*2"))
-	if tree == nil || tree.RootNode() == nil {
+	tree := mustParse(t, parser, []byte("1+*2"))
+	if tree.RootNode() == nil {
 		t.Fatal("parse returned nil root")
 	}
 	root := tree.RootNode()
@@ -601,7 +583,7 @@ func TestParserFieldMapFieldNames(t *testing.T) {
 	lang.ProductionIDCount = 2
 
 	parser := NewParser(lang)
-	tree := parser.Parse([]byte("42"))
+	tree := mustParse(t, parser, []byte("42"))
 	root := tree.RootNode()
 	if root == nil {
 		t.Fatal("tree has nil root")
@@ -626,10 +608,7 @@ func TestParserMultiDigitNumbers(t *testing.T) {
 	lang := buildArithmeticLanguage()
 	parser := NewParser(lang)
 
-	tree := parser.Parse([]byte("123+456"))
-	if tree == nil {
-		t.Fatal("Parse returned nil tree")
-	}
+	tree := mustParse(t, parser, []byte("123+456"))
 	root := tree.RootNode()
 	if root == nil {
 		t.Fatal("tree has nil root")
@@ -656,10 +635,7 @@ func TestParserLongChain(t *testing.T) {
 	parser := NewParser(lang)
 
 	// "1+2+3+4+5" — deeply left-nested.
-	tree := parser.Parse([]byte("1+2+3+4+5"))
-	if tree == nil {
-		t.Fatal("Parse returned nil tree")
-	}
+	tree := mustParse(t, parser, []byte("1+2+3+4+5"))
 	root := tree.RootNode()
 	if root == nil {
 		t.Fatal("tree has nil root")
@@ -698,7 +674,7 @@ func TestParserByteSpans(t *testing.T) {
 	lang := buildArithmeticLanguage()
 	parser := NewParser(lang)
 
-	tree := parser.Parse([]byte("1+2"))
+	tree := mustParse(t, parser, []byte("1+2"))
 	root := tree.RootNode()
 	if root == nil {
 		t.Fatal("tree has nil root")
@@ -723,7 +699,7 @@ func TestParserPointPositions(t *testing.T) {
 	lang := buildArithmeticLanguage()
 	parser := NewParser(lang)
 
-	tree := parser.Parse([]byte("1+2"))
+	tree := mustParse(t, parser, []byte("1+2"))
 	root := tree.RootNode()
 	if root == nil {
 		t.Fatal("tree has nil root")
@@ -748,7 +724,7 @@ func TestParserParentPointers(t *testing.T) {
 	lang := buildArithmeticLanguage()
 	parser := NewParser(lang)
 
-	tree := parser.Parse([]byte("1+2"))
+	tree := mustParse(t, parser, []byte("1+2"))
 	root := tree.RootNode()
 	if root == nil {
 		t.Fatal("tree has nil root")
@@ -779,7 +755,7 @@ func TestParserTreeMetadata(t *testing.T) {
 	parser := NewParser(lang)
 
 	source := []byte("1+2")
-	tree := parser.Parse(source)
+	tree := mustParse(t, parser, source)
 
 	if tree.Language() != lang {
 		t.Error("tree.Language() does not match")
@@ -793,7 +769,7 @@ func TestParserNamedChildAccess(t *testing.T) {
 	lang := buildArithmeticLanguage()
 	parser := NewParser(lang)
 
-	tree := parser.Parse([]byte("1+2"))
+	tree := mustParse(t, parser, []byte("1+2"))
 	root := tree.RootNode()
 	if root == nil {
 		t.Fatal("tree has nil root")
@@ -866,10 +842,7 @@ func TestParserOnlyWhitespace(t *testing.T) {
 	parser := NewParser(lang)
 
 	// Only whitespace — should produce empty tree like empty input.
-	tree := parser.Parse([]byte("   "))
-	if tree == nil {
-		t.Fatal("Parse returned nil tree")
-	}
+	tree := mustParse(t, parser, []byte("   "))
 	root := tree.RootNode()
 	if root != nil {
 		t.Errorf("expected nil root for whitespace-only input, got symbol %d", root.Symbol())
@@ -901,7 +874,7 @@ func TestParserExternalScannerToken(t *testing.T) {
 	lang.ExternalSymbols = []Symbol{2} // PLUS token comes from external scanner
 
 	parser := NewParser(lang)
-	tree := parser.Parse([]byte("1#2"))
+	tree := mustParse(t, parser, []byte("1#2"))
 	root := tree.RootNode()
 	if root == nil {
 		t.Fatal("tree has nil root")
