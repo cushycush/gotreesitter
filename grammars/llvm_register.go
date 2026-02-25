@@ -3,8 +3,8 @@
 package grammars
 
 const llvmTagsQuery = `
-(function_header name: (_) @name) @definition.function
-(_ callee: (_) @name) @reference.call
+(function_header (global_var) @name) @definition.function
+(instruction_call (value) @name) @reference.call
 `
 
 func init() {

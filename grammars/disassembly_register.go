@@ -3,7 +3,7 @@
 package grammars
 
 const disassemblyTagsQuery = `
-(code_location (identifier) @name) @definition.function
+(identifier) @name @definition.function
 `
 
 func init() {
