@@ -198,3 +198,104 @@ func TestTreeCursorFromTree(t *testing.T) {
 		t.Fatalf("Depth should be 0, got %d", c.Depth())
 	}
 }
+
+func TestTreeCursorCurrentFieldID(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	// buildSimpleTree: function_declaration children have fields:
+	// [0: func(no field), 1: identifier(name=1), 2: parameter_list(parameters=5), 3: block(body=2)]
+	c := NewTreeCursor(tree.RootNode(), tree)
+	c.GotoFirstChild() // function_declaration
+	c.GotoFirstChild() // "func" keyword — no field
+
+	if fid := c.CurrentFieldID(); fid != 0 {
+		t.Fatalf("func keyword should have field ID 0, got %d", fid)
+	}
+
+	c.GotoNextSibling() // identifier — field "name" (1)
+	if fid := c.CurrentFieldID(); fid != FieldID(1) {
+		t.Fatalf("identifier should have field ID 1 (name), got %d", fid)
+	}
+
+	c.GotoNextSibling() // parameter_list — field "parameters" (5)
+	if fid := c.CurrentFieldID(); fid != FieldID(5) {
+		t.Fatalf("parameter_list should have field ID 5 (parameters), got %d", fid)
+	}
+
+	c.GotoNextSibling() // block — field "body" (2)
+	if fid := c.CurrentFieldID(); fid != FieldID(2) {
+		t.Fatalf("block should have field ID 2 (body), got %d", fid)
+	}
+}
+
+func TestTreeCursorCurrentFieldName(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	c := NewTreeCursor(tree.RootNode(), tree)
+	c.GotoFirstChild() // function_declaration
+	c.GotoFirstChild() // "func" keyword
+
+	if name := c.CurrentFieldName(); name != "" {
+		t.Fatalf("func keyword should have empty field name, got %q", name)
+	}
+
+	c.GotoNextSibling() // identifier
+	if name := c.CurrentFieldName(); name != "name" {
+		t.Fatalf("identifier field name should be 'name', got %q", name)
+	}
+
+	c.GotoNextSibling() // parameter_list
+	if name := c.CurrentFieldName(); name != "parameters" {
+		t.Fatalf("parameter_list field name should be 'parameters', got %q", name)
+	}
+
+	c.GotoNextSibling() // block
+	if name := c.CurrentFieldName(); name != "body" {
+		t.Fatalf("block field name should be 'body', got %q", name)
+	}
+}
+
+func TestTreeCursorGotoChildByFieldName(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	c := NewTreeCursor(tree.RootNode(), tree)
+	c.GotoFirstChild() // function_declaration
+
+	if !c.GotoChildByFieldName("body") {
+		t.Fatal("GotoChildByFieldName('body') should succeed")
+	}
+	if c.CurrentNode().Symbol() != Symbol(14) {
+		t.Fatalf("expected block (14), got %d", c.CurrentNode().Symbol())
+	}
+
+	// Go back to function_declaration and try "name"
+	c.GotoParent()
+	if !c.GotoChildByFieldName("name") {
+		t.Fatal("GotoChildByFieldName('name') should succeed")
+	}
+	if c.CurrentNode().Symbol() != Symbol(1) {
+		t.Fatalf("expected identifier (1), got %d", c.CurrentNode().Symbol())
+	}
+
+	// Non-existent field
+	c.GotoParent()
+	if c.GotoChildByFieldName("nonexistent") {
+		t.Fatal("GotoChildByFieldName('nonexistent') should return false")
+	}
+}
+
+func TestTreeCursorFieldIDAtRoot(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	c := NewTreeCursor(tree.RootNode(), tree)
+	if fid := c.CurrentFieldID(); fid != 0 {
+		t.Fatalf("field ID at root should be 0, got %d", fid)
+	}
+	if name := c.CurrentFieldName(); name != "" {
+		t.Fatalf("field name at root should be empty, got %q", name)
+	}
+}

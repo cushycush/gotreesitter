@@ -108,3 +108,63 @@ func (c *TreeCursor) GotoParent() bool {
 	c.stack = c.stack[:len(c.stack)-1]
 	return true
 }
+
+// CurrentFieldID returns the field ID of the current node within its parent.
+// Returns 0 if the cursor is at the root or the node has no field assignment.
+func (c *TreeCursor) CurrentFieldID() FieldID {
+	if len(c.stack) < 2 {
+		return 0
+	}
+	frame := c.stack[len(c.stack)-1]
+	parentNode := c.stack[len(c.stack)-2].node
+	if frame.childIndex < len(parentNode.fieldIDs) {
+		return parentNode.fieldIDs[frame.childIndex]
+	}
+	return 0
+}
+
+// CurrentFieldName returns the field name of the current node within its parent.
+// Returns "" if no tree is associated, the cursor is at the root, or
+// the node has no field assignment.
+func (c *TreeCursor) CurrentFieldName() string {
+	fid := c.CurrentFieldID()
+	if fid == 0 || c.tree == nil {
+		return ""
+	}
+	lang := c.tree.Language()
+	if lang == nil || int(fid) >= len(lang.FieldNames) {
+		return ""
+	}
+	return lang.FieldNames[fid]
+}
+
+// GotoChildByFieldID moves the cursor to the first child with the given field ID.
+// Returns false if no child has that field.
+func (c *TreeCursor) GotoChildByFieldID(fid FieldID) bool {
+	node := c.CurrentNode()
+	for i, id := range node.fieldIDs {
+		if id == fid && i < len(node.children) {
+			c.stack = append(c.stack, cursorFrame{node: node.children[i], childIndex: i})
+			return true
+		}
+	}
+	return false
+}
+
+// GotoChildByFieldName moves the cursor to the first child with the given field name.
+// Returns false if the tree has no language, the field name is unknown, or
+// no child has that field.
+func (c *TreeCursor) GotoChildByFieldName(name string) bool {
+	if c.tree == nil {
+		return false
+	}
+	lang := c.tree.Language()
+	if lang == nil {
+		return false
+	}
+	fid, ok := lang.FieldByName(name)
+	if !ok || fid == 0 {
+		return false
+	}
+	return c.GotoChildByFieldID(fid)
+}
