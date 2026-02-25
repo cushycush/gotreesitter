@@ -61,6 +61,14 @@ func (bt *BoundTree) ChildByField(n *Node, fieldName string) *Node {
 	return n.ChildByFieldName(fieldName, bt.tree.Language())
 }
 
+// TreeCursor returns a new TreeCursor starting at the tree's root node.
+func (bt *BoundTree) TreeCursor() *TreeCursor {
+	if bt == nil || bt.tree == nil {
+		return nil
+	}
+	return NewTreeCursorFromTree(bt.tree)
+}
+
 // Release releases the underlying tree's arena memory.
 func (bt *BoundTree) Release() {
 	if bt == nil || bt.tree == nil {

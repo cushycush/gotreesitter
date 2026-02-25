@@ -484,3 +484,154 @@ func TestTreeCursorGotoFirstChildForPoint(t *testing.T) {
 		t.Fatalf("expected func keyword (8), got %d", c.CurrentNode().Symbol())
 	}
 }
+
+func TestTreeCursorReset(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	c := NewTreeCursorFromTree(tree)
+	c.GotoFirstChild() // function_declaration
+	c.GotoFirstChild() // "func" keyword
+
+	if c.Depth() != 2 {
+		t.Fatalf("expected depth 2, got %d", c.Depth())
+	}
+
+	// Reset to root
+	c.Reset(tree.RootNode())
+	if c.Depth() != 0 {
+		t.Fatalf("after Reset, depth should be 0, got %d", c.Depth())
+	}
+	if c.CurrentNode() != tree.RootNode() {
+		t.Fatal("after Reset, CurrentNode should be the new root")
+	}
+
+	// Verify navigation still works after reset
+	if !c.GotoFirstChild() {
+		t.Fatal("GotoFirstChild should work after Reset")
+	}
+}
+
+func TestTreeCursorCopy(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	c := NewTreeCursorFromTree(tree)
+	c.GotoFirstChild() // function_declaration
+	c.GotoFirstChild() // "func" keyword
+
+	cp := c.Copy()
+
+	// Both should be at the same node
+	if cp.CurrentNode() != c.CurrentNode() {
+		t.Fatal("Copy should point to same node")
+	}
+	if cp.Depth() != c.Depth() {
+		t.Fatal("Copy should have same depth")
+	}
+
+	// Moving the copy should not affect the original
+	cp.GotoNextSibling() // identifier
+	if cp.CurrentNode().Symbol() == c.CurrentNode().Symbol() {
+		t.Fatal("moving copy should not affect original")
+	}
+	if c.CurrentNode().Symbol() != Symbol(8) {
+		t.Fatalf("original should still be at func (8), got %d", c.CurrentNode().Symbol())
+	}
+}
+
+func TestTreeCursorDFSTraversal(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	// Collect nodes via Walk
+	var walkSymbols []Symbol
+	Walk(tree.RootNode(), func(n *Node, depth int) WalkAction {
+		walkSymbols = append(walkSymbols, n.Symbol())
+		return WalkContinue
+	})
+
+	// Collect nodes via cursor DFS
+	var cursorSymbols []Symbol
+	c := NewTreeCursorFromTree(tree)
+	// Iterative DFS using cursor
+	reachedRoot := false
+	for !reachedRoot {
+		cursorSymbols = append(cursorSymbols, c.CurrentNode().Symbol())
+
+		// Try to go deeper
+		if c.GotoFirstChild() {
+			continue
+		}
+		// Try next sibling
+		if c.GotoNextSibling() {
+			continue
+		}
+		// Go up until we can go to a sibling or reach root
+		for {
+			if !c.GotoParent() {
+				reachedRoot = true
+				break
+			}
+			if c.GotoNextSibling() {
+				break
+			}
+		}
+	}
+
+	if len(cursorSymbols) != len(walkSymbols) {
+		t.Fatalf("cursor DFS found %d nodes, Walk found %d", len(cursorSymbols), len(walkSymbols))
+	}
+	for i := range walkSymbols {
+		if cursorSymbols[i] != walkSymbols[i] {
+			t.Fatalf("node %d: cursor got symbol %d, Walk got %d", i, cursorSymbols[i], walkSymbols[i])
+		}
+	}
+}
+
+func TestTreeCursorConvenienceAccessors(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	c := NewTreeCursorFromTree(tree)
+	c.GotoFirstChild() // function_declaration
+
+	if typ := c.CurrentNodeType(); typ != "function_declaration" {
+		t.Fatalf("expected 'function_declaration', got %q", typ)
+	}
+	if !c.CurrentNodeIsNamed() {
+		t.Fatal("function_declaration should be named")
+	}
+
+	c.GotoFirstChild() // "func" keyword
+	if typ := c.CurrentNodeType(); typ != "func" {
+		t.Fatalf("expected 'func', got %q", typ)
+	}
+	if c.CurrentNodeIsNamed() {
+		t.Fatal("func keyword should not be named")
+	}
+	if text := c.CurrentNodeText(); text != "func" {
+		t.Fatalf("expected text 'func', got %q", text)
+	}
+
+	c.GotoNextSibling() // identifier "main"
+	if text := c.CurrentNodeText(); text != "main" {
+		t.Fatalf("expected text 'main', got %q", text)
+	}
+}
+
+func TestTreeCursorBoundTree(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+	bt := Bind(tree)
+
+	c := bt.TreeCursor()
+	if c.CurrentNode() != tree.RootNode() {
+		t.Fatal("BoundTree.TreeCursor should start at root")
+	}
+
+	c.GotoFirstChild() // function_declaration
+	if typ := c.CurrentNodeType(); typ != "function_declaration" {
+		t.Fatalf("expected 'function_declaration', got %q", typ)
+	}
+}

@@ -259,3 +259,53 @@ func (c *TreeCursor) GotoFirstChildForPoint(targetPoint Point) bool {
 	}
 	return false
 }
+
+// Reset resets the cursor to a new root node, clearing the navigation stack.
+func (c *TreeCursor) Reset(node *Node) {
+	c.stack = c.stack[:1]
+	c.stack[0] = cursorFrame{node: node, childIndex: -1}
+}
+
+// ResetTree resets the cursor to the root of a new tree.
+func (c *TreeCursor) ResetTree(tree *Tree) {
+	c.tree = tree
+	c.Reset(tree.RootNode())
+}
+
+// Copy returns an independent copy of the cursor. The copy shares the same
+// tree reference but has its own navigation stack.
+func (c *TreeCursor) Copy() *TreeCursor {
+	newStack := make([]cursorFrame, len(c.stack))
+	copy(newStack, c.stack)
+	return &TreeCursor{
+		stack: newStack,
+		tree:  c.tree,
+	}
+}
+
+// CurrentNodeType returns the type name of the current node.
+// Requires a tree with a language to be associated.
+func (c *TreeCursor) CurrentNodeType() string {
+	if c.tree == nil {
+		return ""
+	}
+	lang := c.tree.Language()
+	if lang == nil {
+		return ""
+	}
+	return c.CurrentNode().Type(lang)
+}
+
+// CurrentNodeText returns the source text of the current node.
+// Requires a tree with source to be associated.
+func (c *TreeCursor) CurrentNodeText() string {
+	if c.tree == nil {
+		return ""
+	}
+	return c.CurrentNode().Text(c.tree.Source())
+}
+
+// CurrentNodeIsNamed returns whether the current node is a named node.
+func (c *TreeCursor) CurrentNodeIsNamed() bool {
+	return c.CurrentNode().IsNamed()
+}
