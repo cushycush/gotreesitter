@@ -120,6 +120,9 @@ func (c *reuseCursor) peek() *Node {
 
 func (c *reuseCursor) pop() *Node {
 	n := c.peek()
+	if n != nil && perfCountersEnabled {
+		perfRecordReusePopped()
+	}
 	c.next = nil
 	return n
 }
@@ -132,6 +135,9 @@ func (c *reuseCursor) advance() *Node {
 		cur := frame.node
 		if cur == nil {
 			continue
+		}
+		if perfCountersEnabled {
+			perfRecordReuseVisited()
 		}
 
 		dirtyHere := cur.dirty
@@ -146,6 +152,9 @@ func (c *reuseCursor) advance() *Node {
 		childUnderDirty := frame.underDirty || dirtyHere
 
 		children := cur.children
+		if perfCountersEnabled {
+			perfRecordReusePushed(len(children))
+		}
 		for i := len(children) - 1; i >= 0; i-- {
 			c.stack = append(c.stack, reuseFrame{
 				node:       children[i],
@@ -182,6 +191,9 @@ func nodeBytesEqual(start, end uint32, oldSource, newSource []byte) bool {
 // lookahead token that begins at or after the node's end byte.
 func (p *Parser) tryReuseSubtree(s *glrStack, lookahead Token, ts TokenSource, idx *reuseCursor, entryScratch *glrEntryScratch, gssScratch *gssScratch) (Token, uint32, bool) {
 	candidates := idx.candidates(lookahead.StartByte)
+	if perfCountersEnabled {
+		perfRecordReuseCandidates(len(candidates))
+	}
 	if len(candidates) == 0 {
 		return lookahead, 0, false
 	}
@@ -236,6 +248,9 @@ func (p *Parser) tryReuseSubtree(s *glrStack, lookahead Token, ts TokenSource, i
 }
 
 func reuseNode(s *glrStack, n *Node, nextState StateID, lookahead Token, ts TokenSource, idx *reuseCursor, entryScratch *glrEntryScratch, gssScratch *gssScratch) (Token, uint32, bool) {
+	if perfCountersEnabled {
+		perfRecordReuseSuccess()
+	}
 	s.push(nextState, n, entryScratch, gssScratch)
 	reusedBytes := n.EndByte() - n.StartByte()
 

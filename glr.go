@@ -323,19 +323,38 @@ func gssStacksEqual(a, b gssStack) bool {
 }
 
 func stackEquivalent(a, b glrStack) bool {
+	if perfCountersEnabled {
+		perfRecordStackEquivalentCall()
+	}
 	if a.depth() != b.depth() {
 		return false
 	}
 	if a.gss.head != nil && b.gss.head != nil {
-		return gssStacksEqual(a.gss, b.gss)
+		eq := gssStacksEqual(a.gss, b.gss)
+		if eq && perfCountersEnabled {
+			perfRecordStackEquivalentTrue()
+		}
+		return eq
 	}
 	if a.gss.head != nil {
-		return gssStackEntriesEqual(a.gss, b.entries)
+		eq := gssStackEntriesEqual(a.gss, b.entries)
+		if eq && perfCountersEnabled {
+			perfRecordStackEquivalentTrue()
+		}
+		return eq
 	}
 	if b.gss.head != nil {
-		return gssStackEntriesEqual(b.gss, a.entries)
+		eq := gssStackEntriesEqual(b.gss, a.entries)
+		if eq && perfCountersEnabled {
+			perfRecordStackEquivalentTrue()
+		}
+		return eq
 	}
-	return stackEntriesEqual(a.entries, b.entries)
+	eq := stackEntriesEqual(a.entries, b.entries)
+	if eq && perfCountersEnabled {
+		perfRecordStackEquivalentTrue()
+	}
+	return eq
 }
 
 func gssStackEntriesEqual(gss gssStack, entries []stackEntry) bool {
@@ -410,6 +429,9 @@ func stackEntryNodesEquivalent(a, b *Node) bool {
 // stackCompare defines the total ordering for stack preference.
 // Positive means `a` is preferred over `b`, negative means worse.
 func stackCompare(a, b glrStack) int {
+	if perfCountersEnabled {
+		perfRecordStackCompare()
+	}
 	if a.dead != b.dead {
 		if a.dead {
 			return -1
@@ -453,13 +475,22 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 	if len(stacks) == 0 {
 		return stacks
 	}
+	if perfCountersEnabled {
+		perfRecordMergeCall(len(stacks))
+	}
 
 	// Remove dead stacks first.
 	alive := stacks[:0]
+	deadCount := 0
 	for i := range stacks {
 		if !stacks[i].dead {
 			alive = append(alive, stacks[i])
+		} else {
+			deadCount++
 		}
+	}
+	if perfCountersEnabled {
+		perfRecordMergeAlive(len(alive), deadCount)
 	}
 	if len(alive) <= 1 {
 		return alive
@@ -526,10 +557,16 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 			slot.count++
 			continue
 		}
+		if perfCountersEnabled {
+			perfRecordMergePerKeyOverflow()
+		}
 
 		// Per-key alternative budget reached: replace the weakest
 		// retained candidate only if this stack is better.
 		if worstIndex >= 0 && stackCompare(stack, result[worstIndex]) > 0 {
+			if perfCountersEnabled {
+				perfRecordMergeReplacement()
+			}
 			result[worstIndex] = stack
 		}
 	}

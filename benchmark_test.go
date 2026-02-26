@@ -59,6 +59,25 @@ func benchmarkFuncCount(b *testing.B) int {
 	return 500
 }
 
+func nonZeroBins(hist []uint64) string {
+	var sb strings.Builder
+	first := true
+	for i, v := range hist {
+		if v == 0 {
+			continue
+		}
+		if !first {
+			sb.WriteByte(',')
+		}
+		first = false
+		fmt.Fprintf(&sb, "%d:%d", i, v)
+	}
+	if first {
+		return "-"
+	}
+	return sb.String()
+}
+
 type editSite struct {
 	offset int
 	start  gotreesitter.Point
@@ -139,6 +158,7 @@ func BenchmarkGoParseFullDFA(b *testing.B) {
 	statsEnabled := strings.TrimSpace(os.Getenv("GOT_STATS")) != ""
 	if statsEnabled {
 		gotreesitter.ResetArenaProfile()
+		gotreesitter.ResetPerfCounters()
 		gotreesitter.EnableArenaProfile(true)
 		defer gotreesitter.EnableArenaProfile(false)
 	}
@@ -159,9 +179,18 @@ func BenchmarkGoParseFullDFA(b *testing.B) {
 	}
 	if statsEnabled {
 		a := gotreesitter.ArenaProfileSnapshot()
+		p := gotreesitter.PerfCountersSnapshot()
 		fmt.Printf(
 			"STATS arena_full_acquire=%d arena_full_new=%d arena_inc_acquire=%d arena_inc_new=%d\n",
 			a.FullAcquire, a.FullNew, a.IncrementalAcquire, a.IncrementalNew,
+		)
+		fmt.Printf(
+			"STATS_PERF merge_calls=%d merge_dead_pruned=%d merge_perkey_overflow=%d merge_replacements=%d stackeq_calls=%d stackeq_true=%d stackcmp_calls=%d forks=%d first_conflict_token=%d max_stacks=%d lex_bytes=%d lex_tokens=%d\n",
+			p.MergeCalls, p.MergeDeadPruned, p.MergePerKeyOverflow, p.MergeReplacements, p.StackEquivalentCalls, p.StackEquivalentTrue, p.StackCompareCalls, p.ForkCount, p.FirstConflictToken, p.MaxConcurrentStacks, p.LexBytes, p.LexTokens,
+		)
+		fmt.Printf(
+			"STATS_PERF merge_in_hist=%s merge_alive_hist=%s fork_actions_hist=%s\n",
+			nonZeroBins(p.MergeStacksInHist[:]), nonZeroBins(p.MergeAliveHist[:]), nonZeroBins(p.ForkActionsHist[:]),
 		)
 	}
 }
@@ -234,6 +263,7 @@ func BenchmarkGoParseIncrementalSingleByteEditDFA(b *testing.B) {
 	statsEnabled := strings.TrimSpace(os.Getenv("GOT_STATS")) != ""
 	if statsEnabled {
 		gotreesitter.ResetArenaProfile()
+		gotreesitter.ResetPerfCounters()
 		gotreesitter.EnableArenaProfile(true)
 		defer gotreesitter.EnableArenaProfile(false)
 	}
@@ -266,6 +296,10 @@ func BenchmarkGoParseIncrementalSingleByteEditDFA(b *testing.B) {
 	}
 	if tree.RootNode() == nil {
 		b.Fatal("initial parse returned nil root")
+	}
+	if statsEnabled {
+		gotreesitter.ResetPerfCounters()
+		gotreesitter.ResetArenaProfile()
 	}
 
 	edit := gotreesitter.InputEdit{
@@ -329,6 +363,7 @@ func BenchmarkGoParseIncrementalSingleByteEditDFA(b *testing.B) {
 	}
 	if statsEnabled {
 		a := gotreesitter.ArenaProfileSnapshot()
+		p := gotreesitter.PerfCountersSnapshot()
 		fmt.Printf(
 			"STATS edits=%d edit_ns=%d reuse_ns=%d parse_ns=%d reused_subtrees=%d reused_bytes=%d new_nodes=%d recover_searches=%d recover_state_checks=%d recover_state_skips=%d recover_lookups=%d recover_hits=%d max_stacks=%d\n",
 			b.N, editTotalNS, reuseTotalNS, parseTotalNS, reusedSubtrees, reusedBytes, newNodesAllocated, recoverSearches, recoverStateChecks, recoverStateSkips, recoverLookups, recoverHits, maxStacksSeen,
@@ -344,6 +379,14 @@ func BenchmarkGoParseIncrementalSingleByteEditDFA(b *testing.B) {
 		fmt.Printf(
 			"STATS scratch_peak_entries=%d\n",
 			entryScratchPeak,
+		)
+		fmt.Printf(
+			"STATS_PERF merge_calls=%d merge_dead_pruned=%d merge_perkey_overflow=%d merge_replacements=%d stackeq_calls=%d stackeq_true=%d stackcmp_calls=%d forks=%d first_conflict_token=%d max_stacks=%d lex_bytes=%d lex_tokens=%d reuse_nodes_visited=%d reuse_nodes_pushed=%d reuse_nodes_popped=%d reuse_candidates=%d reuse_successes=%d\n",
+			p.MergeCalls, p.MergeDeadPruned, p.MergePerKeyOverflow, p.MergeReplacements, p.StackEquivalentCalls, p.StackEquivalentTrue, p.StackCompareCalls, p.ForkCount, p.FirstConflictToken, p.MaxConcurrentStacks, p.LexBytes, p.LexTokens, p.ReuseNodesVisited, p.ReuseNodesPushed, p.ReuseNodesPopped, p.ReuseCandidatesChecked, p.ReuseSuccesses,
+		)
+		fmt.Printf(
+			"STATS_PERF merge_in_hist=%s merge_alive_hist=%s fork_actions_hist=%s\n",
+			nonZeroBins(p.MergeStacksInHist[:]), nonZeroBins(p.MergeAliveHist[:]), nonZeroBins(p.ForkActionsHist[:]),
 		)
 	}
 	tree.Release()

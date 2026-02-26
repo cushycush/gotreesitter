@@ -721,7 +721,18 @@ func (d *dfaTokenSource) Close() {
 var DebugDFA bool
 
 func (d *dfaTokenSource) Next() Token {
+	startPos := 0
+	if perfCountersEnabled {
+		startPos = d.lexer.pos
+	}
 	if tok, ok := d.nextExternalToken(); ok {
+		if perfCountersEnabled {
+			consumed := d.lexer.pos - startPos
+			if consumed < 0 {
+				consumed = 0
+			}
+			perfRecordLexed(consumed, 1)
+		}
 		if DebugDFA {
 			name := ""
 			if int(tok.Symbol) < len(d.language.SymbolNames) {
@@ -738,6 +749,13 @@ func (d *dfaTokenSource) Next() Token {
 	}
 	tok := d.lexer.Next(lexState)
 	tok = d.promoteKeyword(tok)
+	if perfCountersEnabled {
+		consumed := d.lexer.pos - startPos
+		if consumed < 0 {
+			consumed = 0
+		}
+		perfRecordLexed(consumed, 1)
+	}
 	if DebugDFA {
 		name := ""
 		if int(tok.Symbol) < len(d.language.SymbolNames) {
@@ -758,8 +776,19 @@ func (d *dfaTokenSource) SkipToByte(offset uint32) Token {
 		// Rewind isn't supported for DFA token sources during parse.
 		return d.Next()
 	}
+	startPos := 0
+	if perfCountersEnabled {
+		startPos = d.lexer.pos
+	}
 	for d.lexer.pos < target {
 		d.lexer.skipOneRune()
+	}
+	if perfCountersEnabled {
+		consumed := d.lexer.pos - startPos
+		if consumed < 0 {
+			consumed = 0
+		}
+		perfRecordLexed(consumed, 0)
 	}
 	return d.Next()
 }
@@ -1439,12 +1468,16 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 
 	needToken := true
 	var tok Token
+	var perfTokensConsumed uint64
 
 	// Per-primary-stack infinite-reduce detection.
 	var lastReduceState StateID
 	var consecutiveReduces int
 
 	for iter := 0; iter < maxIter; iter++ {
+		if perfCountersEnabled {
+			perfRecordMaxConcurrentStacks(len(stacks))
+		}
 		if timing != nil && len(stacks) > timing.maxStacksSeen {
 			timing.maxStacksSeen = len(stacks)
 		}
@@ -1498,6 +1531,9 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 
 		if needToken {
 			tok = ts.Next()
+			if perfCountersEnabled {
+				perfTokensConsumed++
+			}
 			// Clear per-stack shifted flags so all stacks process the
 			// new token.
 			for si := range stacks {
@@ -1620,6 +1656,13 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 			// For single-action entries (the common case), no fork occurs.
 			// For multi-action entries, clone the stack for each alternative.
 			if len(actions) > 1 {
+				if reuse != nil {
+					p.applyAction(s, actions[0], tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries)
+					continue
+				}
+				if perfCountersEnabled {
+					perfRecordFork(len(actions), perfTokensConsumed)
+				}
 				// Deep-stack GLR forks can trigger pathological clone volumes on
 				// very large inputs. At extreme depths, take the primary action
 				// to keep parsing bounded.
