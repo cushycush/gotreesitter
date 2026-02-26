@@ -33,6 +33,7 @@ type smallActionPair struct {
 type parserScratch struct {
 	merge   glrMergeScratch
 	entries glrEntryScratch
+	gss     gssScratch
 }
 
 const maxParserScratchPoolSize = 64
@@ -68,6 +69,7 @@ func releaseParserScratch(s *parserScratch) {
 	s.merge.result = s.merge.result[:0]
 	s.merge.keys = s.merge.keys[:0]
 	s.entries.reset()
+	s.gss.reset()
 	parserScratchMu.Lock()
 	if len(parserScratchPool) < maxParserScratchPoolSize {
 		parserScratchPool = append(parserScratchPool, s)
