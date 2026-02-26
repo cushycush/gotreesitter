@@ -29,6 +29,7 @@ type gssNodeSlab struct {
 }
 
 const (
+	// 64-bit FNV-1a constants.
 	gssHashSeed  uint64 = 1469598103934665603
 	gssHashPrime uint64 = 1099511628211
 )

@@ -519,7 +519,7 @@ func TestFindRecoverActionOnStackUsesNearestAncestor(t *testing.T) {
 	s.push(2, nil, nil, nil)
 	s.push(3, nil, nil, nil)
 
-	depth, act, ok := parser.findRecoverActionOnStack(&s, Symbol(3), nil) // STAR
+	depth, act, ok := parser.findRecoverActionOnStack(&s, Symbol(3)) // STAR
 	if !ok {
 		t.Fatal("expected recover action on stack for STAR")
 	}

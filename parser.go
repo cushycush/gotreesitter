@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"unicode/utf8"
 )
 
@@ -15,14 +16,17 @@ import (
 // parallel while preserving distinct parse paths. Duplicate stack
 // versions are collapsed and ambiguities are resolved at selection time.
 type Parser struct {
-	language     *Language
-	reuseCursor  reuseCursor
-	reuseScratch reuseScratch
-	reuseMu      sync.Mutex
-	included     []Range
-	denseLimit   int
-	smallBase    int
-	smallLookup  [][]smallActionPair
+	language          *Language
+	reuseCursor       reuseCursor
+	reuseScratch      reuseScratch
+	reuseMu           sync.Mutex
+	fullArenaHint     uint32
+	forceRawSpanAll   bool
+	forceRawSpanTable []bool
+	included          []Range
+	denseLimit        int
+	smallBase         int
+	smallLookup       [][]smallActionPair
 }
 
 type smallActionPair struct {
@@ -59,6 +63,11 @@ func releaseParserScratch(s *parserScratch) {
 	}
 	s.merge.result = s.merge.result[:0]
 	s.merge.keys = s.merge.keys[:0]
+	if len(s.merge.bucketIndex) > 0 {
+		for k := range s.merge.bucketIndex {
+			delete(s.merge.bucketIndex, k)
+		}
+	}
 	if cap(s.tmpEntries) > 0 {
 		buf := s.tmpEntries[:cap(s.tmpEntries)]
 		clear(buf)
@@ -77,6 +86,16 @@ func releaseParserScratch(s *parserScratch) {
 func NewParser(lang *Language) *Parser {
 	p := &Parser{language: lang}
 	if lang != nil {
+		p.forceRawSpanAll = lang.Name == "yaml"
+		for i, name := range lang.SymbolNames {
+			if name != "statement_list" {
+				continue
+			}
+			if p.forceRawSpanTable == nil {
+				p.forceRawSpanTable = make([]bool, len(lang.SymbolNames))
+			}
+			p.forceRawSpanTable[i] = true
+		}
 		if lang.LargeStateCount > 0 {
 			p.denseLimit = int(lang.LargeStateCount)
 		} else {
@@ -801,19 +820,71 @@ func parseNodeLimit(sourceLen int) int {
 	return max(50_000, sourceLen*10)
 }
 
-func parseFullArenaNodeCapacity(sourceLen int) int {
+func parseFullArenaNodeCapacity(sourceLen, hint int) int {
 	base := nodeCapacityForClass(arenaClassFull)
+	if hint > 0 {
+		if hint < base {
+			return base
+		}
+		limit := parseNodeLimit(sourceLen)
+		if sourceLen <= 0 {
+			return max(base, hint)
+		}
+		if hint > limit {
+			return max(base, limit)
+		}
+		return hint
+	}
 	if sourceLen <= 0 {
 		return base
 	}
-	// Pre-size near the parse safety ceiling to avoid expensive heap
-	// fallback node allocations on larger files.
-	estimate := parseNodeLimit(sourceLen)
-	const maxPreallocNodes = 2_000_000
+	// Conservative first-pass sizing. We refine this with adaptive hints
+	// from observed full-parse node usage.
+	estimate := sourceLen * 2
+	const maxPreallocNodes = 256 * 1024
 	if estimate > maxPreallocNodes {
 		estimate = maxPreallocNodes
 	}
 	return max(base, estimate)
+}
+
+func (p *Parser) fullArenaHintCapacity() int {
+	if p == nil {
+		return 0
+	}
+	return int(atomic.LoadUint32(&p.fullArenaHint))
+}
+
+func (p *Parser) recordFullArenaUsage(used int) {
+	if p == nil || used <= 0 {
+		return
+	}
+	target := used + used/4 // keep 25% headroom above observed peak.
+	base := nodeCapacityForClass(arenaClassFull)
+	if target < base {
+		target = base
+	}
+	const maxHintNodes = 2_000_000
+	if target > maxHintNodes {
+		target = maxHintNodes
+	}
+
+	for {
+		old := atomic.LoadUint32(&p.fullArenaHint)
+		var next uint32
+		if old == 0 {
+			next = uint32(target)
+		} else {
+			blended := (int(old)*3 + target) / 4
+			if blended < base {
+				blended = base
+			}
+			next = uint32(blended)
+		}
+		if old == next || atomic.CompareAndSwapUint32(&p.fullArenaHint, old, next) {
+			return
+		}
+	}
 }
 
 func parseFullEntryScratchCapacity(sourceLen int) int {
@@ -921,7 +992,12 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 
 	arena := acquireNodeArena(arenaClass)
 	if arenaClass == arenaClassFull {
-		arena.ensureNodeCapacity(parseFullArenaNodeCapacity(len(source)))
+		defer func() {
+			p.recordFullArenaUsage(arena.used)
+		}()
+	}
+	if arenaClass == arenaClassFull {
+		arena.ensureNodeCapacity(parseFullArenaNodeCapacity(len(source), p.fullArenaHintCapacity()))
 		scratch.entries.ensureInitialCap(parseFullEntryScratchCapacity(len(source)))
 	}
 	reusedAny := false
@@ -974,7 +1050,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		// heuristics (lex-mode selection, reduce-loop detection, depth cap)
 		// currently key off the primary stack.
 		p.promotePrimaryStack(stacks)
-		const maxCachedStacks = 8
+		const maxCachedStacks = 32
 		for i := range stacks {
 			if i < maxCachedStacks {
 				stacks[i].cacheEntries = true
@@ -1071,7 +1147,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 
 				// Try grammar-directed recovery by searching the stack for
 				// the nearest state that can recover on this lookahead.
-				if depth, recoverAct, ok := p.findRecoverActionOnStack(s, tok.Symbol, &scratch.tmpEntries); ok {
+				if depth, recoverAct, ok := p.findRecoverActionOnStack(s, tok.Symbol); ok {
 					if !s.truncate(depth + 1) {
 						s.dead = true
 						continue
@@ -1429,9 +1505,23 @@ func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, anyReduced *boo
 	span := computeReduceRawSpan(entries, window.start, window.reducedEnd)
 	children, fieldIDs := p.buildReduceChildren(entries, window.start, window.reducedEnd, childCount, act.ProductionID, arena)
 
-	entriesBeforePop := entries
 	trailingStart := window.reducedEnd
 	trailingEnd := window.actualEnd
+	var trailingExtras []*Node
+	if trailingEnd > trailingStart {
+		var trailingBuf [8]*Node
+		if trailingEnd-trailingStart <= len(trailingBuf) {
+			trailingExtras = trailingBuf[:0]
+		} else {
+			trailingExtras = make([]*Node, 0, trailingEnd-trailingStart)
+		}
+		for i := trailingStart; i < trailingEnd; i++ {
+			extra := entries[i].node
+			if extra != nil {
+				trailingExtras = append(trailingExtras, extra)
+			}
+		}
+	}
 
 	// Pop all reduced entries in one step after collection.
 	if !s.truncate(window.start) {
@@ -1439,14 +1529,13 @@ func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, anyReduced *boo
 		return
 	}
 
-	lang := p.language
 	named := p.isNamedSymbol(act.Symbol)
 	parent := newParentNodeInArena(arena, act.Symbol, named, children, fieldIDs, act.ProductionID)
 	shouldUseRawSpan := len(children) == 0
-	if !shouldUseRawSpan && lang != nil && lang.Name == "yaml" {
+	if !shouldUseRawSpan && p.forceRawSpanAll {
 		shouldUseRawSpan = true
 	}
-	if !shouldUseRawSpan && int(act.Symbol) < len(lang.SymbolNames) && lang.SymbolNames[act.Symbol] == "statement_list" {
+	if !shouldUseRawSpan && int(act.Symbol) < len(p.forceRawSpanTable) && p.forceRawSpanTable[act.Symbol] {
 		shouldUseRawSpan = true
 	}
 	if shouldUseRawSpan && window.reducedEnd > window.start {
@@ -1464,11 +1553,8 @@ func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, anyReduced *boo
 	}
 	parent.parseState = targetState
 	s.push(targetState, parent, entryScratch, gssScratch)
-	for i := trailingStart; i < trailingEnd; i++ {
-		extra := entriesBeforePop[i].node
-		if extra == nil {
-			continue
-		}
+	for i := range trailingExtras {
+		extra := trailingExtras[i]
 		extra.parseState = targetState
 		s.push(targetState, extra, entryScratch, gssScratch)
 	}
@@ -1489,29 +1575,35 @@ func recoverAction(entry *ParseActionEntry) (ParseAction, bool) {
 	return ParseAction{}, false
 }
 
-func (p *Parser) findRecoverActionOnStack(s *glrStack, sym Symbol, tmpEntries *[]stackEntry) (int, ParseAction, bool) {
+func (p *Parser) findRecoverActionOnStack(s *glrStack, sym Symbol) (int, ParseAction, bool) {
 	if s == nil {
 		return 0, ParseAction{}, false
 	}
-	tmp := []stackEntry(nil)
-	if tmpEntries != nil {
-		tmp = *tmpEntries
-	}
-	entries, borrowed := s.entriesForRead(tmp)
-	if borrowed && tmpEntries != nil {
-		defer func() {
-			*tmpEntries = entries[:0]
-		}()
-	}
-	if len(entries) == 0 {
+
+	if len(s.entries) > 0 {
+		entries := s.entries
+		for depth := len(entries) - 1; depth >= 0; depth-- {
+			state := entries[depth].state
+			action := p.lookupAction(state, sym)
+			if act, ok := recoverAction(action); ok {
+				return depth, act, true
+			}
+		}
 		return 0, ParseAction{}, false
 	}
-	for depth := len(entries) - 1; depth >= 0; depth-- {
-		state := entries[depth].state
+
+	if s.gss.head == nil {
+		return 0, ParseAction{}, false
+	}
+
+	depth := s.gss.len() - 1
+	for n := s.gss.head; n != nil; n = n.prev {
+		state := n.entry.state
 		action := p.lookupAction(state, sym)
 		if act, ok := recoverAction(action); ok {
 			return depth, act, true
 		}
+		depth--
 	}
 	return 0, ParseAction{}, false
 }
@@ -1552,6 +1644,21 @@ func aliasedNodeInArena(arena *nodeArena, lang *Language, n *Node, alias Symbol)
 	if lang != nil && int(alias) < len(lang.SymbolMetadata) {
 		cloned.isNamed = lang.SymbolMetadata[alias].Named
 	}
+	cloned.ownerArena = arena
+	return cloned
+}
+
+func cloneNodeInArena(arena *nodeArena, n *Node) *Node {
+	if n == nil {
+		return nil
+	}
+	if arena == nil {
+		cloned := &Node{}
+		*cloned = *n
+		return cloned
+	}
+	cloned := arena.allocNode()
+	*cloned = *n
 	cloned.ownerArena = arena
 	return cloned
 }
@@ -1810,6 +1917,11 @@ func (p *Parser) buildResult(stack []stackEntry, source []byte, arena *nodeArena
 		}
 	}
 	if realRoot != nil {
+		if reusedAny {
+			realRoot = cloneNodeInArena(arena, realRoot)
+			realRoot.parent = nil
+			realRoot.childIndex = -1
+		}
 		if len(extras) > 0 {
 			// Fold visible extras into the real root as leading/trailing children.
 			merged := make([]*Node, 0, len(extras)+len(realRoot.children))

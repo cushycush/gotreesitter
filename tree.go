@@ -108,6 +108,15 @@ func (n *Node) NextSibling() *Node {
 		}
 		return nil
 	}
+	for i, s := range siblings {
+		if s != n {
+			continue
+		}
+		if i+1 < len(siblings) {
+			return siblings[i+1]
+		}
+		return nil
+	}
 	return nil
 }
 
@@ -119,6 +128,15 @@ func (n *Node) PrevSibling() *Node {
 	}
 	siblings := n.parent.children
 	if i := n.childIndex; i >= 0 && i < len(siblings) && siblings[i] == n {
+		if i > 0 {
+			return siblings[i-1]
+		}
+		return nil
+	}
+	for i, s := range siblings {
+		if s != n {
+			continue
+		}
 		if i > 0 {
 			return siblings[i-1]
 		}

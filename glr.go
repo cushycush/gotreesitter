@@ -43,13 +43,19 @@ const (
 )
 
 type glrMergeScratch struct {
-	result []glrStack
-	keys   []glrMergeKey
+	result      []glrStack
+	keys        []glrMergeKey
+	bucketIndex map[glrMergeKey]glrMergeBucket
 }
 
 type glrMergeKey struct {
 	state      StateID
 	byteOffset uint32
+}
+
+type glrMergeBucket struct {
+	indices [maxStacksPerMergeKey]int
+	count   int
 }
 
 type glrEntryScratch struct {
@@ -289,12 +295,40 @@ func stackEquivalent(a, b glrStack) bool {
 	if a.gss.head != nil && b.gss.head != nil {
 		return gssStacksEqual(a.gss, b.gss)
 	}
-	aa := a
-	bb := b
-	return stackEntriesEqual(aa.ensureEntries(nil), bb.ensureEntries(nil))
+	if a.gss.head != nil {
+		return gssStackEntriesEqual(a.gss, b.entries)
+	}
+	if b.gss.head != nil {
+		return gssStackEntriesEqual(b.gss, a.entries)
+	}
+	return stackEntriesEqual(a.entries, b.entries)
+}
+
+func gssStackEntriesEqual(gss gssStack, entries []stackEntry) bool {
+	if gss.head == nil {
+		return len(entries) == 0
+	}
+	if len(entries) != gss.len() {
+		return false
+	}
+	i := len(entries) - 1
+	for n := gss.head; n != nil; n = n.prev {
+		if i < 0 {
+			return false
+		}
+		e := entries[i]
+		if n.entry.state != e.state || !stackEntryNodesEquivalent(n.entry.node, e.node) {
+			return false
+		}
+		i--
+	}
+	return i == -1
 }
 
 func stackEntryNodesEquivalent(a, b *Node) bool {
+	// Keep this comparator shallow-ish by design: full recursive tree equality in
+	// merge hot paths is too expensive, and GSS hash/state/offset bucketing already
+	// narrows candidates before this check runs.
 	if a == b {
 		return true
 	}
@@ -400,6 +434,16 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 		local := glrMergeScratch{}
 		scratch = &local
 	}
+
+	buckets := scratch.bucketIndex
+	if buckets == nil {
+		buckets = make(map[glrMergeKey]glrMergeBucket, len(alive))
+	} else if len(scratch.keys) > 0 {
+		for _, key := range scratch.keys {
+			delete(buckets, key)
+		}
+	}
+
 	// Merge exact duplicates and keep a bounded number of distinct
 	// alternatives per merge key. This approximates the C runtime's
 	// graph-stack link fanout while keeping memory bounded.
@@ -408,23 +452,19 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 	for i := range alive {
 		stack := alive[i]
 		key := mergeKeyForStack(stack)
+		bucket := buckets[key]
 		duplicateIndex := -1
-		sameKeyCount := 0
 		worstIndex := -1
-		for j := range result {
-			if keys[j] != key {
-				continue
+		for j := 0; j < bucket.count; j++ {
+			idx := bucket.indices[j]
+			existing := &result[idx]
+			if stackEquivalent(*existing, stack) {
+				duplicateIndex = idx
+				break
 			}
-			sameKeyCount++
-			existing := &result[j]
-			if !stackEquivalent(*existing, stack) {
-				if worstIndex == -1 || stackCompare(result[worstIndex], *existing) > 0 {
-					worstIndex = j
-				}
-				continue
+			if worstIndex == -1 || stackCompare(*existing, result[worstIndex]) < 0 {
+				worstIndex = idx
 			}
-			duplicateIndex = j
-			break
 		}
 		if duplicateIndex >= 0 {
 			if stackCompare(stack, result[duplicateIndex]) > 0 {
@@ -433,9 +473,13 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 			continue
 		}
 
-		if sameKeyCount < maxStacksPerMergeKey {
+		if bucket.count < maxStacksPerMergeKey {
+			idx := len(result)
 			result = append(result, stack)
 			keys = append(keys, key)
+			bucket.indices[bucket.count] = idx
+			bucket.count++
+			buckets[key] = bucket
 			continue
 		}
 
@@ -447,6 +491,7 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 	}
 	scratch.result = result
 	scratch.keys = keys
+	scratch.bucketIndex = buckets
 	return result
 }
 
