@@ -13,6 +13,7 @@ package cgoharness
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -74,6 +75,16 @@ var parityEntriesByName, paritySupportByName = func() (map[string]grammars.LangE
 	return entries, support
 }()
 
+var parityCompareFields = func() bool {
+	raw := strings.TrimSpace(os.Getenv("GTS_PARITY_COMPARE_FIELDS"))
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}()
+
 type nodeSnapshot struct {
 	Type       string
 	StartByte  uint32
@@ -133,6 +144,13 @@ func compareNodes(goNode *gotreesitter.Node, goLang *gotreesitter.Language, cNod
 
 	for i := 0; i < gs.ChildCount; i++ {
 		childPath := fmt.Sprintf("%s[%d]", path, i)
+		if parityCompareFields {
+			goField := goNode.FieldNameForChild(i, goLang)
+			cField := cNode.FieldNameForChild(uint32(i))
+			if goField != cField {
+				*errs = append(*errs, fmt.Sprintf("%s: FieldName go=%q c=%q", childPath, goField, cField))
+			}
+		}
 		compareNodes(goNode.Child(i), goLang, cNode.Child(uint(i)), childPath, errs)
 	}
 }
@@ -171,6 +189,13 @@ func compareGoNodes(left *gotreesitter.Node, lang *gotreesitter.Language, right 
 
 	for i := 0; i < ls.ChildCount; i++ {
 		childPath := fmt.Sprintf("%s[%d]", path, i)
+		if parityCompareFields {
+			leftField := left.FieldNameForChild(i, lang)
+			rightField := right.FieldNameForChild(i, lang)
+			if leftField != rightField {
+				*errs = append(*errs, fmt.Sprintf("%s: FieldName left=%q right=%q", childPath, leftField, rightField))
+			}
+		}
 		compareGoNodes(left.Child(i), lang, right.Child(i), childPath, errs)
 	}
 }

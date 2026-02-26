@@ -37,24 +37,14 @@ type parserScratch struct {
 	tmpEntries []stackEntry
 }
 
-const maxParserScratchPoolSize = 64
-
-var (
-	parserScratchMu   sync.Mutex
-	parserScratchPool []*parserScratch
-)
+var parserScratchPool = sync.Pool{
+	New: func() any {
+		return &parserScratch{}
+	},
+}
 
 func acquireParserScratch() *parserScratch {
-	parserScratchMu.Lock()
-	n := len(parserScratchPool)
-	if n == 0 {
-		parserScratchMu.Unlock()
-		return &parserScratch{}
-	}
-	s := parserScratchPool[n-1]
-	parserScratchPool = parserScratchPool[:n-1]
-	parserScratchMu.Unlock()
-	return s
+	return parserScratchPool.Get().(*parserScratch)
 }
 
 func releaseParserScratch(s *parserScratch) {
@@ -80,11 +70,7 @@ func releaseParserScratch(s *parserScratch) {
 	}
 	s.entries.reset()
 	s.gss.reset()
-	parserScratchMu.Lock()
-	if len(parserScratchPool) < maxParserScratchPoolSize {
-		parserScratchPool = append(parserScratchPool, s)
-	}
-	parserScratchMu.Unlock()
+	parserScratchPool.Put(s)
 }
 
 // NewParser creates a new Parser for the given language.
@@ -979,7 +965,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		const maxStacks = 64
 		if len(stacks) > maxStacks {
 			sort.SliceStable(stacks, func(i, j int) bool {
-				return stackPreferredForRetention(stacks[i], stacks[j])
+				return stackCompare(stacks[i], stacks[j]) > 0
 			})
 			stacks = stacks[:maxStacks]
 		}
@@ -1187,54 +1173,13 @@ func (p *Parser) promotePrimaryStack(stacks []glrStack) {
 	}
 	best := 0
 	for i := 1; i < len(stacks); i++ {
-		if stacks[i].dead && !stacks[best].dead {
-			continue
-		}
-		if !stacks[i].dead && stacks[best].dead {
-			best = i
-			continue
-		}
-		if stacks[i].accepted && !stacks[best].accepted {
-			best = i
-			continue
-		}
-		if !stacks[i].shifted && stacks[best].shifted {
-			best = i
-			continue
-		}
-		if stacks[i].score > stacks[best].score {
-			best = i
-			continue
-		}
-		if stacks[i].score == stacks[best].score && stacks[i].depth() > stacks[best].depth() {
+		if stackCompare(stacks[i], stacks[best]) > 0 {
 			best = i
 		}
 	}
 	if best != 0 {
 		stacks[0], stacks[best] = stacks[best], stacks[0]
 	}
-}
-
-func stackPreferredForRetention(a, b glrStack) bool {
-	if a.accepted != b.accepted {
-		return a.accepted
-	}
-	if a.dead != b.dead {
-		return !a.dead
-	}
-	if a.byteOffset != b.byteOffset {
-		return a.byteOffset > b.byteOffset
-	}
-	if a.score != b.score {
-		return a.score > b.score
-	}
-	if a.depth() != b.depth() {
-		return a.depth() > b.depth()
-	}
-	if a.shifted != b.shifted {
-		return !a.shifted && b.shifted
-	}
-	return false
 }
 
 // applyAction applies a single parse action to a GLR stack.
@@ -1269,214 +1214,7 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 				}
 			}
 		}
-		childCount := int(act.ChildCount)
-
-		// Find the start position by scanning backwards, counting only
-		// non-extra entries toward childCount. In tree-sitter's C runtime
-		// (ts_stack_pop_count / stack__iter), extras on the stack are
-		// skipped when counting children for a reduce action.
-		start := len(entries)
-		nonExtraFound := 0
-		for nonExtraFound < childCount && start > 1 {
-			start--
-			if entries[start].node != nil && !entries[start].node.isExtra {
-				nonExtraFound++
-			}
-		}
-		if nonExtraFound < childCount {
-			// Not enough stack entries — kill this stack version.
-			s.dead = true
-			return
-		}
-
-		// actualEntryCount includes extras interleaved between grammar symbols.
-		actualEntryCount := len(entries) - start
-		reducedEntryCount := actualEntryCount
-		for i := actualEntryCount - 1; i >= 0; i-- {
-			n := entries[start+i].node
-			if n == nil || !n.isExtra {
-				break
-			}
-			reducedEntryCount--
-		}
-		topState := entries[start-1].state
-
-		lang := p.language
-		symbolMeta := lang.SymbolMetadata
-		var aliasSeq []Symbol
-		if pid := int(act.ProductionID); pid >= 0 && pid < len(lang.AliasSequences) {
-			aliasSeq = lang.AliasSequences[pid]
-		}
-
-		// Preserve raw span from reduced children while excluding pure extra
-		// padding, so parent ranges match the C runtime.
-		rawStartByte := uint32(0)
-		rawEndByte := uint32(0)
-		var rawStartPoint, rawEndPoint Point
-		rawHasStart := false
-		rawHasEnd := false
-		if reducedEntryCount > 0 {
-			for i := 0; i < reducedEntryCount; i++ {
-				n := entries[start+i].node
-				if n != nil && !n.isExtra {
-					rawStartByte = n.startByte
-					rawStartPoint = n.startPoint
-					rawHasStart = true
-					break
-				}
-			}
-			for i := reducedEntryCount - 1; i >= 0; i-- {
-				n := entries[start+i].node
-				if n != nil && !n.isExtra {
-					rawEndByte = n.endByte
-					rawEndPoint = n.endPoint
-					rawHasEnd = true
-					break
-				}
-			}
-			firstRaw := entries[start].node
-			lastRaw := entries[start+reducedEntryCount-1].node
-			if !rawHasStart && firstRaw != nil {
-				rawStartByte = firstRaw.startByte
-				rawStartPoint = firstRaw.startPoint
-			}
-			if !rawHasEnd && lastRaw != nil {
-				rawEndByte = lastRaw.endByte
-				rawEndPoint = lastRaw.endPoint
-			}
-		}
-
-		// Inline child normalization to keep normalized child slices in arena
-		// storage and avoid per-reduce heap allocations.
-		normalizedCount := 0
-		structuralChildIndex := 0
-		for i := 0; i < reducedEntryCount; i++ {
-			n := entries[start+i].node
-			if n == nil {
-				continue
-			}
-			effectiveSymbol := n.symbol
-			if !n.isExtra {
-				if structuralChildIndex < len(aliasSeq) {
-					if alias := aliasSeq[structuralChildIndex]; alias != 0 {
-						effectiveSymbol = alias
-					}
-				}
-				structuralChildIndex++
-			}
-			visible := true
-			if idx := int(effectiveSymbol); idx < len(symbolMeta) {
-				visible = symbolMeta[effectiveSymbol].Visible
-			}
-			if visible {
-				normalizedCount++
-			} else {
-				normalizedCount += len(n.children)
-			}
-		}
-
-		rawFieldIDs := p.buildFieldIDs(childCount, act.ProductionID, arena)
-		children := arena.allocNodeSlice(normalizedCount)
-		var fieldIDs []FieldID
-		if rawFieldIDs != nil {
-			fieldIDs = arena.allocFieldIDSlice(normalizedCount)
-		}
-
-		out := 0
-		structuralChildIndex = 0
-		for i := 0; i < reducedEntryCount; i++ {
-			n := entries[start+i].node
-			if n == nil {
-				continue
-			}
-			var fid FieldID
-			if !n.isExtra {
-				if structuralChildIndex < len(rawFieldIDs) {
-					fid = rawFieldIDs[structuralChildIndex]
-				}
-				if structuralChildIndex < len(aliasSeq) {
-					if alias := aliasSeq[structuralChildIndex]; alias != 0 {
-						n = aliasedNodeInArena(arena, lang, n, alias)
-					}
-				}
-				structuralChildIndex++
-			}
-
-			visible := true
-			if idx := int(n.symbol); idx < len(symbolMeta) {
-				visible = symbolMeta[n.symbol].Visible
-			}
-			if visible {
-				children[out] = n
-				if fieldIDs != nil {
-					fieldIDs[out] = fid
-				}
-				out++
-				continue
-			}
-
-			kids := n.children
-			if len(kids) == 0 {
-				continue
-			}
-			copy(children[out:], kids)
-			if fieldIDs != nil {
-				fieldIDs[out] = fid
-			}
-			out += len(kids)
-		}
-		if out != len(children) {
-			children = children[:out]
-			if fieldIDs != nil {
-				fieldIDs = fieldIDs[:out]
-			}
-		}
-
-		entriesBeforePop := entries
-		trailingStart := start + reducedEntryCount
-		trailingEnd := start + actualEntryCount
-
-		// Pop all reduced entries in one step after collection.
-		if !s.truncate(start) {
-			s.dead = true
-			return
-		}
-
-		named := p.isNamedSymbol(act.Symbol)
-		parent := newParentNodeInArena(arena, act.Symbol, named, children, fieldIDs, act.ProductionID)
-		shouldUseRawSpan := len(children) == 0
-		if !shouldUseRawSpan && lang != nil && lang.Name == "yaml" {
-			shouldUseRawSpan = true
-		}
-		if !shouldUseRawSpan && int(act.Symbol) < len(lang.SymbolNames) && lang.SymbolNames[act.Symbol] == "statement_list" {
-			shouldUseRawSpan = true
-		}
-		if shouldUseRawSpan && reducedEntryCount > 0 {
-			parent.startByte = rawStartByte
-			parent.endByte = rawEndByte
-			parent.startPoint = rawStartPoint
-			parent.endPoint = rawEndPoint
-		}
-		*nodeCount++
-
-		gotoState := p.lookupGoto(topState, act.Symbol)
-		targetState := topState
-		if gotoState != 0 {
-			targetState = gotoState
-		}
-		parent.parseState = targetState
-		s.push(targetState, parent, entryScratch, gssScratch)
-		for i := trailingStart; i < trailingEnd; i++ {
-			extra := entriesBeforePop[i].node
-			if extra == nil {
-				continue
-			}
-			extra.parseState = targetState
-			s.push(targetState, extra, entryScratch, gssScratch)
-		}
-
-		s.score += int(act.DynamicPrecedence)
-		*anyReduced = true
+		p.applyReduceAction(s, act, anyReduced, nodeCount, arena, entryScratch, gssScratch, entries)
 
 	case ParseActionAccept:
 		s.accepted = true
@@ -1497,6 +1235,246 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 		s.push(recoverState, errNode, entryScratch, gssScratch)
 		*nodeCount++
 	}
+}
+
+type reduceRange struct {
+	start      int
+	reducedEnd int
+	actualEnd  int
+	topState   StateID
+}
+
+type reduceRawSpan struct {
+	startByte  uint32
+	endByte    uint32
+	startPoint Point
+	endPoint   Point
+}
+
+func computeReduceRange(entries []stackEntry, childCount int) (reduceRange, bool) {
+	start := len(entries)
+	nonExtraFound := 0
+	for nonExtraFound < childCount && start > 1 {
+		start--
+		if entries[start].node != nil && !entries[start].node.isExtra {
+			nonExtraFound++
+		}
+	}
+	if nonExtraFound < childCount {
+		return reduceRange{}, false
+	}
+
+	actualEnd := len(entries)
+	reducedEnd := actualEnd
+	for i := actualEnd - 1; i >= start; i-- {
+		n := entries[i].node
+		if n == nil || !n.isExtra {
+			break
+		}
+		reducedEnd--
+	}
+	return reduceRange{
+		start:      start,
+		reducedEnd: reducedEnd,
+		actualEnd:  actualEnd,
+		topState:   entries[start-1].state,
+	}, true
+}
+
+func computeReduceRawSpan(entries []stackEntry, start, end int) reduceRawSpan {
+	span := reduceRawSpan{}
+	if end <= start {
+		return span
+	}
+
+	foundStart := false
+	for i := start; i < end; i++ {
+		n := entries[i].node
+		if n != nil && !n.isExtra {
+			span.startByte = n.startByte
+			span.startPoint = n.startPoint
+			foundStart = true
+			break
+		}
+	}
+
+	foundEnd := false
+	for i := end - 1; i >= start; i-- {
+		n := entries[i].node
+		if n != nil && !n.isExtra {
+			span.endByte = n.endByte
+			span.endPoint = n.endPoint
+			foundEnd = true
+			break
+		}
+	}
+
+	firstRaw := entries[start].node
+	lastRaw := entries[end-1].node
+	if !foundStart && firstRaw != nil {
+		span.startByte = firstRaw.startByte
+		span.startPoint = firstRaw.startPoint
+	}
+	if !foundEnd && lastRaw != nil {
+		span.endByte = lastRaw.endByte
+		span.endPoint = lastRaw.endPoint
+	}
+	return span
+}
+
+func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCount int, productionID uint16, arena *nodeArena) ([]*Node, []FieldID) {
+	lang := p.language
+	symbolMeta := lang.SymbolMetadata
+
+	var aliasSeq []Symbol
+	if pid := int(productionID); pid >= 0 && pid < len(lang.AliasSequences) {
+		aliasSeq = lang.AliasSequences[pid]
+	}
+
+	normalizedCount := 0
+	structuralChildIndex := 0
+	for i := start; i < end; i++ {
+		n := entries[i].node
+		if n == nil {
+			continue
+		}
+		effectiveSymbol := n.symbol
+		if !n.isExtra {
+			if structuralChildIndex < len(aliasSeq) {
+				if alias := aliasSeq[structuralChildIndex]; alias != 0 {
+					effectiveSymbol = alias
+				}
+			}
+			structuralChildIndex++
+		}
+		visible := true
+		if idx := int(effectiveSymbol); idx < len(symbolMeta) {
+			visible = symbolMeta[effectiveSymbol].Visible
+		}
+		if visible {
+			normalizedCount++
+		} else {
+			normalizedCount += len(n.children)
+		}
+	}
+
+	rawFieldIDs := p.buildFieldIDs(childCount, productionID, arena)
+	children := arena.allocNodeSlice(normalizedCount)
+	var fieldIDs []FieldID
+	if rawFieldIDs != nil {
+		fieldIDs = arena.allocFieldIDSlice(normalizedCount)
+	}
+
+	out := 0
+	structuralChildIndex = 0
+	for i := start; i < end; i++ {
+		n := entries[i].node
+		if n == nil {
+			continue
+		}
+		var fid FieldID
+		if !n.isExtra {
+			if structuralChildIndex < len(rawFieldIDs) {
+				fid = rawFieldIDs[structuralChildIndex]
+			}
+			if structuralChildIndex < len(aliasSeq) {
+				if alias := aliasSeq[structuralChildIndex]; alias != 0 {
+					n = aliasedNodeInArena(arena, lang, n, alias)
+				}
+			}
+			structuralChildIndex++
+		}
+
+		visible := true
+		if idx := int(n.symbol); idx < len(symbolMeta) {
+			visible = symbolMeta[n.symbol].Visible
+		}
+		if visible {
+			children[out] = n
+			if fieldIDs != nil {
+				fieldIDs[out] = fid
+			}
+			out++
+			continue
+		}
+
+		kids := n.children
+		if len(kids) == 0 {
+			continue
+		}
+		copy(children[out:], kids)
+		if fieldIDs != nil {
+			fieldIDs[out] = fid
+		}
+		out += len(kids)
+	}
+	if out != len(children) {
+		children = children[:out]
+		if fieldIDs != nil {
+			fieldIDs = fieldIDs[:out]
+		}
+	}
+	return children, fieldIDs
+}
+
+func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, entries []stackEntry) {
+	childCount := int(act.ChildCount)
+	window, ok := computeReduceRange(entries, childCount)
+	if !ok {
+		// Not enough stack entries — kill this stack version.
+		s.dead = true
+		return
+	}
+
+	span := computeReduceRawSpan(entries, window.start, window.reducedEnd)
+	children, fieldIDs := p.buildReduceChildren(entries, window.start, window.reducedEnd, childCount, act.ProductionID, arena)
+
+	entriesBeforePop := entries
+	trailingStart := window.reducedEnd
+	trailingEnd := window.actualEnd
+
+	// Pop all reduced entries in one step after collection.
+	if !s.truncate(window.start) {
+		s.dead = true
+		return
+	}
+
+	lang := p.language
+	named := p.isNamedSymbol(act.Symbol)
+	parent := newParentNodeInArena(arena, act.Symbol, named, children, fieldIDs, act.ProductionID)
+	shouldUseRawSpan := len(children) == 0
+	if !shouldUseRawSpan && lang != nil && lang.Name == "yaml" {
+		shouldUseRawSpan = true
+	}
+	if !shouldUseRawSpan && int(act.Symbol) < len(lang.SymbolNames) && lang.SymbolNames[act.Symbol] == "statement_list" {
+		shouldUseRawSpan = true
+	}
+	if shouldUseRawSpan && window.reducedEnd > window.start {
+		parent.startByte = span.startByte
+		parent.endByte = span.endByte
+		parent.startPoint = span.startPoint
+		parent.endPoint = span.endPoint
+	}
+	*nodeCount++
+
+	gotoState := p.lookupGoto(window.topState, act.Symbol)
+	targetState := window.topState
+	if gotoState != 0 {
+		targetState = gotoState
+	}
+	parent.parseState = targetState
+	s.push(targetState, parent, entryScratch, gssScratch)
+	for i := trailingStart; i < trailingEnd; i++ {
+		extra := entriesBeforePop[i].node
+		if extra == nil {
+			continue
+		}
+		extra.parseState = targetState
+		s.push(targetState, extra, entryScratch, gssScratch)
+	}
+
+	s.score += int(act.DynamicPrecedence)
+	*anyReduced = true
 }
 
 func recoverAction(entry *ParseActionEntry) (ParseAction, bool) {
@@ -1626,22 +1604,7 @@ func (p *Parser) buildResultFromGLR(stacks []glrStack, source []byte, arena *nod
 
 	best := 0
 	for i := 1; i < len(stacks); i++ {
-		if stacks[i].dead && !stacks[best].dead {
-			continue
-		}
-		if !stacks[i].dead && stacks[best].dead {
-			best = i
-			continue
-		}
-		if stacks[i].accepted && !stacks[best].accepted {
-			best = i
-			continue
-		}
-		if stacks[i].score > stacks[best].score {
-			best = i
-			continue
-		}
-		if stacks[i].score == stacks[best].score && stacks[i].depth() > stacks[best].depth() {
+		if stackCompare(stacks[i], stacks[best]) > 0 {
 			best = i
 		}
 	}
@@ -1876,9 +1839,13 @@ func (p *Parser) buildResult(stack []stackEntry, source []byte, arena *nodeArena
 				copy(padded[leadingCount:], realRoot.fieldIDs)
 				realRoot.fieldIDs = padded
 			}
-			// Update parent pointers for folded extras.
-			for _, e := range extras {
-				e.parent = realRoot
+			// Update parent pointers and child indexes for folded extras.
+			for i, c := range realRoot.children {
+				if c == nil {
+					continue
+				}
+				c.parent = realRoot
+				c.childIndex = i
 			}
 			// Extend root range to cover the extras.
 			for _, e := range extras {

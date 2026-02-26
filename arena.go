@@ -210,6 +210,9 @@ func (a *nodeArena) ensureNodeCapacity(min int) {
 	if a == nil || min <= len(a.nodes) {
 		return
 	}
+	if a.used > 0 {
+		panic("ensureNodeCapacity called after arena allocations started")
+	}
 	newCap := len(a.nodes)
 	if newCap < minArenaNodeCap {
 		newCap = minArenaNodeCap

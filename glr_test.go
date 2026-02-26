@@ -202,3 +202,157 @@ func TestGLRForkPicksHigherPrecedence(t *testing.T) {
 			root.Symbol(), root.Type(lang))
 	}
 }
+
+func buildForkLanguage(precedences []int16, childCounts []uint8) *Language {
+	if len(precedences) == 0 {
+		panic("buildForkLanguage requires at least one reduce action")
+	}
+	if len(precedences) != len(childCounts) {
+		panic("buildForkLanguage precedence and childCount lengths must match")
+	}
+
+	symbolCount := 2 + len(precedences)
+	symbolNames := make([]string, symbolCount)
+	symbolMeta := make([]SymbolMetadata, symbolCount)
+	symbolNames[0] = "EOF"
+	symbolMeta[0] = SymbolMetadata{Name: "EOF"}
+	symbolNames[1] = "x"
+	symbolMeta[1] = SymbolMetadata{Name: "x", Visible: true, Named: true}
+	for i := range precedences {
+		name := string(rune('A' + i))
+		symbolNames[2+i] = name
+		symbolMeta[2+i] = SymbolMetadata{Name: name, Visible: true, Named: true}
+	}
+
+	multi := make([]ParseAction, 0, len(precedences))
+	for i, prec := range precedences {
+		multi = append(multi, ParseAction{
+			Type:              ParseActionReduce,
+			Symbol:            Symbol(2 + i),
+			ChildCount:        childCounts[i],
+			ProductionID:      uint16(i),
+			DynamicPrecedence: prec,
+		})
+	}
+
+	// Parse action table:
+	//   0: error/no-action
+	//   1: shift x -> state 1
+	//   2: multi-reduce fork entry
+	//   3..(3+n-1): goto actions for non-terminals -> state 2
+	//   acceptIdx: accept action
+	parseActions := make([]ParseActionEntry, 0, 4+len(precedences))
+	parseActions = append(parseActions, ParseActionEntry{Actions: nil})                                               // 0
+	parseActions = append(parseActions, ParseActionEntry{Actions: []ParseAction{{Type: ParseActionShift, State: 1}}}) // 1
+	parseActions = append(parseActions, ParseActionEntry{Actions: multi})                                             // 2
+	for range precedences {
+		parseActions = append(parseActions, ParseActionEntry{Actions: []ParseAction{{Type: ParseActionShift, State: 2}}})
+	}
+	acceptIdx := len(parseActions)
+	parseActions = append(parseActions, ParseActionEntry{Actions: []ParseAction{{Type: ParseActionAccept}}})
+
+	rowWidth := symbolCount
+	state0 := make([]uint16, rowWidth)
+	state0[1] = 1 // x -> shift
+	for i := range precedences {
+		state0[2+i] = uint16(3 + i) // goto for each non-terminal
+	}
+	state1 := make([]uint16, rowWidth)
+	state1[0] = 2 // EOF -> multi reduce
+	state1[1] = 2 // x   -> multi reduce
+	state2 := make([]uint16, rowWidth)
+	state2[0] = uint16(acceptIdx) // EOF -> accept
+	state3 := make([]uint16, rowWidth)
+
+	return &Language{
+		Name:               "fork_language",
+		SymbolCount:        uint32(symbolCount),
+		TokenCount:         2,
+		ExternalTokenCount: 0,
+		StateCount:         4,
+		LargeStateCount:    0,
+		FieldCount:         0,
+		ProductionIDCount:  uint32(len(precedences)),
+		SymbolNames:        symbolNames,
+		SymbolMetadata:     symbolMeta,
+		FieldNames:         []string{""},
+		ParseActions:       parseActions,
+		ParseTable:         [][]uint16{state0, state1, state2, state3},
+		LexModes:           []LexMode{{LexState: 0}, {LexState: 0}, {LexState: 0}, {LexState: 0}},
+		LexStates: []LexState{
+			{
+				AcceptToken: 0,
+				Skip:        false,
+				Default:     -1,
+				EOF:         -1,
+				Transitions: []LexTransition{
+					{Lo: 'x', Hi: 'x', NextState: 1},
+					{Lo: ' ', Hi: ' ', NextState: 2},
+				},
+			},
+			{
+				AcceptToken: 1,
+				Skip:        false,
+				Default:     -1,
+				EOF:         -1,
+			},
+			{
+				AcceptToken: 0,
+				Skip:        true,
+				Default:     -1,
+				EOF:         -1,
+			},
+		},
+	}
+}
+
+func TestGLRForkEqualPrecedenceTieKeepsFirstAction(t *testing.T) {
+	lang := buildForkLanguage([]int16{0, 0}, []uint8{1, 1})
+	parser := NewParser(lang)
+	tree := mustParse(t, parser, []byte("x"))
+	root := tree.RootNode()
+	if root == nil {
+		t.Fatal("tree has nil root")
+	}
+	if root.Symbol() != 2 {
+		t.Fatalf("equal-precedence tie should keep first reduce symbol 2, got %d (%s)", root.Symbol(), root.Type(lang))
+	}
+}
+
+func TestGLRForkHandlesThreeAlternatives(t *testing.T) {
+	lang := buildForkLanguage([]int16{0, 5, 3}, []uint8{1, 1, 1})
+	parser := NewParser(lang)
+	tree := mustParse(t, parser, []byte("x"))
+	root := tree.RootNode()
+	if root == nil {
+		t.Fatal("tree has nil root")
+	}
+	if root.Symbol() != 3 {
+		t.Fatalf("three-way fork should pick highest precedence symbol 3, got %d (%s)", root.Symbol(), root.Type(lang))
+	}
+}
+
+func TestGLRForkPrunesErroringAlternative(t *testing.T) {
+	lang := buildForkLanguage([]int16{10, 1}, []uint8{2, 1})
+	parser := NewParser(lang)
+	tree := mustParse(t, parser, []byte("x"))
+	root := tree.RootNode()
+	if root == nil {
+		t.Fatal("tree has nil root")
+	}
+	// First branch requires two non-extra children and should die.
+	if root.Symbol() != 3 {
+		t.Fatalf("error-pruned fork should keep surviving symbol 3, got %d (%s)", root.Symbol(), root.Type(lang))
+	}
+}
+
+func TestMergeStacksAllDeadReturnsEmpty(t *testing.T) {
+	s1 := newGLRStack(StateID(1))
+	s2 := newGLRStack(StateID(2))
+	s1.dead = true
+	s2.dead = true
+	merged := mergeStacks([]glrStack{s1, s2})
+	if len(merged) != 0 {
+		t.Fatalf("expected all-dead merge to return empty, got %d", len(merged))
+	}
+}

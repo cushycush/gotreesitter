@@ -162,8 +162,7 @@ func (s gssStack) materialize(dst []stackEntry) []stackEntry {
 		i--
 	}
 	if i >= 0 {
-		// Corrupt depth metadata; return the traversed suffix.
-		return dst[i+1:]
+		panic("gssStack.materialize: corrupt depth metadata")
 	}
 	return dst
 }

@@ -30,6 +30,7 @@ type Node struct {
 	dirty        bool // set by Tree.Edit for nodes touched by edits
 	productionID uint16
 	parent       *Node
+	childIndex   int
 	ownerArena   *nodeArena
 }
 
@@ -101,10 +102,7 @@ func (n *Node) NextSibling() *Node {
 		return nil
 	}
 	siblings := n.parent.children
-	for i := range siblings {
-		if siblings[i] != n {
-			continue
-		}
+	if i := n.childIndex; i >= 0 && i < len(siblings) && siblings[i] == n {
 		if i+1 < len(siblings) {
 			return siblings[i+1]
 		}
@@ -120,10 +118,7 @@ func (n *Node) PrevSibling() *Node {
 		return nil
 	}
 	siblings := n.parent.children
-	for i := range siblings {
-		if siblings[i] != n {
-			continue
-		}
+	if i := n.childIndex; i >= 0 && i < len(siblings) && siblings[i] == n {
 		if i > 0 {
 			return siblings[i-1]
 		}
@@ -325,25 +320,14 @@ func NewLeafNode(sym Symbol, named bool, startByte, endByte uint32, startPoint, 
 		endByte:    endByte,
 		startPoint: startPoint,
 		endPoint:   endPoint,
+		childIndex: -1,
 	}
 }
 
-// NewParentNode creates a non-terminal node with children.
-// It sets parent pointers on all children and computes byte/point spans
-// from the first and last children. If any child has an error, the parent
-// is marked as having an error too.
-func NewParentNode(sym Symbol, named bool, children []*Node, fieldIDs []FieldID, productionID uint16) *Node {
-	n := &Node{
-		symbol:       sym,
-		isNamed:      named,
-		children:     children,
-		fieldIDs:     fieldIDs,
-		productionID: productionID,
-	}
-
+func populateParentNode(n *Node, children []*Node) {
 	switch len(children) {
 	case 0:
-		return n
+		return
 	case 1:
 		c0 := children[0]
 		n.startByte = c0.startByte
@@ -351,8 +335,9 @@ func NewParentNode(sym Symbol, named bool, children []*Node, fieldIDs []FieldID,
 		n.startPoint = c0.startPoint
 		n.endPoint = c0.endPoint
 		c0.parent = n
+		c0.childIndex = 0
 		n.hasError = c0.hasError
-		return n
+		return
 	case 2:
 		c0 := children[0]
 		c1 := children[1]
@@ -361,9 +346,11 @@ func NewParentNode(sym Symbol, named bool, children []*Node, fieldIDs []FieldID,
 		n.startPoint = c0.startPoint
 		n.endPoint = c1.endPoint
 		c0.parent = n
+		c0.childIndex = 0
 		c1.parent = n
+		c1.childIndex = 1
 		n.hasError = c0.hasError || c1.hasError
-		return n
+		return
 	default:
 		first := children[0]
 		last := children[len(children)-1]
@@ -372,15 +359,40 @@ func NewParentNode(sym Symbol, named bool, children []*Node, fieldIDs []FieldID,
 		n.startPoint = first.startPoint
 		n.endPoint = last.endPoint
 
-		for _, c := range children {
+		for i, c := range children {
 			c.parent = n
+			c.childIndex = i
 			if c.hasError {
 				n.hasError = true
 			}
 		}
 	}
+}
 
+func newParentNode(arena *nodeArena, sym Symbol, named bool, children []*Node, fieldIDs []FieldID, productionID uint16) *Node {
+	var n *Node
+	if arena == nil {
+		n = &Node{}
+	} else {
+		n = arena.allocNode()
+		n.ownerArena = arena
+	}
+	n.symbol = sym
+	n.isNamed = named
+	n.children = children
+	n.fieldIDs = fieldIDs
+	n.productionID = productionID
+	n.childIndex = -1
+	populateParentNode(n, children)
 	return n
+}
+
+// NewParentNode creates a non-terminal node with children.
+// It sets parent pointers on all children and computes byte/point spans
+// from the first and last children. If any child has an error, the parent
+// is marked as having an error too.
+func NewParentNode(sym Symbol, named bool, children []*Node, fieldIDs []FieldID, productionID uint16) *Node {
+	return newParentNode(nil, sym, named, children, fieldIDs, productionID)
 }
 
 func symbolVisible(lang *Language, sym Symbol) bool {
@@ -401,62 +413,13 @@ func newLeafNodeInArena(arena *nodeArena, sym Symbol, named bool, startByte, end
 	n.endByte = endByte
 	n.startPoint = startPoint
 	n.endPoint = endPoint
+	n.childIndex = -1
 	n.ownerArena = arena
 	return n
 }
 
 func newParentNodeInArena(arena *nodeArena, sym Symbol, named bool, children []*Node, fieldIDs []FieldID, productionID uint16) *Node {
-	if arena == nil {
-		return NewParentNode(sym, named, children, fieldIDs, productionID)
-	}
-	n := arena.allocNode()
-	n.symbol = sym
-	n.isNamed = named
-	n.children = children
-	n.fieldIDs = fieldIDs
-	n.productionID = productionID
-	n.ownerArena = arena
-
-	switch len(children) {
-	case 0:
-		return n
-	case 1:
-		c0 := children[0]
-		n.startByte = c0.startByte
-		n.endByte = c0.endByte
-		n.startPoint = c0.startPoint
-		n.endPoint = c0.endPoint
-		c0.parent = n
-		n.hasError = c0.hasError
-		return n
-	case 2:
-		c0 := children[0]
-		c1 := children[1]
-		n.startByte = c0.startByte
-		n.endByte = c1.endByte
-		n.startPoint = c0.startPoint
-		n.endPoint = c1.endPoint
-		c0.parent = n
-		c1.parent = n
-		n.hasError = c0.hasError || c1.hasError
-		return n
-	default:
-		first := children[0]
-		last := children[len(children)-1]
-		n.startByte = first.startByte
-		n.endByte = last.endByte
-		n.startPoint = first.startPoint
-		n.endPoint = last.endPoint
-
-		for _, c := range children {
-			c.parent = n
-			if c.hasError {
-				n.hasError = true
-			}
-		}
-	}
-
-	return n
+	return newParentNode(arena, sym, named, children, fieldIDs, productionID)
 }
 
 // Tree holds a complete syntax tree along with its source text and language.
@@ -493,19 +456,24 @@ func uniqueArenas(arenas []*nodeArena, exclude *nodeArena) []*nodeArena {
 	if len(arenas) == 0 {
 		return nil
 	}
-	seen := make(map[*nodeArena]struct{}, len(arenas))
 	out := make([]*nodeArena, 0, len(arenas))
-	if exclude != nil {
-		seen[exclude] = struct{}{}
-	}
 	for _, a := range arenas {
 		if a == nil {
 			continue
 		}
-		if _, ok := seen[a]; ok {
+		if a == exclude {
 			continue
 		}
-		seen[a] = struct{}{}
+		duplicate := false
+		for _, existing := range out {
+			if existing == a {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
 		out = append(out, a)
 	}
 	if len(out) == 0 {
@@ -541,6 +509,7 @@ func (t *Tree) Release() {
 		t.arena.Release()
 		t.arena = nil
 	}
+	t.root = nil
 }
 
 // RootNode returns the tree's root node.

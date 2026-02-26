@@ -998,3 +998,78 @@ func TestFieldIDsAlignAfterExtrasFold(t *testing.T) {
 		t.Fatalf("after fold: parameters field should return paramList (sym 13), got sym %d", got.Symbol())
 	}
 }
+
+func TestParserIncrementalArithmeticEditMatchesFreshParse(t *testing.T) {
+	lang := buildArithmeticLanguage()
+	parser := NewParser(lang)
+
+	oldSrc := []byte("1+2")
+	oldTree := mustParse(t, parser, oldSrc)
+
+	newSrc := []byte("1+3")
+	edit := InputEdit{
+		StartByte:   2,
+		OldEndByte:  3,
+		NewEndByte:  3,
+		StartPoint:  Point{Row: 0, Column: 2},
+		OldEndPoint: Point{Row: 0, Column: 3},
+		NewEndPoint: Point{Row: 0, Column: 3},
+	}
+	oldTree.Edit(edit)
+
+	incrTree := mustParseIncremental(t, parser, newSrc, oldTree)
+	freshTree := mustParse(t, parser, newSrc)
+
+	incrRoot := incrTree.RootNode()
+	freshRoot := freshTree.RootNode()
+	if incrRoot == nil || freshRoot == nil {
+		t.Fatal("expected non-nil roots")
+	}
+	if got, want := incrRoot.SExpr(lang), freshRoot.SExpr(lang); got != want {
+		t.Fatalf("incremental SExpr mismatch:\n  got:  %s\n  want: %s", got, want)
+	}
+	if incrRoot.HasError() != freshRoot.HasError() {
+		t.Fatalf("incremental HasError=%v, fresh HasError=%v", incrRoot.HasError(), freshRoot.HasError())
+	}
+}
+
+func TestParserIncrementalArithmeticEditThenUndoMatchesFreshParse(t *testing.T) {
+	lang := buildArithmeticLanguage()
+	parser := NewParser(lang)
+
+	originalSrc := []byte("1+2")
+	tree := mustParse(t, parser, originalSrc)
+
+	editedSrc := []byte("1+9")
+	forwardEdit := InputEdit{
+		StartByte:   2,
+		OldEndByte:  3,
+		NewEndByte:  3,
+		StartPoint:  Point{Row: 0, Column: 2},
+		OldEndPoint: Point{Row: 0, Column: 3},
+		NewEndPoint: Point{Row: 0, Column: 3},
+	}
+	tree.Edit(forwardEdit)
+	tree = mustParseIncremental(t, parser, editedSrc, tree)
+
+	undoEdit := InputEdit{
+		StartByte:   2,
+		OldEndByte:  3,
+		NewEndByte:  3,
+		StartPoint:  Point{Row: 0, Column: 2},
+		OldEndPoint: Point{Row: 0, Column: 3},
+		NewEndPoint: Point{Row: 0, Column: 3},
+	}
+	tree.Edit(undoEdit)
+	incrUndo := mustParseIncremental(t, parser, originalSrc, tree)
+	freshUndo := mustParse(t, parser, originalSrc)
+
+	incrRoot := incrUndo.RootNode()
+	freshRoot := freshUndo.RootNode()
+	if incrRoot == nil || freshRoot == nil {
+		t.Fatal("expected non-nil roots")
+	}
+	if got, want := incrRoot.SExpr(lang), freshRoot.SExpr(lang); got != want {
+		t.Fatalf("incremental undo SExpr mismatch:\n  got:  %s\n  want: %s", got, want)
+	}
+}

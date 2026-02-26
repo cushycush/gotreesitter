@@ -339,20 +339,46 @@ func stackEntryNodesEquivalent(a, b *Node) bool {
 	return true
 }
 
-func isBetterStack(candidate, current glrStack) bool {
-	if candidate.accepted != current.accepted {
-		return candidate.accepted
+// stackCompare defines the total ordering for stack preference.
+// Positive means `a` is preferred over `b`, negative means worse.
+func stackCompare(a, b glrStack) int {
+	if a.dead != b.dead {
+		if a.dead {
+			return -1
+		}
+		return 1
 	}
-	if candidate.score != current.score {
-		return candidate.score > current.score
+	if a.accepted != b.accepted {
+		if a.accepted {
+			return 1
+		}
+		return -1
 	}
-	if candidate.depth() != current.depth() {
-		return candidate.depth() > current.depth()
+	if a.score != b.score {
+		if a.score > b.score {
+			return 1
+		}
+		return -1
 	}
-	if candidate.shifted != current.shifted {
-		return !candidate.shifted && current.shifted
+	if a.depth() != b.depth() {
+		if a.depth() > b.depth() {
+			return 1
+		}
+		return -1
 	}
-	return false
+	if a.shifted != b.shifted {
+		if !a.shifted {
+			return 1
+		}
+		return -1
+	}
+	if a.byteOffset != b.byteOffset {
+		if a.byteOffset > b.byteOffset {
+			return 1
+		}
+		return -1
+	}
+	return 0
 }
 
 func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrStack {
@@ -392,7 +418,7 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 			sameKeyCount++
 			existing := &result[j]
 			if !stackEquivalent(*existing, stack) {
-				if worstIndex == -1 || isBetterStack(result[worstIndex], *existing) {
+				if worstIndex == -1 || stackCompare(result[worstIndex], *existing) > 0 {
 					worstIndex = j
 				}
 				continue
@@ -401,7 +427,7 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 			break
 		}
 		if duplicateIndex >= 0 {
-			if isBetterStack(stack, result[duplicateIndex]) {
+			if stackCompare(stack, result[duplicateIndex]) > 0 {
 				result[duplicateIndex] = stack
 			}
 			continue
@@ -415,7 +441,7 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 
 		// Per-key alternative budget reached: replace the weakest
 		// retained candidate only if this stack is better.
-		if worstIndex >= 0 && isBetterStack(stack, result[worstIndex]) {
+		if worstIndex >= 0 && stackCompare(stack, result[worstIndex]) > 0 {
 			result[worstIndex] = stack
 		}
 	}
