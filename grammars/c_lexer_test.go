@@ -118,8 +118,14 @@ func TestParseCHeaderGuard(t *testing.T) {
 	lang := CLanguage()
 	parser := gotreesitter.NewParser(lang)
 	src := []byte("#ifndef FOO_H\n#define FOO_H\n\nint x;\n\n#endif\n")
-	ts, _ := NewCTokenSource(src, lang)
-	tree, _ := parser.ParseWithTokenSource(src, ts)
+	ts, err := NewCTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewCTokenSource failed: %v", err)
+	}
+	tree, err := parser.ParseWithTokenSource(src, ts)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
 	root := tree.RootNode()
 	if root.HasError() {
 		t.Fatalf("header guard parse has errors")
@@ -130,8 +136,14 @@ func TestParseCDefineWithExpression(t *testing.T) {
 	lang := CLanguage()
 	parser := gotreesitter.NewParser(lang)
 	src := []byte("#define FOO (1 + 2)\n")
-	ts, _ := NewCTokenSource(src, lang)
-	tree, _ := parser.ParseWithTokenSource(src, ts)
+	ts, err := NewCTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewCTokenSource failed: %v", err)
+	}
+	tree, err := parser.ParseWithTokenSource(src, ts)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
 	root := tree.RootNode()
 	if root.HasError() {
 		t.Fatalf("define-with-expression parse has errors")

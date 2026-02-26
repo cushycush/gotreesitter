@@ -18,6 +18,37 @@ func TestTreeCursorNew(t *testing.T) {
 	}
 }
 
+func TestTreeCursorNewWithNilNodeIsSafe(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+	c := NewTreeCursor(nil, tree)
+	if c.CurrentNode() != nil {
+		t.Fatal("CurrentNode should be nil")
+	}
+	if c.GotoFirstChild() {
+		t.Fatal("GotoFirstChild should fail on nil node cursor")
+	}
+	if c.GotoNextSibling() {
+		t.Fatal("GotoNextSibling should fail on nil node cursor")
+	}
+	if c.GotoChildByFieldID(1) {
+		t.Fatal("GotoChildByFieldID should fail on nil node cursor")
+	}
+}
+
+func TestTreeCursorFromNilTreeIsSafe(t *testing.T) {
+	c := NewTreeCursorFromTree(nil)
+	if c.CurrentNode() != nil {
+		t.Fatal("CurrentNode should be nil")
+	}
+	if c.Depth() != 0 {
+		t.Fatalf("Depth should be 0, got %d", c.Depth())
+	}
+	if c.GotoFirstChild() {
+		t.Fatal("GotoFirstChild should fail for nil tree cursor")
+	}
+}
+
 func TestTreeCursorGotoFirstChild(t *testing.T) {
 	lang := queryTestLanguage()
 	tree := buildSimpleTree(lang)
@@ -287,6 +318,17 @@ func TestTreeCursorGotoChildByFieldName(t *testing.T) {
 	}
 }
 
+func TestTreeCursorGotoChildByFieldIDZeroSentinel(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+	c := NewTreeCursor(tree.RootNode(), tree)
+	c.GotoFirstChild() // function_declaration
+
+	if c.GotoChildByFieldID(0) {
+		t.Fatal("GotoChildByFieldID(0) should fail; 0 is the no-field sentinel")
+	}
+}
+
 func TestTreeCursorFieldIDAtRoot(t *testing.T) {
 	lang := queryTestLanguage()
 	tree := buildSimpleTree(lang)
@@ -393,7 +435,7 @@ func TestTreeCursorGotoLastNamedChild(t *testing.T) {
 	}
 
 	// Test on parameter_list which has only anonymous children: "(" and ")"
-	c.GotoParent()               // back to function_declaration
+	c.GotoParent()                       // back to function_declaration
 	c.GotoChildByFieldName("parameters") // parameter_list
 	if c.GotoFirstNamedChild() {
 		t.Fatal("GotoFirstNamedChild should return false on parameter_list with only anonymous children")
@@ -414,8 +456,8 @@ func TestTreeCursorGotoFirstChildForByte(t *testing.T) {
 	c.GotoFirstChild() // function_declaration
 
 	// Byte 6 is inside "main" (5-9), so first child where endByte > 6 is identifier
-	if !c.GotoFirstChildForByte(6) {
-		t.Fatal("GotoFirstChildForByte(6) should succeed")
+	if idx := c.GotoFirstChildForByte(6); idx != 1 {
+		t.Fatalf("GotoFirstChildForByte(6) index: got %d, want 1", idx)
 	}
 	if c.CurrentNode().Symbol() != Symbol(1) {
 		t.Fatalf("expected identifier (1), got %d", c.CurrentNode().Symbol())
@@ -423,8 +465,8 @@ func TestTreeCursorGotoFirstChildForByte(t *testing.T) {
 
 	// Go back and try byte 0, should land on "func" keyword
 	c.GotoParent()
-	if !c.GotoFirstChildForByte(0) {
-		t.Fatal("GotoFirstChildForByte(0) should succeed")
+	if idx := c.GotoFirstChildForByte(0); idx != 0 {
+		t.Fatalf("GotoFirstChildForByte(0) index: got %d, want 0", idx)
 	}
 	if c.CurrentNode().Symbol() != Symbol(8) {
 		t.Fatalf("expected func keyword (8), got %d", c.CurrentNode().Symbol())
@@ -432,8 +474,8 @@ func TestTreeCursorGotoFirstChildForByte(t *testing.T) {
 
 	// Try byte 15, should land on block (which contains number at 14-16)
 	c.GotoParent()
-	if !c.GotoFirstChildForByte(15) {
-		t.Fatal("GotoFirstChildForByte(15) should succeed")
+	if idx := c.GotoFirstChildForByte(15); idx != 3 {
+		t.Fatalf("GotoFirstChildForByte(15) index: got %d, want 3", idx)
 	}
 	if c.CurrentNode().Symbol() != Symbol(14) {
 		t.Fatalf("expected block (14), got %d", c.CurrentNode().Symbol())
@@ -448,14 +490,14 @@ func TestTreeCursorGotoFirstChildForByteOutOfRange(t *testing.T) {
 	c.GotoFirstChild() // function_declaration
 
 	// Byte way past end of all children
-	if c.GotoFirstChildForByte(9999) {
-		t.Fatal("GotoFirstChildForByte with out-of-range byte should return false")
+	if idx := c.GotoFirstChildForByte(9999); idx != -1 {
+		t.Fatalf("GotoFirstChildForByte with out-of-range byte should return -1, got %d", idx)
 	}
 
 	// Leaf node
 	c.GotoFirstChild() // "func" keyword
-	if c.GotoFirstChildForByte(0) {
-		t.Fatal("GotoFirstChildForByte on leaf should return false")
+	if idx := c.GotoFirstChildForByte(0); idx != -1 {
+		t.Fatalf("GotoFirstChildForByte on leaf should return -1, got %d", idx)
 	}
 }
 
@@ -468,8 +510,8 @@ func TestTreeCursorGotoFirstChildForPoint(t *testing.T) {
 	c.GotoFirstChild() // function_declaration
 
 	// Point at column 6 (inside "main") should land on identifier
-	if !c.GotoFirstChildForPoint(Point{Row: 0, Column: 6}) {
-		t.Fatal("GotoFirstChildForPoint should succeed")
+	if idx := c.GotoFirstChildForPoint(Point{Row: 0, Column: 6}); idx != 1 {
+		t.Fatalf("GotoFirstChildForPoint index: got %d, want 1", idx)
 	}
 	if c.CurrentNode().Symbol() != Symbol(1) {
 		t.Fatalf("expected identifier (1), got %d", c.CurrentNode().Symbol())
@@ -477,11 +519,77 @@ func TestTreeCursorGotoFirstChildForPoint(t *testing.T) {
 
 	// Point at column 0 should land on "func" keyword
 	c.GotoParent()
-	if !c.GotoFirstChildForPoint(Point{Row: 0, Column: 0}) {
-		t.Fatal("GotoFirstChildForPoint(0,0) should succeed")
+	if idx := c.GotoFirstChildForPoint(Point{Row: 0, Column: 0}); idx != 0 {
+		t.Fatalf("GotoFirstChildForPoint(0,0) index: got %d, want 0", idx)
 	}
 	if c.CurrentNode().Symbol() != Symbol(8) {
 		t.Fatalf("expected func keyword (8), got %d", c.CurrentNode().Symbol())
+	}
+}
+
+func TestTreeCursorGotoFirstChildForByteExactBoundary(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+	c := NewTreeCursor(tree.RootNode(), tree)
+	c.GotoFirstChild() // function_declaration
+
+	// targetByte == endByte of "func" (4) should pick the next child (identifier).
+	if idx := c.GotoFirstChildForByte(4); idx != 1 {
+		t.Fatalf("GotoFirstChildForByte(4) index: got %d, want 1", idx)
+	}
+	if c.CurrentNode().Symbol() != Symbol(1) {
+		t.Fatalf("expected identifier (1), got %d", c.CurrentNode().Symbol())
+	}
+}
+
+func buildMultiRowCursorTree() *Tree {
+	c0 := NewLeafNode(Symbol(1), true, 0, 3, Point{Row: 0, Column: 0}, Point{Row: 0, Column: 3})
+	c1 := NewLeafNode(Symbol(2), true, 4, 8, Point{Row: 1, Column: 0}, Point{Row: 1, Column: 4})
+	c2 := NewLeafNode(Symbol(3), true, 9, 14, Point{Row: 2, Column: 0}, Point{Row: 2, Column: 5})
+	root := NewParentNode(Symbol(4), true, []*Node{c0, c1, c2}, []FieldID{0, 0, 0}, 0)
+	return NewTree(root, []byte("aaa\nbbbb\nccccc"), nil)
+}
+
+func TestTreeCursorGotoFirstChildForPointMultiRow(t *testing.T) {
+	tree := buildMultiRowCursorTree()
+	c := NewTreeCursorFromTree(tree)
+
+	if idx := c.GotoFirstChildForPoint(Point{Row: 1, Column: 1}); idx != 1 {
+		t.Fatalf("GotoFirstChildForPoint(Row1) index: got %d, want 1", idx)
+	}
+	if c.CurrentNode().Symbol() != Symbol(2) {
+		t.Fatalf("expected symbol 2, got %d", c.CurrentNode().Symbol())
+	}
+
+	c.GotoParent()
+	if idx := c.GotoFirstChildForPoint(Point{Row: 0, Column: 3}); idx != 1 {
+		t.Fatalf("GotoFirstChildForPoint(boundary) index: got %d, want 1", idx)
+	}
+}
+
+func TestTreeCursorGotoParentThenGotoNextSibling(t *testing.T) {
+	leafA := NewLeafNode(Symbol(1), true, 0, 1, Point{Row: 0, Column: 0}, Point{Row: 0, Column: 1})
+	leafB := NewLeafNode(Symbol(2), true, 1, 2, Point{Row: 0, Column: 1}, Point{Row: 0, Column: 2})
+	child0 := NewParentNode(Symbol(3), true, []*Node{leafA}, []FieldID{0}, 0)
+	child1 := NewParentNode(Symbol(4), true, []*Node{leafB}, []FieldID{0}, 0)
+	root := NewParentNode(Symbol(5), true, []*Node{child0, child1}, []FieldID{0, 0}, 0)
+	tree := NewTree(root, []byte("ab"), nil)
+	c := NewTreeCursorFromTree(tree)
+
+	if !c.GotoFirstChild() { // child0
+		t.Fatal("GotoFirstChild should succeed")
+	}
+	if !c.GotoFirstChild() { // leafA
+		t.Fatal("GotoFirstChild on child0 should succeed")
+	}
+	if !c.GotoParent() { // back to child0
+		t.Fatal("GotoParent should succeed")
+	}
+	if !c.GotoNextSibling() { // child1
+		t.Fatal("GotoNextSibling after GotoParent should succeed")
+	}
+	if c.CurrentNode().Symbol() != Symbol(4) {
+		t.Fatalf("expected symbol 4, got %d", c.CurrentNode().Symbol())
 	}
 }
 
@@ -509,6 +617,56 @@ func TestTreeCursorReset(t *testing.T) {
 	// Verify navigation still works after reset
 	if !c.GotoFirstChild() {
 		t.Fatal("GotoFirstChild should work after Reset")
+	}
+}
+
+func TestTreeCursorResetZeroValue(t *testing.T) {
+	var c TreeCursor
+	c.Reset(nil)
+	if c.CurrentNode() != nil {
+		t.Fatal("CurrentNode should be nil after Reset(nil)")
+	}
+	if c.Depth() != 0 {
+		t.Fatalf("Depth should be 0, got %d", c.Depth())
+	}
+	if c.GotoFirstChild() {
+		t.Fatal("GotoFirstChild should fail after Reset(nil)")
+	}
+}
+
+func TestTreeCursorResetTree(t *testing.T) {
+	lang := queryTestLanguage()
+	tree1 := buildSimpleTree(lang)
+	tree2 := buildSimpleTree(lang)
+
+	c := NewTreeCursorFromTree(tree1)
+	c.GotoFirstChild()
+	c.GotoFirstChild()
+
+	c.ResetTree(tree2)
+	if c.CurrentNode() != tree2.RootNode() {
+		t.Fatal("ResetTree should place cursor at new tree root")
+	}
+	if c.Depth() != 0 {
+		t.Fatalf("Depth should be 0 after ResetTree, got %d", c.Depth())
+	}
+	if !c.GotoFirstChild() {
+		t.Fatal("GotoFirstChild should work after ResetTree")
+	}
+}
+
+func TestTreeCursorResetTreeNil(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+	c := NewTreeCursorFromTree(tree)
+	c.GotoFirstChild()
+
+	c.ResetTree(nil)
+	if c.CurrentNode() != nil {
+		t.Fatal("CurrentNode should be nil after ResetTree(nil)")
+	}
+	if c.GotoFirstChild() {
+		t.Fatal("GotoFirstChild should fail after ResetTree(nil)")
 	}
 }
 

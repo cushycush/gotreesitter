@@ -395,9 +395,114 @@ func main() {
 		}
 
 		tree.Edit(edit)
-		tree, _ = parser.ParseIncrementalWithTokenSource(src, tree, mustGoTokenSource(t, src, lang))
+		tree, err = parser.ParseIncrementalWithTokenSource(src, tree, mustGoTokenSource(t, src, lang))
+		if err != nil {
+			t.Fatalf("iteration %d: incremental parse failed: %v", i, err)
+		}
 		if tree.RootNode() == nil {
 			t.Fatalf("iteration %d: incremental parse returned nil root", i)
 		}
 	}
+}
+
+func TestParseGoIncrementalRangeClauseReturnEdit(t *testing.T) {
+	lang := grammars.GoLanguage()
+
+	parseWithReturnDigit := func(t *testing.T, digit byte) {
+		t.Helper()
+
+		parser := gotreesitter.NewParser(lang)
+		base := []byte(`package p
+
+func f(s []int) int {
+	for _, v := range s {
+		_ = v
+	}
+	return 0
+}
+`)
+
+		tree, err := parser.ParseWithTokenSource(base, mustGoTokenSource(t, base, lang))
+		if err != nil {
+			t.Fatalf("initial ParseWithTokenSource failed: %v", err)
+		}
+		if tree.RootNode() == nil {
+			t.Fatal("initial parse returned nil root")
+		}
+
+		editAt := bytes.Index(base, []byte("return 0"))
+		if editAt < 0 {
+			t.Fatal("could not find return edit marker")
+		}
+		editAt += len("return ")
+
+		next := append([]byte(nil), base...)
+		next[editAt] = digit
+
+		start := pointAtOffset(base, editAt)
+		end := pointAtOffset(base, editAt+1)
+		edit := gotreesitter.InputEdit{
+			StartByte:   uint32(editAt),
+			OldEndByte:  uint32(editAt + 1),
+			NewEndByte:  uint32(editAt + 1),
+			StartPoint:  start,
+			OldEndPoint: end,
+			NewEndPoint: end,
+		}
+
+		tree.Edit(edit)
+		tree, err = parser.ParseIncrementalWithTokenSource(next, tree, mustGoTokenSource(t, next, lang))
+		if err != nil {
+			t.Fatalf("incremental parse failed: %v", err)
+		}
+		root := tree.RootNode()
+		if root == nil {
+			t.Fatal("incremental parse returned nil root")
+		}
+		if root.StartByte() != 0 {
+			t.Fatalf("root start mismatch: got %d, want 0", root.StartByte())
+		}
+		if root.EndByte() > uint32(len(next)) {
+			t.Fatalf("root end out of bounds: got %d, source len %d", root.EndByte(), len(next))
+		}
+		if trailing := next[root.EndByte():]; len(bytes.TrimSpace(trailing)) != 0 {
+			t.Fatalf("unexpected non-whitespace trailing bytes after root: %q", string(trailing))
+		}
+
+		got := root.Text(next)
+		if !bytes.Contains([]byte(got), []byte("package p")) {
+			t.Fatalf("root text missing package clause:\n%s", got)
+		}
+		if !bytes.Contains([]byte(got), []byte("func f(s []int) int")) {
+			t.Fatalf("root text missing function signature:\n%s", got)
+		}
+		if !bytes.Contains([]byte(got), []byte("for _, v := range s")) {
+			t.Fatalf("root text missing range clause:\n%s", got)
+		}
+		wantReturn := append([]byte("return "), digit)
+		if !bytes.Contains([]byte(got), wantReturn) {
+			t.Fatalf("root text missing edited return value %q:\n%s", string(wantReturn), got)
+		}
+		if root.HasError() {
+			t.Fatalf("incremental parse has errors for return %q", string([]byte{digit}))
+		}
+
+		fn := findNamedChild(lang, root, "function_declaration")
+		if fn == nil {
+			t.Fatal("missing function_declaration after incremental parse")
+		}
+		if findNamedChild(lang, fn, "range_clause") == nil {
+			t.Fatal("missing range_clause after incremental parse")
+		}
+		if findNamedChild(lang, fn, "return_statement") == nil {
+			t.Fatal("missing return_statement after incremental parse")
+		}
+	}
+
+	t.Run("return 1", func(t *testing.T) {
+		parseWithReturnDigit(t, '1')
+	})
+	t.Run("return 2", func(t *testing.T) {
+		parseWithReturnDigit(t, '2')
+	})
 }

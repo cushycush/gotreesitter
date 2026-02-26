@@ -19,8 +19,12 @@ type HTMLTokenSource struct {
 	inTag         bool
 	inEndTag      bool
 	expectTagName bool
+	inDoctype     bool
 
 	eofSymbol gotreesitter.Symbol
+
+	doctypeOpenSym   gotreesitter.Symbol
+	doctypeToken1Sym gotreesitter.Symbol
 
 	ltSym      gotreesitter.Symbol
 	ltSlashSym gotreesitter.Symbol
@@ -30,10 +34,10 @@ type HTMLTokenSource struct {
 
 	openTagNameSym gotreesitter.Symbol
 	endTagNameSym  gotreesitter.Symbol
-	attrNameSym  gotreesitter.Symbol
-	attrValueSym gotreesitter.Symbol
-	textSym      gotreesitter.Symbol
-	commentSym   gotreesitter.Symbol
+	attrNameSym    gotreesitter.Symbol
+	attrValueSym   gotreesitter.Symbol
+	textSym        gotreesitter.Symbol
+	commentSym     gotreesitter.Symbol
 }
 
 // NewHTMLTokenSource creates a token source for HTML source text.
@@ -51,6 +55,8 @@ func NewHTMLTokenSource(src []byte, lang *gotreesitter.Language) (*HTMLTokenSour
 	}
 
 	ts.eofSymbol, _ = lang.SymbolByName("end")
+	ts.doctypeOpenSym = lookup.optional("<!")
+	ts.doctypeToken1Sym = lookup.optional("doctype_token1")
 	ts.ltSym = lookup.require("<")
 	ts.ltSlashSym = lookup.require("</")
 	ts.gtSym = lookup.require(">")
@@ -116,6 +122,11 @@ func (ts *HTMLTokenSource) Next() gotreesitter.Token {
 			if tok, ok := ts.commentToken(); ok {
 				return tok
 			}
+			if ts.cur.matchLiteralAtCurrent("<!") && ts.doctypeOpenSym != 0 {
+				ts.inTag = true
+				ts.inDoctype = true
+				return ts.literalToken(ts.doctypeOpenSym, 2)
+			}
 			if ts.cur.matchLiteralAtCurrent("</") {
 				ts.inTag = true
 				ts.inEndTag = true
@@ -132,6 +143,28 @@ func (ts *HTMLTokenSource) Next() gotreesitter.Token {
 		}
 
 		// In tag mode.
+		if ts.inDoctype {
+			if ts.cur.matchLiteralAtCurrent(">") {
+				ts.inTag = false
+				ts.inDoctype = false
+				ts.inEndTag = false
+				ts.expectTagName = false
+				return ts.literalToken(ts.gtSym, 1)
+			}
+			if ts.doctypeToken1Sym != 0 {
+				start := ts.cur.offset
+				startPt := ts.cur.point()
+				for !ts.cur.eof() && ts.cur.peekByte() != '>' {
+					ts.cur.advanceRune()
+				}
+				if ts.cur.offset > start {
+					return makeToken(ts.doctypeToken1Sym, ts.src, start, ts.cur.offset, startPt, ts.cur.point())
+				}
+			}
+			ts.cur.advanceRune()
+			continue
+		}
+
 		if ts.cur.peekByte() == ' ' || ts.cur.peekByte() == '\t' || ts.cur.peekByte() == '\n' || ts.cur.peekByte() == '\r' || ts.cur.peekByte() == '\f' {
 			ts.cur.advanceByte()
 			continue
@@ -177,6 +210,7 @@ func (ts *HTMLTokenSource) SkipToByte(offset uint32) gotreesitter.Token {
 	ts.inTag = false
 	ts.inEndTag = false
 	ts.expectTagName = false
+	ts.inDoctype = false
 	if target < ts.cur.offset {
 		ts.cur = newSourceCursor(ts.src)
 	}

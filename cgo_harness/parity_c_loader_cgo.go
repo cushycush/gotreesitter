@@ -39,6 +39,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"unsafe"
@@ -58,6 +60,14 @@ type parityCRef struct {
 	handle unsafe.Pointer
 	soPath string
 }
+
+const (
+	parityMinLanguageVersion = 13
+	parityMaxLanguageVersion = 15
+	parityGenerateABI        = 15
+)
+
+var languageVersionPattern = regexp.MustCompile(`(?m)^#define\s+LANGUAGE_VERSION\s+(\d+)`)
 
 var parityCRefState = struct {
 	once    sync.Once
@@ -219,15 +229,9 @@ func clonePinnedRepo(repoURL, commit, dest string) error {
 }
 
 func compileParserShared(entry parityLockEntry, repoDir, outSO, objDir string) error {
-	srcDir := filepath.Join(repoDir, entry.Subdir)
-	parserPath := filepath.Join(srcDir, "parser.c")
-	if _, err := os.Stat(parserPath); err != nil {
-		found, findErr := findParserC(repoDir)
-		if findErr != nil {
-			return fmt.Errorf("parser.c not found in %s", repoDir)
-		}
-		parserPath = found
-		srcDir = filepath.Dir(found)
+	srcDir, parserPath, err := resolveParserSource(entry, repoDir)
+	if err != nil {
+		return err
 	}
 
 	sources := []string{parserPath}
@@ -290,6 +294,119 @@ func compileParserShared(entry parityLockEntry, repoDir, outSO, objDir string) e
 	args := []string{"-shared", "-fPIC", "-o", outSO}
 	args = append(args, objects...)
 	return runCommand("", linker, args...)
+}
+
+func resolveParserSource(entry parityLockEntry, repoDir string) (string, string, error) {
+	srcDir := filepath.Join(repoDir, entry.Subdir)
+	parserPath := filepath.Join(srcDir, "parser.c")
+
+	if _, err := os.Stat(parserPath); err != nil {
+		// Some repos don't commit parser.c. Try regenerating first, then fall
+		// back to a repo-wide search.
+		_ = regenerateParserSource(repoDir, srcDir)
+		if _, err := os.Stat(parserPath); err != nil {
+			found, findErr := findParserC(repoDir)
+			if findErr != nil {
+				return "", "", fmt.Errorf("parser.c not found in %s", repoDir)
+			}
+			parserPath = found
+			srcDir = filepath.Dir(found)
+		}
+	}
+
+	if version, ok := readParserLanguageVersion(parserPath); ok &&
+		(version < parityMinLanguageVersion || version > parityMaxLanguageVersion) {
+		if err := regenerateParserSource(repoDir, srcDir); err != nil {
+			return "", "", fmt.Errorf(
+				"parser.c ABI %d incompatible (need %d..%d) and regeneration failed: %w",
+				version, parityMinLanguageVersion, parityMaxLanguageVersion, err,
+			)
+		}
+		if _, err := os.Stat(parserPath); err != nil {
+			found, findErr := findParserC(repoDir)
+			if findErr != nil {
+				return "", "", fmt.Errorf("parser.c not found after regeneration in %s", repoDir)
+			}
+			parserPath = found
+			srcDir = filepath.Dir(found)
+		}
+		if regeneratedVersion, ok := readParserLanguageVersion(parserPath); ok &&
+			(regeneratedVersion < parityMinLanguageVersion || regeneratedVersion > parityMaxLanguageVersion) {
+			return "", "", fmt.Errorf(
+				"parser.c ABI %d still incompatible after regeneration (need %d..%d)",
+				regeneratedVersion, parityMinLanguageVersion, parityMaxLanguageVersion,
+			)
+		}
+	}
+
+	return srcDir, parserPath, nil
+}
+
+func regenerateParserSource(repoDir, hintDir string) error {
+	grammarRoot, err := findGrammarRoot(repoDir, hintDir)
+	if err != nil {
+		return err
+	}
+
+	abi := strconv.Itoa(parityGenerateABI)
+	if _, err := exec.LookPath("tree-sitter"); err == nil {
+		if err := runCommand(grammarRoot, "tree-sitter", "generate", "--abi", abi); err == nil {
+			return nil
+		}
+	}
+	return runCommand(grammarRoot, "npx", "--yes", "tree-sitter-cli", "generate", "--abi", abi)
+}
+
+func findGrammarRoot(repoDir, hintDir string) (string, error) {
+	repoDir = filepath.Clean(repoDir)
+	dir := filepath.Clean(hintDir)
+	if dir == "." || dir == "" || !strings.HasPrefix(dir, repoDir) {
+		dir = repoDir
+	}
+
+	for {
+		if hasGrammarDefinition(dir) {
+			return dir, nil
+		}
+		if dir == repoDir {
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	if hasGrammarDefinition(repoDir) {
+		return repoDir, nil
+	}
+	return "", fmt.Errorf("grammar root not found under %s", repoDir)
+}
+
+func hasGrammarDefinition(dir string) bool {
+	candidates := []string{"grammar.js", "grammar.ts"}
+	for _, name := range candidates {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func readParserLanguageVersion(parserPath string) (int, bool) {
+	source, err := os.ReadFile(parserPath)
+	if err != nil {
+		return 0, false
+	}
+	match := languageVersionPattern.FindSubmatch(source)
+	if len(match) != 2 {
+		return 0, false
+	}
+	version, err := strconv.Atoi(string(match[1]))
+	if err != nil {
+		return 0, false
+	}
+	return version, true
 }
 
 func loadParitySharedLanguage(soPath, symbol string) (*parityCRef, error) {

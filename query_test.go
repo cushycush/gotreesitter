@@ -2053,6 +2053,55 @@ func TestQueryCursorNextCaptureThenNextMatchDropsRemainingCaptureBuffer(t *testi
 	}
 }
 
+func TestQueryCursorSetByteRange(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	q, err := NewQuery(`[(identifier) (number)] @x`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	cursor := q.Exec(tree.RootNode(), tree.Language(), tree.Source())
+	cursor.SetByteRange(0, 10) // includes "main", excludes "42"
+
+	var got []string
+	for {
+		cap, ok := cursor.NextCapture()
+		if !ok {
+			break
+		}
+		got = append(got, cap.Node.Text(tree.Source()))
+	}
+	if len(got) != 1 || got[0] != "main" {
+		t.Fatalf("captures in byte range: got %v, want [main]", got)
+	}
+}
+
+func TestQueryCursorSetPointRange(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+	q, err := NewQuery(`[(identifier) (number)] @x`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	cursor := q.Exec(tree.RootNode(), tree.Language(), tree.Source())
+	cursor.SetPointRange(Point{Row: 0, Column: 5}, Point{Row: 0, Column: 10}) // includes "main", excludes "42"
+
+	var got []string
+	for {
+		cap, ok := cursor.NextCapture()
+		if !ok {
+			break
+		}
+		got = append(got, cap.Node.Text(tree.Source()))
+	}
+	if len(got) != 1 || got[0] != "main" {
+		t.Fatalf("captures in point range: got %v, want [main]", got)
+	}
+}
+
 func TestMatchDeeplyNested(t *testing.T) {
 	lang := queryTestLanguage()
 

@@ -3,6 +3,7 @@ package grammars
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/odvcencio/gotreesitter"
 )
@@ -46,6 +47,36 @@ type GenericTokenSource struct {
 	maxLiteralLen  int
 }
 
+type genericLexerTables struct {
+	eofSymbol gotreesitter.Symbol
+
+	identifierSym gotreesitter.Symbol
+	primitiveType gotreesitter.Symbol
+	intSym        gotreesitter.Symbol
+	floatSym      gotreesitter.Symbol
+	numberSym     gotreesitter.Symbol
+	charSym       gotreesitter.Symbol
+	stringSym     gotreesitter.Symbol
+	stringContent gotreesitter.Symbol
+	escapeSym     gotreesitter.Symbol
+
+	doubleQuoteSym gotreesitter.Symbol
+	singleQuoteSym gotreesitter.Symbol
+	backtickSym    gotreesitter.Symbol
+	tripleQuoteSym gotreesitter.Symbol
+
+	lineCommentSym  gotreesitter.Symbol
+	blockCommentSym gotreesitter.Symbol
+	commentSym      gotreesitter.Symbol
+	shebangSym      gotreesitter.Symbol
+
+	keywordSymbols map[string]gotreesitter.Symbol
+	literalSymbols map[string]gotreesitter.Symbol
+	maxLiteralLen  int
+}
+
+var genericLexerTablesCache sync.Map // map[*gotreesitter.Language]*genericLexerTables
+
 // NewGenericTokenSource creates a best-effort generic token source.
 func NewGenericTokenSource(src []byte, lang *gotreesitter.Language) (*GenericTokenSource, error) {
 	if lang == nil {
@@ -56,8 +87,6 @@ func NewGenericTokenSource(src []byte, lang *gotreesitter.Language) (*GenericTok
 		src:            src,
 		lang:           lang,
 		cur:            newSourceCursor(src),
-		keywordSymbols: make(map[string]gotreesitter.Symbol),
-		literalSymbols: make(map[string]gotreesitter.Symbol),
 	}
 
 	ts.buildSymbolTables()
@@ -164,8 +193,18 @@ func (ts *GenericTokenSource) SkipToByte(offset uint32) gotreesitter.Token {
 }
 
 func (ts *GenericTokenSource) buildSymbolTables() {
-	if ts.eofSymbol, _ = ts.lang.SymbolByName("end"); ts.eofSymbol == 0 {
-		ts.eofSymbol = 0
+	if cached, ok := genericLexerTablesCache.Load(ts.lang); ok {
+		ts.applyLexerTables(cached.(*genericLexerTables))
+		return
+	}
+
+	keywordSymbols := make(map[string]gotreesitter.Symbol)
+	literalSymbols := make(map[string]gotreesitter.Symbol)
+	maxLiteralLen := 0
+
+	eofSymbol := gotreesitter.Symbol(0)
+	if eof, _ := ts.lang.SymbolByName("end"); eof != 0 {
+		eofSymbol = eof
 	}
 
 	limit := int(ts.lang.TokenCount)
@@ -194,8 +233,8 @@ func (ts *GenericTokenSource) buildSymbolTables() {
 		}
 
 		if isTokenNameWord(name) {
-			if prev, exists := ts.keywordSymbols[name]; !exists {
-				ts.keywordSymbols[name] = sym
+			if prev, exists := keywordSymbols[name]; !exists {
+				keywordSymbols[name] = sym
 			} else {
 				// Some grammars expose duplicate word-like tokens with the same
 				// lexeme where one symbol is named and the other is anonymous
@@ -210,7 +249,7 @@ func (ts *GenericTokenSource) buildSymbolTables() {
 					currNamed = ts.lang.SymbolMetadata[i].Named
 				}
 				if prevNamed && !currNamed {
-					ts.keywordSymbols[name] = sym
+					keywordSymbols[name] = sym
 				}
 			}
 			continue
@@ -235,14 +274,74 @@ func (ts *GenericTokenSource) buildSymbolTables() {
 		if prev, exists := literalEscapes[lexeme]; exists && prev < escapes {
 			continue
 		}
-		ts.literalSymbols[lexeme] = sym
+		literalSymbols[lexeme] = sym
 		literalEscapes[lexeme] = escapes
-		if len(lexeme) > ts.maxLiteralLen {
-			ts.maxLiteralLen = len(lexeme)
+		if len(lexeme) > maxLiteralLen {
+			maxLiteralLen = len(lexeme)
 		}
 	}
 
 	ts.numberSym = firstNonZeroSymbol(ts.numberSym, ts.intSym, ts.floatSym)
+
+	tables := &genericLexerTables{
+		eofSymbol: eofSymbol,
+
+		identifierSym: ts.identifierSym,
+		primitiveType: ts.primitiveType,
+		intSym:        ts.intSym,
+		floatSym:      ts.floatSym,
+		numberSym:     ts.numberSym,
+		charSym:       ts.charSym,
+		stringSym:     ts.stringSym,
+		stringContent: ts.stringContent,
+		escapeSym:     ts.escapeSym,
+
+		doubleQuoteSym: ts.doubleQuoteSym,
+		singleQuoteSym: ts.singleQuoteSym,
+		backtickSym:    ts.backtickSym,
+		tripleQuoteSym: ts.tripleQuoteSym,
+
+		lineCommentSym:  ts.lineCommentSym,
+		blockCommentSym: ts.blockCommentSym,
+		commentSym:      ts.commentSym,
+		shebangSym:      ts.shebangSym,
+
+		keywordSymbols: keywordSymbols,
+		literalSymbols: literalSymbols,
+		maxLiteralLen:  maxLiteralLen,
+	}
+	if actual, loaded := genericLexerTablesCache.LoadOrStore(ts.lang, tables); loaded {
+		ts.applyLexerTables(actual.(*genericLexerTables))
+		return
+	}
+	ts.applyLexerTables(tables)
+}
+
+func (ts *GenericTokenSource) applyLexerTables(tables *genericLexerTables) {
+	if tables == nil {
+		return
+	}
+	ts.eofSymbol = tables.eofSymbol
+	ts.identifierSym = tables.identifierSym
+	ts.primitiveType = tables.primitiveType
+	ts.intSym = tables.intSym
+	ts.floatSym = tables.floatSym
+	ts.numberSym = tables.numberSym
+	ts.charSym = tables.charSym
+	ts.stringSym = tables.stringSym
+	ts.stringContent = tables.stringContent
+	ts.escapeSym = tables.escapeSym
+	ts.doubleQuoteSym = tables.doubleQuoteSym
+	ts.singleQuoteSym = tables.singleQuoteSym
+	ts.backtickSym = tables.backtickSym
+	ts.tripleQuoteSym = tables.tripleQuoteSym
+	ts.lineCommentSym = tables.lineCommentSym
+	ts.blockCommentSym = tables.blockCommentSym
+	ts.commentSym = tables.commentSym
+	ts.shebangSym = tables.shebangSym
+	ts.keywordSymbols = tables.keywordSymbols
+	ts.literalSymbols = tables.literalSymbols
+	ts.maxLiteralLen = tables.maxLiteralLen
 }
 
 func (ts *GenericTokenSource) captureNamedSpecial(name, lname string, sym gotreesitter.Symbol) {

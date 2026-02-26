@@ -220,7 +220,6 @@ const cryMaxLiteralCount = 16
 const cryMaxHeredocCount = 16
 const cryHeredocBufferSize = 512
 const cryMaxHeredocWordSize = 255
-const cryMaxSerialize = 1024
 
 type cryPercentLiteral struct {
 	openingChar  byte

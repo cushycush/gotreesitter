@@ -2,6 +2,7 @@ package grammars
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/odvcencio/gotreesitter"
 )
@@ -35,6 +36,14 @@ type LuaTokenSource struct {
 	maxLiteralLen  int
 }
 
+type luaLexerTables struct {
+	keywordSymbols map[string]gotreesitter.Symbol
+	literalSymbols map[string]gotreesitter.Symbol
+	maxLiteralLen  int
+}
+
+var luaLexerTablesCache sync.Map // map[*gotreesitter.Language]*luaLexerTables
+
 // NewLuaTokenSource creates a token source for Lua source text.
 func NewLuaTokenSource(src []byte, lang *gotreesitter.Language) (*LuaTokenSource, error) {
 	if lang == nil {
@@ -45,8 +54,6 @@ func NewLuaTokenSource(src []byte, lang *gotreesitter.Language) (*LuaTokenSource
 		src:            src,
 		lang:           lang,
 		cur:            newSourceCursor(src),
-		keywordSymbols: make(map[string]gotreesitter.Symbol),
-		literalSymbols: make(map[string]gotreesitter.Symbol),
 	}
 
 	tl := newTokenLookup(lang, "lua")
@@ -170,6 +177,15 @@ func (ts *LuaTokenSource) SkipToByte(offset uint32) gotreesitter.Token {
 }
 
 func (ts *LuaTokenSource) buildSymbolTables() {
+	if cached, ok := luaLexerTablesCache.Load(ts.lang); ok {
+		ts.applyLexerTables(cached.(*luaLexerTables))
+		return
+	}
+
+	keywordSymbols := make(map[string]gotreesitter.Symbol)
+	literalSymbols := make(map[string]gotreesitter.Symbol)
+	maxLiteralLen := 0
+
 	limit := int(ts.lang.TokenCount)
 	if limit > len(ts.lang.SymbolNames) {
 		limit = len(ts.lang.SymbolNames)
@@ -196,8 +212,8 @@ func (ts *LuaTokenSource) buildSymbolTables() {
 		}
 
 		if isTokenNameWord(name) {
-			if _, exists := ts.keywordSymbols[name]; !exists {
-				ts.keywordSymbols[name] = sym
+			if _, exists := keywordSymbols[name]; !exists {
+				keywordSymbols[name] = sym
 			}
 			continue
 		}
@@ -210,12 +226,32 @@ func (ts *LuaTokenSource) buildSymbolTables() {
 		if prev, exists := literalEscapes[lexeme]; exists && prev <= escapes {
 			continue
 		}
-		ts.literalSymbols[lexeme] = sym
+		literalSymbols[lexeme] = sym
 		literalEscapes[lexeme] = escapes
-		if len(lexeme) > ts.maxLiteralLen {
-			ts.maxLiteralLen = len(lexeme)
+		if len(lexeme) > maxLiteralLen {
+			maxLiteralLen = len(lexeme)
 		}
 	}
+
+	tables := &luaLexerTables{
+		keywordSymbols: keywordSymbols,
+		literalSymbols: literalSymbols,
+		maxLiteralLen:  maxLiteralLen,
+	}
+	if actual, loaded := luaLexerTablesCache.LoadOrStore(ts.lang, tables); loaded {
+		ts.applyLexerTables(actual.(*luaLexerTables))
+		return
+	}
+	ts.applyLexerTables(tables)
+}
+
+func (ts *LuaTokenSource) applyLexerTables(tables *luaLexerTables) {
+	if tables == nil {
+		return
+	}
+	ts.keywordSymbols = tables.keywordSymbols
+	ts.literalSymbols = tables.literalSymbols
+	ts.maxLiteralLen = tables.maxLiteralLen
 }
 
 func (ts *LuaTokenSource) shebangToken() (gotreesitter.Token, bool) {

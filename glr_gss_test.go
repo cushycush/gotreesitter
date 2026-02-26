@@ -80,3 +80,16 @@ func TestGLRStackToGSS(t *testing.T) {
 		}
 	}
 }
+
+func TestGSSStackMaterializePanicsOnCorruptDepth(t *testing.T) {
+	head := &gssNode{entry: stackEntry{state: 2}, depth: 3}
+	head.prev = &gssNode{entry: stackEntry{state: 1}, depth: 1}
+	s := gssStack{head: head}
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on corrupt GSS depth metadata")
+		}
+	}()
+	_ = s.materialize(nil)
+}

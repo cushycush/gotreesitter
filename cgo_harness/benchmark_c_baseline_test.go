@@ -117,3 +117,48 @@ func BenchmarkCTreeSitterGoParseIncrementalNoEdit(b *testing.B) {
 		tree = newTree
 	}
 }
+
+func BenchmarkCTreeSitterGoParseIncrementalRandomSingleByteEdit(b *testing.B) {
+	parser := newCTreeSitterParser(b)
+	defer parser.Close()
+
+	src := makeGoBenchmarkSource(benchmarkFuncCount(b))
+	sites := makeGoBenchmarkEditSites(src)
+	if len(sites) == 0 {
+		b.Fatal("could not find random edit sites")
+	}
+
+	tree := parser.Parse(nil, src)
+	if tree == nil || tree.RootNode() == nil {
+		b.Fatal("initial parse returned nil root")
+	}
+	defer tree.Close()
+
+	seed := uint32(0x9e3779b9)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(src)))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		seed = seed*1664525 + 1013904223
+		site := sites[int(seed%uint32(len(sites)))]
+		toggleDigitAt(src, site.offset)
+
+		edit := sitter.EditInput{
+			StartIndex:  uint32(site.offset),
+			OldEndIndex: uint32(site.offset + 1),
+			NewEndIndex: uint32(site.offset + 1),
+			StartPoint:  sitter.Point{Row: site.start.Row, Column: site.start.Column},
+			OldEndPoint: sitter.Point{Row: site.end.Row, Column: site.end.Column},
+			NewEndPoint: sitter.Point{Row: site.end.Row, Column: site.end.Column},
+		}
+
+		tree.Edit(edit)
+		newTree := parser.Parse(tree, src)
+		if newTree == nil || newTree.RootNode() == nil {
+			b.Fatal("incremental parse returned nil root")
+		}
+		tree.Close()
+		tree = newTree
+	}
+}

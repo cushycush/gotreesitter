@@ -2,6 +2,7 @@ package grammars
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/odvcencio/gotreesitter"
 )
@@ -41,6 +42,14 @@ type JavaTokenSource struct {
 	maxLiteralLen  int
 }
 
+type javaLexerTables struct {
+	keywordSymbols map[string]gotreesitter.Symbol
+	literalSymbols map[string]gotreesitter.Symbol
+	maxLiteralLen  int
+}
+
+var javaLexerTablesCache sync.Map // map[*gotreesitter.Language]*javaLexerTables
+
 // NewJavaTokenSource creates a token source for Java source text.
 func NewJavaTokenSource(src []byte, lang *gotreesitter.Language) (*JavaTokenSource, error) {
 	if lang == nil {
@@ -51,8 +60,6 @@ func NewJavaTokenSource(src []byte, lang *gotreesitter.Language) (*JavaTokenSour
 		src:            src,
 		lang:           lang,
 		cur:            newSourceCursor(src),
-		keywordSymbols: make(map[string]gotreesitter.Symbol),
-		literalSymbols: make(map[string]gotreesitter.Symbol),
 	}
 
 	tl := newTokenLookup(lang, "java")
@@ -172,6 +179,15 @@ func (ts *JavaTokenSource) SkipToByte(offset uint32) gotreesitter.Token {
 }
 
 func (ts *JavaTokenSource) buildSymbolTables() {
+	if cached, ok := javaLexerTablesCache.Load(ts.lang); ok {
+		ts.applyLexerTables(cached.(*javaLexerTables))
+		return
+	}
+
+	keywordSymbols := make(map[string]gotreesitter.Symbol)
+	literalSymbols := make(map[string]gotreesitter.Symbol)
+	maxLiteralLen := 0
+
 	limit := int(ts.lang.TokenCount)
 	if limit > len(ts.lang.SymbolNames) {
 		limit = len(ts.lang.SymbolNames)
@@ -194,8 +210,8 @@ func (ts *JavaTokenSource) buildSymbolTables() {
 		}
 
 		if isTokenNameWord(name) {
-			if _, exists := ts.keywordSymbols[name]; !exists {
-				ts.keywordSymbols[name] = sym
+			if _, exists := keywordSymbols[name]; !exists {
+				keywordSymbols[name] = sym
 			}
 			continue
 		}
@@ -208,12 +224,32 @@ func (ts *JavaTokenSource) buildSymbolTables() {
 		if prev, exists := literalEscapes[lexeme]; exists && prev <= escapes {
 			continue
 		}
-		ts.literalSymbols[lexeme] = sym
+		literalSymbols[lexeme] = sym
 		literalEscapes[lexeme] = escapes
-		if len(lexeme) > ts.maxLiteralLen {
-			ts.maxLiteralLen = len(lexeme)
+		if len(lexeme) > maxLiteralLen {
+			maxLiteralLen = len(lexeme)
 		}
 	}
+
+	tables := &javaLexerTables{
+		keywordSymbols: keywordSymbols,
+		literalSymbols: literalSymbols,
+		maxLiteralLen:  maxLiteralLen,
+	}
+	if actual, loaded := javaLexerTablesCache.LoadOrStore(ts.lang, tables); loaded {
+		ts.applyLexerTables(actual.(*javaLexerTables))
+		return
+	}
+	ts.applyLexerTables(tables)
+}
+
+func (ts *JavaTokenSource) applyLexerTables(tables *javaLexerTables) {
+	if tables == nil {
+		return
+	}
+	ts.keywordSymbols = tables.keywordSymbols
+	ts.literalSymbols = tables.literalSymbols
+	ts.maxLiteralLen = tables.maxLiteralLen
 }
 
 func (ts *JavaTokenSource) commentToken() (gotreesitter.Token, bool) {

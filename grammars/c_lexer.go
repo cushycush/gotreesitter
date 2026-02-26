@@ -2,6 +2,8 @@ package grammars
 
 import (
 	"fmt"
+	"sync"
+	"unsafe"
 
 	"github.com/odvcencio/gotreesitter"
 )
@@ -39,6 +41,23 @@ type CTokenSource struct {
 	charOpeners   []prefixedToken
 }
 
+type cLexerTables struct {
+	keywordSymbols map[string]gotreesitter.Symbol
+	literalSymbols map[string]gotreesitter.Symbol
+	maxLiteralLen  int
+	stringOpeners  []prefixedToken
+	charOpeners    []prefixedToken
+}
+
+var cLexerTablesCache sync.Map // map[*gotreesitter.Language]*cLexerTables
+
+func bytesToStringNoCopy(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	return unsafe.String(unsafe.SliceData(b), len(b))
+}
+
 type prefixedToken struct {
 	lexeme string
 	sym    gotreesitter.Symbol
@@ -54,8 +73,6 @@ func NewCTokenSource(src []byte, lang *gotreesitter.Language) (*CTokenSource, er
 		src:            src,
 		lang:           lang,
 		cur:            newSourceCursor(src),
-		keywordSymbols: make(map[string]gotreesitter.Symbol),
-		literalSymbols: make(map[string]gotreesitter.Symbol),
 	}
 
 	tl := newTokenLookup(lang, "c")
@@ -76,8 +93,6 @@ func NewCTokenSource(src []byte, lang *gotreesitter.Language) (*CTokenSource, er
 	}
 
 	ts.buildSymbolTables()
-	ts.fixAmbiguousTokenChoices()
-	ts.initDelimiters()
 
 	if err := tl.err(); err != nil {
 		return nil, err
@@ -196,6 +211,15 @@ func (ts *CTokenSource) SkipToByte(offset uint32) gotreesitter.Token {
 }
 
 func (ts *CTokenSource) buildSymbolTables() {
+	if cached, ok := cLexerTablesCache.Load(ts.lang); ok {
+		ts.applyLexerTables(cached.(*cLexerTables))
+		return
+	}
+
+	keywordSymbols := make(map[string]gotreesitter.Symbol)
+	literalSymbols := make(map[string]gotreesitter.Symbol)
+	maxLiteralLen := 0
+
 	limit := int(ts.lang.TokenCount)
 	if limit > len(ts.lang.SymbolNames) {
 		limit = len(ts.lang.SymbolNames)
@@ -218,8 +242,8 @@ func (ts *CTokenSource) buildSymbolTables() {
 		}
 
 		if isTokenNameWord(name) {
-			if _, exists := ts.keywordSymbols[name]; !exists {
-				ts.keywordSymbols[name] = sym
+			if _, exists := keywordSymbols[name]; !exists {
+				keywordSymbols[name] = sym
 			}
 			continue
 		}
@@ -232,25 +256,50 @@ func (ts *CTokenSource) buildSymbolTables() {
 		if prev, exists := literalEscapes[lexeme]; exists && prev <= escapes {
 			continue
 		}
-		ts.literalSymbols[lexeme] = sym
+		literalSymbols[lexeme] = sym
 		literalEscapes[lexeme] = escapes
-		if len(lexeme) > ts.maxLiteralLen {
-			ts.maxLiteralLen = len(lexeme)
+		if len(lexeme) > maxLiteralLen {
+			maxLiteralLen = len(lexeme)
 		}
 	}
-}
 
-func (ts *CTokenSource) fixAmbiguousTokenChoices() {
 	// tree-sitter-c has two distinct token IDs that display as "(".
 	// The declaration/parser path expects the higher-ID variant.
 	if syms := ts.lang.TokenSymbolsByName("("); len(syms) > 0 {
-		ts.literalSymbols["("] = syms[len(syms)-1]
+		literalSymbols["("] = syms[len(syms)-1]
 	}
+
+	base := &CTokenSource{
+		literalSymbols: literalSymbols,
+		quoteSymbol:    ts.quoteSymbol,
+		apostropheSymbol: ts.apostropheSymbol,
+	}
+	stringOpeners := base.collectOpeners([]string{"u8\"", "L\"", "U\"", "u\"", "\""}, ts.quoteSymbol)
+	charOpeners := base.collectOpeners([]string{"u8'", "L'", "U'", "u'", "'"}, ts.apostropheSymbol)
+
+	tables := &cLexerTables{
+		keywordSymbols: keywordSymbols,
+		literalSymbols: literalSymbols,
+		maxLiteralLen:  maxLiteralLen,
+		stringOpeners:  stringOpeners,
+		charOpeners:    charOpeners,
+	}
+	if actual, loaded := cLexerTablesCache.LoadOrStore(ts.lang, tables); loaded {
+		ts.applyLexerTables(actual.(*cLexerTables))
+		return
+	}
+	ts.applyLexerTables(tables)
 }
 
-func (ts *CTokenSource) initDelimiters() {
-	ts.stringOpeners = ts.collectOpeners([]string{"u8\"", "L\"", "U\"", "u\"", "\""}, ts.quoteSymbol)
-	ts.charOpeners = ts.collectOpeners([]string{"u8'", "L'", "U'", "u'", "'"}, ts.apostropheSymbol)
+func (ts *CTokenSource) applyLexerTables(tables *cLexerTables) {
+	if tables == nil {
+		return
+	}
+	ts.keywordSymbols = tables.keywordSymbols
+	ts.literalSymbols = tables.literalSymbols
+	ts.maxLiteralLen = tables.maxLiteralLen
+	ts.stringOpeners = tables.stringOpeners
+	ts.charOpeners = tables.charOpeners
 }
 
 func (ts *CTokenSource) collectOpeners(lexemes []string, fallback gotreesitter.Symbol) []prefixedToken {
@@ -414,7 +463,7 @@ func (ts *CTokenSource) identifierOrKeywordToken() gotreesitter.Token {
 		ts.cur.advanceByte()
 	}
 
-	text := string(ts.src[start:ts.cur.offset])
+	text := bytesToStringNoCopy(ts.src[start:ts.cur.offset])
 	sym := ts.identifierSymbol
 	if kw, ok := ts.keywordSymbols[text]; ok {
 		sym = kw
@@ -488,7 +537,7 @@ func (ts *CTokenSource) matchLiteral() (gotreesitter.Symbol, int) {
 	}
 
 	for n := maxN; n >= 1; n-- {
-		lex := string(ts.src[ts.cur.offset : ts.cur.offset+n])
+		lex := bytesToStringNoCopy(ts.src[ts.cur.offset : ts.cur.offset+n])
 		sym, ok := ts.literalSymbols[lex]
 		if !ok {
 			continue

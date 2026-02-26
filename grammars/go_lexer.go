@@ -32,11 +32,16 @@ type GoTokenSource struct {
 	pending []gotreesitter.Token
 	done    bool
 
-	// symbolMap caches the go/token -> tree-sitter symbol mapping.
-	symbolMap map[token.Token]gotreesitter.Symbol
+	// symbolTable caches go/token -> tree-sitter symbol mapping in a dense
+	// lookup table to avoid hash-map overhead in the hot lexing path.
+	symbolTable [goTokenTableSize]gotreesitter.Symbol
 
-	// keywordMap maps keyword strings to their tree-sitter symbol IDs.
-	keywordMap map[string]gotreesitter.Symbol
+	keywordNewSymbol   gotreesitter.Symbol
+	keywordMakeSymbol  gotreesitter.Symbol
+	keywordNilSymbol   gotreesitter.Symbol
+	keywordTrueSymbol  gotreesitter.Symbol
+	keywordFalseSymbol gotreesitter.Symbol
+	keywordIotaSymbol  gotreesitter.Symbol
 
 	// Common symbols used in fast paths.
 	eofSymbol                         gotreesitter.Symbol
@@ -63,8 +68,7 @@ type GoTokenSource struct {
 }
 
 type goLexerTables struct {
-	symbolMap  map[token.Token]gotreesitter.Symbol
-	keywordMap map[string]gotreesitter.Symbol
+	symbolTable [goTokenTableSize]gotreesitter.Symbol
 
 	eofSymbol                         gotreesitter.Symbol
 	commentSymbol                     gotreesitter.Symbol
@@ -80,9 +84,17 @@ type goLexerTables struct {
 	interpretedStringContentSymbol    gotreesitter.Symbol
 	rawStringQuoteSymbol              gotreesitter.Symbol
 	rawStringContentSymbol            gotreesitter.Symbol
+	keywordNewSymbol                  gotreesitter.Symbol
+	keywordMakeSymbol                 gotreesitter.Symbol
+	keywordNilSymbol                  gotreesitter.Symbol
+	keywordTrueSymbol                 gotreesitter.Symbol
+	keywordFalseSymbol                gotreesitter.Symbol
+	keywordIotaSymbol                 gotreesitter.Symbol
 }
 
 var goLexerTablesCache sync.Map // map[*gotreesitter.Language]*goLexerTables
+
+const goTokenTableSize = 256
 
 // NewGoTokenSource creates a token source that lexes Go source code and
 // produces tree-sitter tokens compatible with the Go grammar.
@@ -254,8 +266,8 @@ func (ts *GoTokenSource) Next() gotreesitter.Token {
 			return ts.identToken(offset, lit)
 
 		case tok == token.SEMICOLON:
-			sym, ok := ts.symbolMap[tok]
-			if !ok {
+			sym := ts.lookupSymbol(tok)
+			if sym == 0 {
 				continue
 			}
 			if lit == "\n" {
@@ -297,8 +309,8 @@ func (ts *GoTokenSource) Next() gotreesitter.Token {
 
 		default:
 			// Map go/token to tree-sitter symbol.
-			sym, ok := ts.symbolMap[tok]
-			if !ok {
+			sym := ts.lookupSymbol(tok)
+			if sym == 0 {
 				// Unknown token — skip.
 				continue
 			}
@@ -320,6 +332,14 @@ func (ts *GoTokenSource) Next() gotreesitter.Token {
 			}
 		}
 	}
+}
+
+func (ts *GoTokenSource) lookupSymbol(tok token.Token) gotreesitter.Symbol {
+	i := int(tok)
+	if i < 0 || i >= goTokenTableSize {
+		return 0
+	}
+	return ts.symbolTable[i]
 }
 
 func (ts *GoTokenSource) tokenOffset(pos token.Pos) int {
@@ -396,7 +416,7 @@ func (ts *GoTokenSource) identToken(offset int, lit string) gotreesitter.Token {
 	endPoint := ts.offsetToPoint(endOffset)
 
 	// Check for special identifiers that tree-sitter treats as keywords.
-	if sym, ok := ts.keywordMap[lit]; ok {
+	if sym := ts.keywordSymbol(lit); sym != 0 {
 		return gotreesitter.Token{
 			Symbol:     sym,
 			Text:       lit,
@@ -407,17 +427,11 @@ func (ts *GoTokenSource) identToken(offset int, lit string) gotreesitter.Token {
 		}
 	}
 
-	// Check for blank identifier.
-	if lit == "_" {
-		return gotreesitter.Token{
-			Symbol:     ts.blankIdentifierSymbol,
-			Text:       lit,
-			StartByte:  uint32(offset),
-			EndByte:    uint32(endOffset),
-			StartPoint: startPoint,
-			EndPoint:   endPoint,
-		}
-	}
+	// The blank identifier "_" is emitted as a regular identifier token.
+	// The grammar tables do not accept blank_identifier (symbol 8) in all
+	// syntactic positions where "_" is valid Go (assignments, range clauses,
+	// parameters), causing parse failures that shatter the AST. Since the
+	// distinction is purely semantic, treating "_" as identifier is safe.
 
 	// Regular identifier.
 	return gotreesitter.Token{
@@ -427,6 +441,25 @@ func (ts *GoTokenSource) identToken(offset int, lit string) gotreesitter.Token {
 		EndByte:    uint32(endOffset),
 		StartPoint: startPoint,
 		EndPoint:   endPoint,
+	}
+}
+
+func (ts *GoTokenSource) keywordSymbol(lit string) gotreesitter.Symbol {
+	switch lit {
+	case "new":
+		return ts.keywordNewSymbol
+	case "make":
+		return ts.keywordMakeSymbol
+	case "nil":
+		return ts.keywordNilSymbol
+	case "true":
+		return ts.keywordTrueSymbol
+	case "false":
+		return ts.keywordFalseSymbol
+	case "iota":
+		return ts.keywordIotaSymbol
+	default:
+		return 0
 	}
 }
 
@@ -556,6 +589,17 @@ func (ts *GoTokenSource) offsetToPoint(offset int) gotreesitter.Point {
 	row := ts.lastRow
 	col := ts.lastCol
 	for i < offset && i < len(ts.src) {
+		b := ts.src[i]
+		if b < utf8.RuneSelf {
+			if b == '\n' {
+				row++
+				col = 0
+			} else {
+				col++
+			}
+			i++
+			continue
+		}
 		r, size := utf8.DecodeRune(ts.src[i:])
 		if r == '\n' {
 			row++
@@ -642,7 +686,7 @@ func (ts *GoTokenSource) buildMaps() error {
 	ts.interpretedStringCloseQuoteSymbol = tokenSymAt("\"", 1)
 	ts.interpretedStringContentSymbol = tokenSym("interpreted_string_literal_content")
 
-	ts.symbolMap = map[token.Token]gotreesitter.Symbol{
+	symbolMap := map[token.Token]gotreesitter.Symbol{
 		token.SEMICOLON:      tokenSym(";"),
 		token.PERIOD:         tokenSym("."),
 		token.LPAREN:         tokenSym("("),
@@ -719,24 +763,28 @@ func (ts *GoTokenSource) buildMaps() error {
 		token.DEFAULT:     tokenSym("default"),
 		token.SELECT:      tokenSym("select"),
 	}
+	for tok, sym := range symbolMap {
+		i := int(tok)
+		if i < 0 || i >= goTokenTableSize {
+			continue
+		}
+		ts.symbolTable[i] = sym
+	}
 
 	// Keywords that go/scanner returns as IDENT but tree-sitter has special symbols for.
-	ts.keywordMap = map[string]gotreesitter.Symbol{
-		"new":   newSym,
-		"make":  makeSym,
-		"nil":   tokenSym("nil"),
-		"true":  tokenSym("true"),
-		"false": tokenSym("false"),
-		"iota":  tokenSym("iota"),
-	}
+	ts.keywordNewSymbol = newSym
+	ts.keywordMakeSymbol = makeSym
+	ts.keywordNilSymbol = tokenSym("nil")
+	ts.keywordTrueSymbol = tokenSym("true")
+	ts.keywordFalseSymbol = tokenSym("false")
+	ts.keywordIotaSymbol = tokenSym("iota")
 
 	if firstErr != nil {
 		return firstErr
 	}
 
 	tables := &goLexerTables{
-		symbolMap:                         ts.symbolMap,
-		keywordMap:                        ts.keywordMap,
+		symbolTable:                       ts.symbolTable,
 		eofSymbol:                         ts.eofSymbol,
 		commentSymbol:                     ts.commentSymbol,
 		runeLiteralSymbol:                 ts.runeLiteralSymbol,
@@ -751,6 +799,12 @@ func (ts *GoTokenSource) buildMaps() error {
 		interpretedStringContentSymbol:    ts.interpretedStringContentSymbol,
 		rawStringQuoteSymbol:              ts.rawStringQuoteSymbol,
 		rawStringContentSymbol:            ts.rawStringContentSymbol,
+		keywordNewSymbol:                  ts.keywordNewSymbol,
+		keywordMakeSymbol:                 ts.keywordMakeSymbol,
+		keywordNilSymbol:                  ts.keywordNilSymbol,
+		keywordTrueSymbol:                 ts.keywordTrueSymbol,
+		keywordFalseSymbol:                ts.keywordFalseSymbol,
+		keywordIotaSymbol:                 ts.keywordIotaSymbol,
 	}
 
 	if actual, loaded := goLexerTablesCache.LoadOrStore(ts.lang, tables); loaded {
@@ -763,8 +817,7 @@ func (ts *GoTokenSource) applyLexerTables(tables *goLexerTables) {
 	if tables == nil {
 		return
 	}
-	ts.symbolMap = tables.symbolMap
-	ts.keywordMap = tables.keywordMap
+	ts.symbolTable = tables.symbolTable
 	ts.eofSymbol = tables.eofSymbol
 	ts.commentSymbol = tables.commentSymbol
 	ts.runeLiteralSymbol = tables.runeLiteralSymbol
@@ -779,4 +832,10 @@ func (ts *GoTokenSource) applyLexerTables(tables *goLexerTables) {
 	ts.interpretedStringContentSymbol = tables.interpretedStringContentSymbol
 	ts.rawStringQuoteSymbol = tables.rawStringQuoteSymbol
 	ts.rawStringContentSymbol = tables.rawStringContentSymbol
+	ts.keywordNewSymbol = tables.keywordNewSymbol
+	ts.keywordMakeSymbol = tables.keywordMakeSymbol
+	ts.keywordNilSymbol = tables.keywordNilSymbol
+	ts.keywordTrueSymbol = tables.keywordTrueSymbol
+	ts.keywordFalseSymbol = tables.keywordFalseSymbol
+	ts.keywordIotaSymbol = tables.keywordIotaSymbol
 }

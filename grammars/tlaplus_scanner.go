@@ -57,28 +57,6 @@ const (
 	tlaSymErrorSentinel            gotreesitter.Symbol = 363
 )
 
-// tokenTypeToSymbol maps token index to its Symbol ID for SetResultSymbol.
-var tlaTokenTypeToSymbol = [18]gotreesitter.Symbol{
-	tlaSymLeadingExtramodularText,
-	tlaSymTrailingExtramodularText,
-	tlaSymIndent,
-	tlaSymBullet,
-	tlaSymDedent,
-	tlaSymBeginProof,
-	tlaSymBeginProofStep,
-	tlaSymProofKeyword,
-	tlaSymByKeyword,
-	tlaSymObviousKeyword,
-	tlaSymOmittedKeyword,
-	tlaSymQedKeyword,
-	tlaSymWeakFairness,
-	tlaSymStrongFairness,
-	tlaSymPcalStart,
-	tlaSymPcalEnd,
-	tlaSymDoubleExcl,
-	tlaSymErrorSentinel,
-}
-
 // ---------------------------------------------------------------------------
 // Lexeme / Token enumerations (internal to the scanner)
 // ---------------------------------------------------------------------------

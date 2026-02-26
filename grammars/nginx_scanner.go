@@ -40,9 +40,11 @@ func (NginxExternalScanner) Serialize(payload any, buf []byte) int {
 	s := payload.(*nginxScannerState)
 	// Skip the initial 0 sentinel; serialize from index 1 onward.
 	size := 0
-	for i := 1; i < len(s.indents) && size < len(buf); i++ {
-		buf[size] = byte(s.indents[i])
-		size++
+	for i := 1; i < len(s.indents) && size+1 < len(buf); i++ {
+		v := s.indents[i]
+		buf[size] = byte(v)
+		buf[size+1] = byte(v >> 8)
+		size += 2
 	}
 	return size
 }
@@ -51,8 +53,16 @@ func (NginxExternalScanner) Deserialize(payload any, buf []byte) {
 	s := payload.(*nginxScannerState)
 	s.indents = s.indents[:0]
 	s.indents = append(s.indents, 0) // sentinel
-	for _, b := range buf {
-		s.indents = append(s.indents, uint16(b))
+	// Backward compatibility: older scanner states serialized one byte per indent.
+	if len(buf)%2 != 0 {
+		for _, b := range buf {
+			s.indents = append(s.indents, uint16(b))
+		}
+		return
+	}
+	for i := 0; i+1 < len(buf); i += 2 {
+		v := uint16(buf[i]) | uint16(buf[i+1])<<8
+		s.indents = append(s.indents, v)
 	}
 }
 

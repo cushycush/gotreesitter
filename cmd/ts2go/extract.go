@@ -2021,20 +2021,6 @@ func parseUint16List(body string) []uint16 {
 
 // parseUint32List parses a comma-separated list of uint32 values from
 // the body of a C array declaration.
-func parseUint32List(body string) []uint32 {
-	re := regexp.MustCompile(`\d+`)
-	matches := re.FindAllString(body, -1)
-	result := make([]uint32, 0, len(matches))
-	for _, m := range matches {
-		n, err := strconv.Atoi(m)
-		if err != nil {
-			continue
-		}
-		result = append(result, uint32(n))
-	}
-	return result
-}
-
 // extractExternalSymbols parses ts_external_scanner_symbol_map[].
 func extractExternalSymbols(source string, g *ExtractedGrammar) error {
 	body, err := findArrayBody(source, "ts_external_scanner_symbol_map")

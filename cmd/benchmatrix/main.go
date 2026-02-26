@@ -26,12 +26,19 @@ type benchSample struct {
 }
 
 type benchStats struct {
-	Samples         int     `json:"samples"`
-	MeanNsPerOp     float64 `json:"mean_ns_per_op,omitempty"`
-	P95NsPerOp      float64 `json:"p95_ns_per_op,omitempty"`
-	MeanBytesPerOp  float64 `json:"mean_bytes_per_op,omitempty"`
-	MeanAllocsPerOp float64 `json:"mean_allocs_per_op,omitempty"`
-	MeanMBPerSec    float64 `json:"mean_mb_per_sec,omitempty"`
+	Samples            int     `json:"samples"`
+	MeanNsPerOp        float64 `json:"mean_ns_per_op,omitempty"`
+	P95RunToRunNsPerOp float64 `json:"p95_run_to_run_nsop,omitempty"`
+	MeanBytesPerOp     float64 `json:"mean_bytes_per_op,omitempty"`
+	MeanAllocsPerOp    float64 `json:"mean_allocs_per_op,omitempty"`
+	MeanMBPerSec       float64 `json:"mean_mb_per_sec,omitempty"`
+}
+
+type resourceStats struct {
+	UserSeconds   float64 `json:"user_seconds,omitempty"`
+	SystemSeconds float64 `json:"system_seconds,omitempty"`
+	Elapsed       string  `json:"elapsed,omitempty"`
+	MaxRSSKB      int64   `json:"max_rss_kb,omitempty"`
 }
 
 type benchGroupResult struct {
@@ -40,12 +47,16 @@ type benchGroupResult struct {
 	Package    string                `json:"package"`
 	Benchmarks map[string]benchStats `json:"benchmarks"`
 	RawOutput  string                `json:"raw_output_path"`
+	TimeOutput string                `json:"time_output_path,omitempty"`
+	Resources  *resourceStats        `json:"resources,omitempty"`
 }
 
 type matrixResult struct {
 	GeneratedAtUTC string             `json:"generated_at_utc"`
 	GoVersion      string             `json:"go_version"`
 	Count          int                `json:"count"`
+	Benchtime      string             `json:"benchtime"`
+	GOMAXPROCS     int                `json:"gomaxprocs"`
 	StressFuncN    int                `json:"stress_func_count"`
 	Groups         []benchGroupResult `json:"groups"`
 }
@@ -63,23 +74,32 @@ var suffixNumRe = regexp.MustCompile(`-\d+$`)
 func main() {
 	var (
 		count       int
+		benchtime   string
+		gomaxprocs  int
 		outPath     string
 		mdPath      string
 		rawDir      string
 		stressFuncN int
 		noStress    bool
+		captureRSS  bool
 	)
 
 	flag.IntVar(&count, "count", 10, "go test benchmark count")
+	flag.StringVar(&benchtime, "benchtime", "750ms", "go test benchmark benchtime")
+	flag.IntVar(&gomaxprocs, "gomaxprocs", 1, "GOMAXPROCS value for benchmark subprocesses (0 = inherit)")
 	flag.StringVar(&outPath, "out", "bench_out/matrix.json", "output JSON path")
 	flag.StringVar(&mdPath, "markdown", "bench_out/matrix.md", "output markdown path")
 	flag.StringVar(&rawDir, "raw-dir", "bench_out/raw", "directory for raw benchmark outputs")
 	flag.IntVar(&stressFuncN, "stress-func-count", 5000, "value for GOT_BENCH_FUNC_COUNT in stress class")
 	flag.BoolVar(&noStress, "no-stress", false, "skip stress class")
+	flag.BoolVar(&captureRSS, "rss", false, "capture /usr/bin/time -v resource stats per group")
 	flag.Parse()
 
 	if count <= 0 {
 		fatalf("--count must be > 0")
+	}
+	if strings.TrimSpace(benchtime) == "" {
+		fatalf("--benchtime must be non-empty")
 	}
 
 	groups := []benchGroupConfig{
@@ -117,7 +137,7 @@ func main() {
 
 	results := make([]benchGroupResult, 0, len(groups))
 	for _, group := range groups {
-		res, err := runBenchGroup(group, count, rawDir)
+		res, err := runBenchGroup(group, count, benchtime, gomaxprocs, captureRSS, rawDir)
 		if err != nil {
 			fatalf("group %s failed: %v", group.Name, err)
 		}
@@ -128,6 +148,8 @@ func main() {
 		GeneratedAtUTC: time.Now().UTC().Format(time.RFC3339),
 		GoVersion:      runtime.Version(),
 		Count:          count,
+		Benchtime:      benchtime,
+		GOMAXPROCS:     gomaxprocs,
 		StressFuncN:    stressFuncN,
 		Groups:         results,
 	}
@@ -142,33 +164,59 @@ func main() {
 	fmt.Printf("benchmatrix markdown: %s\n", mdPath)
 }
 
-func runBenchGroup(group benchGroupConfig, count int, rawDir string) (benchGroupResult, error) {
+func runBenchGroup(group benchGroupConfig, count int, benchtime string, gomaxprocs int, captureRSS bool, rawDir string) (benchGroupResult, error) {
 	args := []string{
 		"test",
 		"-run", "^$",
 		"-bench", group.Regex,
 		"-benchmem",
+		"-benchtime", benchtime,
 		"-count", strconv.Itoa(count),
 		group.Package,
 	}
-	cmd := exec.Command("go", args...)
-	cmd.Dir = "."
-	cmd.Env = os.Environ()
+	baseEnv := os.Environ()
+	if gomaxprocs > 0 {
+		baseEnv = append(baseEnv, fmt.Sprintf("GOMAXPROCS=%d", gomaxprocs))
+	}
 	for k, v := range group.ExtraEnv {
-		cmd.Env = append(cmd.Env, k+"="+v)
+		baseEnv = append(baseEnv, k+"="+v)
 	}
 
+	var cmd *exec.Cmd
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
+	if captureRSS {
+		if _, err := exec.LookPath("/usr/bin/time"); err != nil {
+			return benchGroupResult{}, fmt.Errorf("capture RSS requested but /usr/bin/time is unavailable: %w", err)
+		}
+		timeArgs := append([]string{"-v", "go"}, args...)
+		cmd = exec.Command("/usr/bin/time", timeArgs...)
+	} else {
+		cmd = exec.Command("go", args...)
+	}
+	cmd.Dir = "."
+	cmd.Env = baseEnv
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return benchGroupResult{}, fmt.Errorf("go %s: %w\nstderr:\n%s\nstdout:\n%s", strings.Join(args, " "), err, stderr.String(), stdout.String())
+		return benchGroupResult{}, fmt.Errorf("%s %s: %w\nstderr:\n%s\nstdout:\n%s", cmd.Path, strings.Join(cmd.Args[1:], " "), err, stderr.String(), stdout.String())
 	}
 
 	rawPath := filepath.Join(rawDir, group.Name+".txt")
 	if err := os.WriteFile(rawPath, stdout.Bytes(), 0o644); err != nil {
 		return benchGroupResult{}, fmt.Errorf("write raw output %s: %w", rawPath, err)
+	}
+	var (
+		timePath  string
+		resources *resourceStats
+	)
+	if captureRSS {
+		timePath = filepath.Join(rawDir, group.Name+".time.txt")
+		if err := os.WriteFile(timePath, stderr.Bytes(), 0o644); err != nil {
+			return benchGroupResult{}, fmt.Errorf("write timing output %s: %w", timePath, err)
+		}
+		stats := parseResourceStats(stderr.Bytes())
+		resources = &stats
 	}
 
 	parsed, err := parseBenchOutput(stdout.Bytes())
@@ -182,6 +230,8 @@ func runBenchGroup(group benchGroupConfig, count int, rawDir string) (benchGroup
 		Package:    group.Package,
 		Benchmarks: aggregated,
 		RawOutput:  rawPath,
+		TimeOutput: timePath,
+		Resources:  resources,
 	}, nil
 }
 
@@ -246,15 +296,60 @@ func aggregateBenchSamples(raw map[string][]benchSample) map[string]benchStats {
 			}
 		}
 		out[name] = benchStats{
-			Samples:         len(runs),
-			MeanNsPerOp:     mean(ns),
-			P95NsPerOp:      percentile(ns, 95),
-			MeanBytesPerOp:  mean(bytesOp),
-			MeanAllocsPerOp: mean(allocs),
-			MeanMBPerSec:    mean(mbs),
+			Samples:            len(runs),
+			MeanNsPerOp:        mean(ns),
+			P95RunToRunNsPerOp: percentile(ns, 95),
+			MeanBytesPerOp:     mean(bytesOp),
+			MeanAllocsPerOp:    mean(allocs),
+			MeanMBPerSec:       mean(mbs),
 		}
 	}
 	return out
+}
+
+func parseResourceStats(stderr []byte) resourceStats {
+	stats := resourceStats{}
+	scanner := bufio.NewScanner(bytes.NewReader(stderr))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		switch {
+		case strings.HasPrefix(line, "User time (seconds):"):
+			stats.UserSeconds = parseTrailingFloat(line)
+		case strings.HasPrefix(line, "System time (seconds):"):
+			stats.SystemSeconds = parseTrailingFloat(line)
+		case strings.HasPrefix(line, "Elapsed (wall clock) time"):
+			if idx := strings.LastIndex(line, ":"); idx >= 0 && idx+1 < len(line) {
+				stats.Elapsed = strings.TrimSpace(line[idx+1:])
+			}
+		case strings.HasPrefix(line, "Maximum resident set size (kbytes):"):
+			stats.MaxRSSKB = parseTrailingInt64(line)
+		}
+	}
+	return stats
+}
+
+func parseTrailingFloat(line string) float64 {
+	idx := strings.LastIndex(line, ":")
+	if idx < 0 || idx+1 >= len(line) {
+		return 0
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(line[idx+1:]), 64)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+func parseTrailingInt64(line string) int64 {
+	idx := strings.LastIndex(line, ":")
+	if idx < 0 || idx+1 >= len(line) {
+		return 0
+	}
+	v, err := strconv.ParseInt(strings.TrimSpace(line[idx+1:]), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 func writeJSON(path string, v any) error {
@@ -275,11 +370,13 @@ func writeMarkdown(path string, matrix matrixResult) error {
 	b.WriteString(fmt.Sprintf("- generated: %s\n", matrix.GeneratedAtUTC))
 	b.WriteString(fmt.Sprintf("- go: `%s`\n", matrix.GoVersion))
 	b.WriteString(fmt.Sprintf("- count: `%d`\n", matrix.Count))
+	b.WriteString(fmt.Sprintf("- benchtime: `%s`\n", matrix.Benchtime))
+	b.WriteString(fmt.Sprintf("- gomaxprocs: `%d`\n", matrix.GOMAXPROCS))
 	b.WriteString(fmt.Sprintf("- stress func count: `%d`\n\n", matrix.StressFuncN))
 
 	for _, group := range matrix.Groups {
 		b.WriteString(fmt.Sprintf("## %s\n\n", group.Name))
-		b.WriteString("| Benchmark | Samples | Mean ns/op | P95 ns/op | Mean B/op | Mean allocs/op | Mean MB/s |\n")
+		b.WriteString("| Benchmark | Samples | Mean ns/op | P95 run-to-run ns/op | Mean B/op | Mean allocs/op | Mean MB/s |\n")
 		b.WriteString("| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n")
 		names := make([]string, 0, len(group.Benchmarks))
 		for name := range group.Benchmarks {
@@ -292,13 +389,25 @@ func writeMarkdown(path string, matrix matrixResult) error {
 				name,
 				s.Samples,
 				fmtFloat(s.MeanNsPerOp),
-				fmtFloat(s.P95NsPerOp),
+				fmtFloat(s.P95RunToRunNsPerOp),
 				fmtFloat(s.MeanBytesPerOp),
 				fmtFloat(s.MeanAllocsPerOp),
 				fmtFloat(s.MeanMBPerSec),
 			))
 		}
 		b.WriteString(fmt.Sprintf("\nraw: `%s`\n\n", group.RawOutput))
+		if group.TimeOutput != "" {
+			b.WriteString(fmt.Sprintf("time: `%s`\n\n", group.TimeOutput))
+		}
+		if group.Resources != nil {
+			b.WriteString(fmt.Sprintf("- max RSS (KB): `%d`\n", group.Resources.MaxRSSKB))
+			b.WriteString(fmt.Sprintf("- user seconds: `%s`\n", fmtFloat(group.Resources.UserSeconds)))
+			b.WriteString(fmt.Sprintf("- system seconds: `%s`\n", fmtFloat(group.Resources.SystemSeconds)))
+			if group.Resources.Elapsed != "" {
+				b.WriteString(fmt.Sprintf("- elapsed: `%s`\n", group.Resources.Elapsed))
+			}
+			b.WriteString("\n")
+		}
 	}
 
 	return os.WriteFile(path, []byte(b.String()), 0o644)

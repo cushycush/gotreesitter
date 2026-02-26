@@ -1,5 +1,7 @@
 package gotreesitter
 
+import "sort"
+
 // cursorFrame tracks a node and the child index within its parent.
 // childIndex is -1 for the cursor root (no parent context).
 type cursorFrame struct {
@@ -12,7 +14,7 @@ type cursorFrame struct {
 // parent, child, and sibling movement without scanning.
 //
 // The cursor holds pointers to Nodes. If the underlying Tree is released,
-// the cursor becomes invalid (matches C tree-sitter semantics).
+// edited, or replaced via incremental reparse, the cursor should be recreated.
 type TreeCursor struct {
 	stack []cursorFrame
 	tree  *Tree
@@ -29,16 +31,31 @@ func NewTreeCursor(node *Node, tree *Tree) *TreeCursor {
 
 // NewTreeCursorFromTree creates a cursor starting at the tree's root node.
 func NewTreeCursorFromTree(tree *Tree) *TreeCursor {
+	if tree == nil {
+		return NewTreeCursor(nil, nil)
+	}
 	return NewTreeCursor(tree.RootNode(), tree)
+}
+
+func (c *TreeCursor) ensureStack() {
+	if len(c.stack) == 0 {
+		c.stack = []cursorFrame{{node: nil, childIndex: -1}}
+	}
 }
 
 // CurrentNode returns the node the cursor is currently pointing to.
 func (c *TreeCursor) CurrentNode() *Node {
+	if len(c.stack) == 0 {
+		return nil
+	}
 	return c.stack[len(c.stack)-1].node
 }
 
 // Depth returns the cursor's current depth (0 at the root).
 func (c *TreeCursor) Depth() int {
+	if len(c.stack) == 0 {
+		return 0
+	}
 	return len(c.stack) - 1
 }
 
@@ -46,7 +63,7 @@ func (c *TreeCursor) Depth() int {
 // Returns false if the current node has no children.
 func (c *TreeCursor) GotoFirstChild() bool {
 	node := c.CurrentNode()
-	if len(node.children) == 0 {
+	if node == nil || len(node.children) == 0 {
 		return false
 	}
 	c.stack = append(c.stack, cursorFrame{node: node.children[0], childIndex: 0})
@@ -57,6 +74,9 @@ func (c *TreeCursor) GotoFirstChild() bool {
 // Returns false if the current node has no children.
 func (c *TreeCursor) GotoLastChild() bool {
 	node := c.CurrentNode()
+	if node == nil {
+		return false
+	}
 	n := len(node.children)
 	if n == 0 {
 		return false
@@ -73,6 +93,9 @@ func (c *TreeCursor) GotoNextSibling() bool {
 	}
 	frame := &c.stack[len(c.stack)-1]
 	parentNode := c.stack[len(c.stack)-2].node
+	if parentNode == nil {
+		return false
+	}
 	next := frame.childIndex + 1
 	if next >= len(parentNode.children) {
 		return false
@@ -90,6 +113,9 @@ func (c *TreeCursor) GotoPrevSibling() bool {
 	}
 	frame := &c.stack[len(c.stack)-1]
 	parentNode := c.stack[len(c.stack)-2].node
+	if parentNode == nil {
+		return false
+	}
 	prev := frame.childIndex - 1
 	if prev < 0 {
 		return false
@@ -117,6 +143,9 @@ func (c *TreeCursor) CurrentFieldID() FieldID {
 	}
 	frame := c.stack[len(c.stack)-1]
 	parentNode := c.stack[len(c.stack)-2].node
+	if parentNode == nil {
+		return 0
+	}
 	if frame.childIndex < len(parentNode.fieldIDs) {
 		return parentNode.fieldIDs[frame.childIndex]
 	}
@@ -141,7 +170,14 @@ func (c *TreeCursor) CurrentFieldName() string {
 // GotoChildByFieldID moves the cursor to the first child with the given field ID.
 // Returns false if no child has that field.
 func (c *TreeCursor) GotoChildByFieldID(fid FieldID) bool {
+	if fid == 0 {
+		// Field ID 0 is a sentinel meaning "no field assignment".
+		return false
+	}
 	node := c.CurrentNode()
+	if node == nil {
+		return false
+	}
 	for i, id := range node.fieldIDs {
 		if id == fid && i < len(node.children) {
 			c.stack = append(c.stack, cursorFrame{node: node.children[i], childIndex: i})
@@ -173,6 +209,9 @@ func (c *TreeCursor) GotoChildByFieldName(name string) bool {
 // current node, skipping anonymous nodes. Returns false if no named child exists.
 func (c *TreeCursor) GotoFirstNamedChild() bool {
 	node := c.CurrentNode()
+	if node == nil {
+		return false
+	}
 	for i, child := range node.children {
 		if child.isNamed {
 			c.stack = append(c.stack, cursorFrame{node: child, childIndex: i})
@@ -186,6 +225,9 @@ func (c *TreeCursor) GotoFirstNamedChild() bool {
 // current node, skipping anonymous nodes. Returns false if no named child exists.
 func (c *TreeCursor) GotoLastNamedChild() bool {
 	node := c.CurrentNode()
+	if node == nil {
+		return false
+	}
 	for i := len(node.children) - 1; i >= 0; i-- {
 		if node.children[i].isNamed {
 			c.stack = append(c.stack, cursorFrame{node: node.children[i], childIndex: i})
@@ -203,6 +245,9 @@ func (c *TreeCursor) GotoNextNamedSibling() bool {
 	}
 	frame := &c.stack[len(c.stack)-1]
 	parentNode := c.stack[len(c.stack)-2].node
+	if parentNode == nil {
+		return false
+	}
 	for i := frame.childIndex + 1; i < len(parentNode.children); i++ {
 		if parentNode.children[i].isNamed {
 			frame.childIndex = i
@@ -221,6 +266,9 @@ func (c *TreeCursor) GotoPrevNamedSibling() bool {
 	}
 	frame := &c.stack[len(c.stack)-1]
 	parentNode := c.stack[len(c.stack)-2].node
+	if parentNode == nil {
+		return false
+	}
 	for i := frame.childIndex - 1; i >= 0; i-- {
 		if parentNode.children[i].isNamed {
 			frame.childIndex = i
@@ -231,37 +279,52 @@ func (c *TreeCursor) GotoPrevNamedSibling() bool {
 	return false
 }
 
-// GotoFirstChildForByte moves the cursor to the first child whose byte range
-// contains targetByte (i.e., the first child where endByte > targetByte).
-// Returns false if the current node has no children or targetByte is past all children.
-func (c *TreeCursor) GotoFirstChildForByte(targetByte uint32) bool {
-	node := c.CurrentNode()
-	for i, child := range node.children {
-		if child.endByte > targetByte {
-			c.stack = append(c.stack, cursorFrame{node: child, childIndex: i})
-			return true
-		}
+func pointGreaterThan(a, b Point) bool {
+	if a.Row != b.Row {
+		return a.Row > b.Row
 	}
-	return false
+	return a.Column > b.Column
+}
+
+// GotoFirstChildForByte moves the cursor to the first child whose byte range
+// contains targetByte (i.e., first child where endByte > targetByte).
+// Returns the child index, or -1 when no child contains the byte.
+func (c *TreeCursor) GotoFirstChildForByte(targetByte uint32) int64 {
+	node := c.CurrentNode()
+	if node == nil || len(node.children) == 0 {
+		return -1
+	}
+	i := sort.Search(len(node.children), func(i int) bool {
+		return node.children[i].endByte > targetByte
+	})
+	if i >= len(node.children) {
+		return -1
+	}
+	c.stack = append(c.stack, cursorFrame{node: node.children[i], childIndex: i})
+	return int64(i)
 }
 
 // GotoFirstChildForPoint moves the cursor to the first child whose point range
-// contains targetPoint (i.e., the first child where endPoint > targetPoint).
-// Returns false if the current node has no children or targetPoint is past all children.
-func (c *TreeCursor) GotoFirstChildForPoint(targetPoint Point) bool {
+// contains targetPoint (i.e., first child where endPoint > targetPoint).
+// Returns the child index, or -1 when no child contains the point.
+func (c *TreeCursor) GotoFirstChildForPoint(targetPoint Point) int64 {
 	node := c.CurrentNode()
-	for i, child := range node.children {
-		ep := child.endPoint
-		if ep.Row > targetPoint.Row || (ep.Row == targetPoint.Row && ep.Column > targetPoint.Column) {
-			c.stack = append(c.stack, cursorFrame{node: child, childIndex: i})
-			return true
-		}
+	if node == nil || len(node.children) == 0 {
+		return -1
 	}
-	return false
+	i := sort.Search(len(node.children), func(i int) bool {
+		return pointGreaterThan(node.children[i].endPoint, targetPoint)
+	})
+	if i >= len(node.children) {
+		return -1
+	}
+	c.stack = append(c.stack, cursorFrame{node: node.children[i], childIndex: i})
+	return int64(i)
 }
 
 // Reset resets the cursor to a new root node, clearing the navigation stack.
 func (c *TreeCursor) Reset(node *Node) {
+	c.ensureStack()
 	c.stack = c.stack[:1]
 	c.stack[0] = cursorFrame{node: node, childIndex: -1}
 }
@@ -269,6 +332,10 @@ func (c *TreeCursor) Reset(node *Node) {
 // ResetTree resets the cursor to the root of a new tree.
 func (c *TreeCursor) ResetTree(tree *Tree) {
 	c.tree = tree
+	if tree == nil {
+		c.Reset(nil)
+		return
+	}
 	c.Reset(tree.RootNode())
 }
 
@@ -289,11 +356,15 @@ func (c *TreeCursor) CurrentNodeType() string {
 	if c.tree == nil {
 		return ""
 	}
+	node := c.CurrentNode()
+	if node == nil {
+		return ""
+	}
 	lang := c.tree.Language()
 	if lang == nil {
 		return ""
 	}
-	return c.CurrentNode().Type(lang)
+	return node.Type(lang)
 }
 
 // CurrentNodeText returns the source text of the current node.
@@ -302,10 +373,18 @@ func (c *TreeCursor) CurrentNodeText() string {
 	if c.tree == nil {
 		return ""
 	}
-	return c.CurrentNode().Text(c.tree.Source())
+	node := c.CurrentNode()
+	if node == nil {
+		return ""
+	}
+	return node.Text(c.tree.Source())
 }
 
 // CurrentNodeIsNamed returns whether the current node is a named node.
 func (c *TreeCursor) CurrentNodeIsNamed() bool {
-	return c.CurrentNode().IsNamed()
+	node := c.CurrentNode()
+	if node == nil {
+		return false
+	}
+	return node.IsNamed()
 }

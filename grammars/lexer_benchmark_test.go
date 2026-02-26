@@ -31,7 +31,13 @@ func benchmarkParse(b *testing.B, src []byte, factory func([]byte, *gotreesitter
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		ts := factory(src, lang)
-		parser.ParseWithTokenSource(src, ts)
+		tree, err := parser.ParseWithTokenSource(src, ts)
+		if err != nil {
+			b.Fatalf("parse failed: %v", err)
+		}
+		if tree != nil {
+			tree.Release()
+		}
 	}
 }
 

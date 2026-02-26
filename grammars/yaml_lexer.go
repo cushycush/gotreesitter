@@ -69,9 +69,8 @@ type YAMLTokenSource struct {
 	ampSym       gotreesitter.Symbol // sym 103 "&"
 	anchorSym    gotreesitter.Symbol // sym 106 "anchor_name"
 	starSym      gotreesitter.Symbol // sym 107 "*"
-	aliasSym     gotreesitter.Symbol // sym 110 "alias_name"
-	commentSym   gotreesitter.Symbol // sym 112 "comment"
-	errRecSym    gotreesitter.Symbol // sym 113 "_err_rec"
+	aliasSym   gotreesitter.Symbol // sym 110 "alias_name"
+	commentSym gotreesitter.Symbol // sym 112 "comment"
 
 	emittedYAMLEOF bool
 

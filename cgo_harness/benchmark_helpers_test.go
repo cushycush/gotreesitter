@@ -1,7 +1,10 @@
 package cgoharness
 
 import (
+	"bytes"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -36,8 +39,56 @@ func pointAtOffset(src []byte, offset int) gotreesitter.Point {
 }
 
 func benchmarkFuncCount(b *testing.B) int {
+	if raw := strings.TrimSpace(os.Getenv("GOT_BENCH_FUNC_COUNT")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err == nil && n > 0 {
+			return n
+		}
+		b.Fatalf("invalid GOT_BENCH_FUNC_COUNT=%q", raw)
+	}
 	if testing.Short() {
 		return 100
 	}
 	return 500
+}
+
+type benchmarkEditSite struct {
+	offset int
+	start  gotreesitter.Point
+	end    gotreesitter.Point
+}
+
+func makeGoBenchmarkEditSites(src []byte) []benchmarkEditSite {
+	const marker = "v := "
+	needle := []byte(marker)
+	sites := make([]benchmarkEditSite, 0, 64)
+	from := 0
+	for from < len(src) {
+		idx := bytes.Index(src[from:], needle)
+		if idx < 0 {
+			break
+		}
+		offset := from + idx + len(marker)
+		if offset >= len(src) {
+			break
+		}
+		sites = append(sites, benchmarkEditSite{
+			offset: offset,
+			start:  pointAtOffset(src, offset),
+			end:    pointAtOffset(src, offset+1),
+		})
+		from = offset + 1
+	}
+	return sites
+}
+
+func toggleDigitAt(src []byte, offset int) {
+	if offset < 0 || offset >= len(src) {
+		return
+	}
+	if src[offset] == '0' {
+		src[offset] = '1'
+		return
+	}
+	src[offset] = '0'
 }

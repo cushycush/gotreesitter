@@ -92,14 +92,18 @@ func (FoamExternalScanner) Scan(payload any, lexer *gotreesitter.ExternalLexer, 
 		if idx < 5 {
 			currentIdent[idx] = byte(ch)
 			idx++
-			// Check if current accumulated string matches a boolean keyword.
 			word := string(currentIdent[:idx])
-			switch word {
-			case "on", "off", "true", "false":
+			if foamIsBooleanKeyword(word) {
+				// Consume the current rune and only emit a boolean token if
+				// the keyword is a full token (not an identifier prefix).
 				lexer.Advance(false)
-				lexer.MarkEnd()
-				lexer.SetResultSymbol(foamSymBoolean)
-				return true
+				next := lexer.Lookahead()
+				if foamWouldTerminateIdentifier(next, nestingLevel) && foamValid(validSymbols, foamTokBoolean) {
+					lexer.MarkEnd()
+					lexer.SetResultSymbol(foamSymBoolean)
+					return true
+				}
+				continue
 			}
 		}
 
@@ -144,4 +148,23 @@ func isFoamNonIdentChar(ch rune) bool {
 		return true
 	}
 	return false
+}
+
+func foamIsBooleanKeyword(word string) bool {
+	switch word {
+	case "on", "off", "true", "false":
+		return true
+	default:
+		return false
+	}
+}
+
+func foamWouldTerminateIdentifier(ch rune, nestingLevel int) bool {
+	if ch == 0 {
+		return true
+	}
+	if isFoamNonIdentChar(ch) && nestingLevel == 0 {
+		return true
+	}
+	return ch == ')' && nestingLevel == 0
 }

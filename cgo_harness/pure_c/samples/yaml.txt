@@ -1,0 +1,7 @@
+key: value
+list:
+  - one
+  - two
+nested:
+  a: 1
+  b: true

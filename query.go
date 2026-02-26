@@ -147,6 +147,14 @@ type QueryCursor struct {
 
 	worklist []*Node
 
+	hasByteRange bool
+	startByte    uint32
+	endByte      uint32
+
+	hasPointRange bool
+	startPoint    Point
+	endPoint      Point
+
 	currentNode       *Node
 	currentCandidates []int
 	candidateIdx      int
@@ -203,6 +211,52 @@ func (q *Query) Exec(node *Node, lang *Language, source []byte) *QueryCursor {
 		c.worklist = append(c.worklist, node)
 	}
 	return c
+}
+
+// SetByteRange restricts matches to nodes that intersect [startByte, endByte).
+func (c *QueryCursor) SetByteRange(startByte, endByte uint32) {
+	if c == nil {
+		return
+	}
+	c.hasByteRange = true
+	c.startByte = startByte
+	c.endByte = endByte
+}
+
+// SetPointRange restricts matches to nodes that intersect [startPoint, endPoint).
+func (c *QueryCursor) SetPointRange(startPoint, endPoint Point) {
+	if c == nil {
+		return
+	}
+	c.hasPointRange = true
+	c.startPoint = startPoint
+	c.endPoint = endPoint
+}
+
+func (c *QueryCursor) nodeIntersectsRanges(n *Node) bool {
+	if n == nil {
+		return false
+	}
+	if c.hasByteRange {
+		if c.endByte <= c.startByte {
+			return false
+		}
+		if n.endByte <= c.startByte || n.startByte >= c.endByte {
+			return false
+		}
+	}
+	if c.hasPointRange {
+		if !pointLessThan(c.startPoint, c.endPoint) && c.startPoint != c.endPoint {
+			return false
+		}
+		if !pointLessThan(n.startPoint, c.endPoint) && n.startPoint != c.endPoint {
+			return false
+		}
+		if !pointLessThan(c.startPoint, n.endPoint) && c.startPoint != n.endPoint {
+			return false
+		}
+	}
+	return true
 }
 
 func (q *Query) executeNode(root *Node, lang *Language, source []byte) []QueryMatch {
@@ -359,11 +413,16 @@ func (c *QueryCursor) NextMatch() (QueryMatch, bool) {
 			// Pop next node in DFS order.
 			n := c.worklist[len(c.worklist)-1]
 			c.worklist = c.worklist[:len(c.worklist)-1]
+			if !c.nodeIntersectsRanges(n) {
+				continue
+			}
 
 			// Push children in reverse order so leftmost is visited first.
 			children := n.Children()
 			for i := len(children) - 1; i >= 0; i-- {
-				c.worklist = append(c.worklist, children[i])
+				if c.nodeIntersectsRanges(children[i]) {
+					c.worklist = append(c.worklist, children[i])
+				}
 			}
 
 			c.currentNode = n

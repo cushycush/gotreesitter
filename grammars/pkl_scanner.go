@@ -1,8 +1,6 @@
 package grammars
 
 import (
-	"unicode"
-
 	gotreesitter "github.com/odvcencio/gotreesitter"
 )
 
@@ -274,12 +272,6 @@ func pklParseContextualOp(lexer *gotreesitter.ExternalLexer, validSymbols []bool
 		default:
 			return false
 		}
-	}
-}
-
-func pklSkipWhitespace(lexer *gotreesitter.ExternalLexer) {
-	for unicode.IsSpace(lexer.Lookahead()) {
-		lexer.Advance(true)
 	}
 }
 
