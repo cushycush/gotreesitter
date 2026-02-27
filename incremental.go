@@ -336,8 +336,5 @@ func (p *Parser) reuseTargetState(state StateID, n *Node, lookahead Token) (Stat
 	if gotoState == 0 {
 		return 0, false
 	}
-	if gotoState != n.parseState {
-		return 0, false
-	}
 	return gotoState, true
 }
