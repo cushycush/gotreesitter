@@ -506,8 +506,48 @@ func stackCompare(a, b glrStack) int {
 	return 0
 }
 
-func preferOverflowCandidate(candidate, incumbent glrStack, candidateHash, incumbentHash uint64) bool {
-	cmp := stackCompare(candidate, incumbent)
+func stackCompareMerge(a, b *glrStack) int {
+	if perfCountersEnabled {
+		perfRecordStackCompare()
+	}
+	// mergeStacksWithScratch prunes dead stacks before comparing.
+	if a.accepted != b.accepted {
+		if a.accepted {
+			return 1
+		}
+		return -1
+	}
+	if a.score != b.score {
+		if a.score > b.score {
+			return 1
+		}
+		return -1
+	}
+	aDepth := a.depth()
+	bDepth := b.depth()
+	if aDepth != bDepth {
+		if aDepth > bDepth {
+			return 1
+		}
+		return -1
+	}
+	if a.shifted != b.shifted {
+		if !a.shifted {
+			return 1
+		}
+		return -1
+	}
+	if a.byteOffset != b.byteOffset {
+		if a.byteOffset > b.byteOffset {
+			return 1
+		}
+		return -1
+	}
+	return 0
+}
+
+func preferOverflowCandidate(candidate, incumbent *glrStack, candidateHash, incumbentHash uint64) bool {
+	cmp := stackCompareMerge(candidate, incumbent)
 	if cmp != 0 {
 		return cmp > 0
 	}
@@ -595,7 +635,7 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 			perfRecordStackEquivalentHashMissSkip()
 		}
 		if duplicateIndex >= 0 {
-			if stackCompare(stack, result[duplicateIndex]) > 0 {
+			if stackCompareMerge(&stack, &result[duplicateIndex]) > 0 {
 				result[duplicateIndex] = stack
 				for j := 0; j < slot.count; j++ {
 					if slot.indices[j] == duplicateIndex {
@@ -616,7 +656,7 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 			slot.indices[slot.count] = idx
 			slot.hashes[slot.count] = hash
 			slot.count++
-			if slot.worstIndex < 0 || stackCompare(result[idx], result[slot.worstIndex]) < 0 {
+			if slot.worstIndex < 0 || stackCompareMerge(&result[idx], &result[slot.worstIndex]) < 0 {
 				slot.worstIndex = idx
 			}
 			continue
@@ -639,7 +679,7 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 			if replacedSlot >= 0 {
 				incumbentHash = slot.hashes[replacedSlot]
 			}
-			if !preferOverflowCandidate(stack, result[slot.worstIndex], hash, incumbentHash) {
+			if !preferOverflowCandidate(&stack, &result[slot.worstIndex], hash, incumbentHash) {
 				continue
 			}
 			if perfCountersEnabled {
@@ -667,7 +707,7 @@ func recomputeMergeSlotWorst(slot *glrMergeSlot, result []glrStack) int {
 	worst := slot.indices[0]
 	for j := 1; j < slot.count; j++ {
 		idx := slot.indices[j]
-		if stackCompare(result[idx], result[worst]) < 0 {
+		if stackCompareMerge(&result[idx], &result[worst]) < 0 {
 			worst = idx
 		}
 	}
