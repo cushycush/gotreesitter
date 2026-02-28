@@ -6,7 +6,7 @@ import (
 	"github.com/odvcencio/gotreesitter"
 )
 
-func findEntryByName(t *testing.T, name string) LangEntry {
+func findEntryByName(t testing.TB, name string) LangEntry {
 	t.Helper()
 	for _, entry := range AllLanguages() {
 		if entry.Name == name {
@@ -17,7 +17,7 @@ func findEntryByName(t *testing.T, name string) LangEntry {
 	return LangEntry{}
 }
 
-func parseSampleForEntry(t *testing.T, entry LangEntry, src []byte) (*gotreesitter.Tree, *gotreesitter.Language) {
+func parseSampleForEntry(t testing.TB, entry LangEntry, src []byte) (*gotreesitter.Tree, *gotreesitter.Language) {
 	t.Helper()
 	lang := entry.Language()
 	parser := gotreesitter.NewParser(lang)
@@ -45,7 +45,7 @@ func parseSampleForEntry(t *testing.T, entry LangEntry, src []byte) (*gotreesitt
 	return tree, lang
 }
 
-func assertFieldLookupMatchesFirstTaggedChild(t *testing.T, root *gotreesitter.Node, lang *gotreesitter.Language) {
+func assertFieldLookupMatchesFirstTaggedChild(t testing.TB, root *gotreesitter.Node, lang *gotreesitter.Language) {
 	t.Helper()
 	queue := []*gotreesitter.Node{root}
 	for len(queue) > 0 {
