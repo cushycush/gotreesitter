@@ -2271,7 +2271,23 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 	rawFieldIDs := p.buildFieldIDs(childCount, productionID, arena)
 	children := arena.allocNodeSlice(normalizedCount)
 	var fieldIDs []FieldID
-	if rawFieldIDs != nil {
+	needFieldIDs := rawFieldIDs != nil
+	if !needFieldIDs {
+		for i := start; i < end; i++ {
+			n := entries[i].node
+			if n == nil {
+				continue
+			}
+			if symbolVisible(lang, n.symbol) {
+				continue
+			}
+			if len(n.fieldIDs) > 0 {
+				needFieldIDs = true
+				break
+			}
+		}
+	}
+	if needFieldIDs {
 		fieldIDs = arena.allocFieldIDSlice(normalizedCount)
 	}
 
@@ -2314,7 +2330,42 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 		}
 		copy(children[out:], kids)
 		if fieldIDs != nil {
-			fieldIDs[out] = fid
+			// Preserve field labels already assigned on the inlined node's
+			// children so flattened trees keep child-field lookups consistent.
+			copyCount := len(kids)
+			if len(n.fieldIDs) < copyCount {
+				copyCount = len(n.fieldIDs)
+			}
+			if copyCount > 0 {
+				copy(fieldIDs[out:out+copyCount], n.fieldIDs[:copyCount])
+			}
+
+			if fid != 0 {
+				target := 0
+				found := false
+				if len(n.fieldIDs) == len(kids) {
+					for i, kidFieldID := range n.fieldIDs {
+						if kidFieldID == fid {
+							target = i
+							found = true
+							break
+						}
+					}
+				}
+				if !found {
+					for i, kid := range kids {
+						if kid != nil && kid.isNamed {
+							target = i
+							found = true
+							break
+						}
+					}
+				}
+				if !found {
+					target = 0
+				}
+				fieldIDs[out+target] = fid
+			}
 		}
 		out += len(kids)
 	}
