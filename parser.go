@@ -1735,7 +1735,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 
 	var stacksBuf [4]glrStack
 	stacks := stacksBuf[:1]
-	initialStackCap := 256 * 1024
+	initialStackCap := 64 * 1024
 	if reuse != nil {
 		// Incremental reparses often borrow scratch slabs from an earlier full
 		// parse. Preallocating that full retained capacity forces large memclr
