@@ -220,6 +220,12 @@ func median(xs []float64) float64 {
 }
 
 func compareMetric(name, metric string, base, head, maxRegression float64) bool {
+	// Zero/zero is valid for some metrics (e.g. B/op and allocs/op on no-edit fast paths).
+	if base == 0 && head == 0 {
+		fmt.Printf("%s\t%s\t%s\t%s\t%+.2f%%\tOK\n",
+			name, metric, fmtFloat(base), fmtFloat(head), 0.0)
+		return false
+	}
 	if base <= 0 || head <= 0 {
 		fmt.Printf("%s\t%s\t%s\t%s\t%s\tFAIL (missing metric)\n",
 			name, metric, fmtFloat(base), fmtFloat(head), "-")

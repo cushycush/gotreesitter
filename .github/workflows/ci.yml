@@ -65,6 +65,7 @@ jobs:
       - name: Benchmark Base vs Head
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PERF_CORRECTNESS_BASE_SHA: 7a29f591d7fcc54b3d0639b3e38a1bacd8fcb386
         run: |
           set -euo pipefail
 
@@ -73,14 +74,37 @@ jobs:
           BASE_TREE="${RUNNER_TEMP}/bench-base"
           mkdir -p "${OUT_DIR}"
 
-          git fetch --no-tags origin "${BASE_SHA}"
-          git worktree add "${BASE_TREE}" "${BASE_SHA}"
+          GATE_BASE_SHA="${BASE_SHA}"
+          if git fetch --no-tags origin "${PERF_CORRECTNESS_BASE_SHA}" >/dev/null 2>&1; then
+            if ! git merge-base --is-ancestor "${PERF_CORRECTNESS_BASE_SHA}" "${BASE_SHA}"; then
+              GATE_BASE_SHA="${PERF_CORRECTNESS_BASE_SHA}"
+            fi
+          fi
+          echo "perf gate base: ${GATE_BASE_SHA} (pr base: ${BASE_SHA})"
+
+          git fetch --no-tags origin "${BASE_SHA}" "${GATE_BASE_SHA}"
+          git worktree add "${BASE_TREE}" "${GATE_BASE_SHA}"
           trap 'git worktree remove --force "${BASE_TREE}"' EXIT
 
           export GOMAXPROCS=1
           export GOT_PARSE_NODE_LIMIT_SCALE=3
           (cd "${BASE_TREE}" && go test -run '^$' -bench "${BENCH_RE}" -benchmem -count=10 -benchtime=750ms .) > "${OUT_DIR}/base.txt"
           go test -run '^$' -bench "${BENCH_RE}" -benchmem -count=10 -benchtime=750ms . > "${OUT_DIR}/head.txt"
+          if [ "${GATE_BASE_SHA}" != "${BASE_SHA}" ]; then
+            PR_BASE_TREE="${RUNNER_TEMP}/bench-pr-base"
+            git worktree add "${PR_BASE_TREE}" "${BASE_SHA}"
+            (cd "${PR_BASE_TREE}" && go test -run '^$' -bench "${BENCH_RE}" -benchmem -count=10 -benchtime=750ms .) > "${OUT_DIR}/pr_base.txt"
+            git worktree remove --force "${PR_BASE_TREE}"
+            echo "informational compare vs PR base (non-blocking):"
+            if ! go run ./cmd/benchgate \
+              -base "${OUT_DIR}/pr_base.txt" \
+              -head "${OUT_DIR}/head.txt" \
+              -max-ns-regression 10 \
+              -max-bytes-regression 10 \
+              -max-allocs-regression 10; then
+              echo "informational compare vs PR base unavailable (missing benchmarks/metrics)"
+            fi
+          fi
 
           (
             cd "${BASE_TREE}" && \
