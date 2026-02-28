@@ -105,6 +105,10 @@ type FieldMapEntry struct {
 // ExternalScanner is the interface for language-specific external scanners.
 // Languages like Python and JavaScript need these for indent tracking,
 // template literals, regex vs division, etc.
+//
+// The value returned by Create must be accepted by Destroy/Serialize/
+// Deserialize/Scan for that scanner implementation. Most scanners use a
+// concrete payload pointer type and will panic on mismatched payload types.
 type ExternalScanner interface {
 	Create() any
 	Destroy(payload any)

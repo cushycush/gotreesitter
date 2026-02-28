@@ -19,6 +19,9 @@ import (
 // actions, the parser forks the stack and explores all alternatives in
 // parallel while preserving distinct parse paths. Duplicate stack
 // versions are collapsed and ambiguities are resolved at selection time.
+//
+// Parser is not safe for concurrent use. Use one parser per goroutine, or
+// guard shared parser instances with external synchronization.
 type Parser struct {
 	language          *Language
 	reuseCursor       reuseCursor

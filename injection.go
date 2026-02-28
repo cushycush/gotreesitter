@@ -27,6 +27,9 @@ type Injection struct {
 }
 
 // InjectionParser parses documents with embedded languages.
+//
+// InjectionParser is not safe for concurrent use. It caches child parsers and
+// mutates shared maps during parse operations.
 type InjectionParser struct {
 	// languages maps language name -> Language.
 	languages map[string]*Language
