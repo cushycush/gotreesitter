@@ -394,6 +394,12 @@ GOTREESITTER_GRAMMAR_STRING_INTERN_LIMIT=200000
 GOTREESITTER_GRAMMAR_TRANSITION_INTERN_LIMIT=20000
 ```
 
+**GLR stack cap override**:
+
+```sh
+GOT_GLR_MAX_STACKS=12  # overrides default GLR stack cap (default: 6)
+```
+
 ## Testing
 
 ```sh

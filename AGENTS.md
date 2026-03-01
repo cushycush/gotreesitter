@@ -72,3 +72,4 @@ Perf preset (stable settings):
 
 Full-parse non-truncation probe:
 - `GOT_PARSE_NODE_LIMIT_SCALE=3` may be used for diagnostic full-parse runs when default node budget truncates benchmark/parity cases.
+- `GOT_GLR_MAX_STACKS=...` overrides the default GLR stack cap (default 6).

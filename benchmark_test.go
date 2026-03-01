@@ -59,6 +59,19 @@ func benchmarkFuncCount(b *testing.B) int {
 	return 500
 }
 
+func effectiveGLRMaxStacksForStats() int {
+	const defaultGLRMaxStacks = 6
+	raw := strings.TrimSpace(os.Getenv("GOT_GLR_MAX_STACKS"))
+	if raw == "" {
+		return defaultGLRMaxStacks
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return defaultGLRMaxStacks
+	}
+	return n
+}
+
 func nonZeroBins(hist []uint64) string {
 	var sb strings.Builder
 	first := true
@@ -195,6 +208,10 @@ func BenchmarkGoParseFullDFA(b *testing.B) {
 	if statsEnabled {
 		a := gotreesitter.ArenaProfileSnapshot()
 		p := gotreesitter.PerfCountersSnapshot()
+		fmt.Printf(
+			"STATS_CFG glr_max_stacks=%d default=6\n",
+			effectiveGLRMaxStacksForStats(),
+		)
 		fmt.Printf(
 			"STATS arena_full_acquire=%d arena_full_new=%d arena_inc_acquire=%d arena_inc_new=%d\n",
 			a.FullAcquire, a.FullNew, a.IncrementalAcquire, a.IncrementalNew,
@@ -391,6 +408,10 @@ func BenchmarkGoParseIncrementalSingleByteEditDFA(b *testing.B) {
 	if statsEnabled {
 		a := gotreesitter.ArenaProfileSnapshot()
 		p := gotreesitter.PerfCountersSnapshot()
+		fmt.Printf(
+			"STATS_CFG glr_max_stacks=%d default=6\n",
+			effectiveGLRMaxStacksForStats(),
+		)
 		fmt.Printf(
 			"STATS edits=%d edit_ns=%d reuse_ns=%d parse_ns=%d reused_subtrees=%d reused_bytes=%d new_nodes=%d recover_searches=%d recover_state_checks=%d recover_state_skips=%d recover_lookups=%d recover_hits=%d max_stacks=%d\n",
 			b.N, editTotalNS, reuseTotalNS, parseTotalNS, reusedSubtrees, reusedBytes, newNodesAllocated, recoverSearches, recoverStateChecks, recoverStateSkips, recoverLookups, recoverHits, maxStacksSeen,
