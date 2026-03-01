@@ -51,7 +51,7 @@ var ParseSmokeSamples = map[string]string{
 	"regex":             "a+b*\n",
 	"ruby":              "def f\n  1\nend\n",
 	"rust":              "fn main() { let x = 1; }\n",
-	"scss":              "x\n",
+	"scss":              ".a { color: red; }\n",
 	"sql":               "SELECT id, name FROM users WHERE id = 1;\n",
 	"swift":             "1\n",
 	"toml":              "a = 1\ntitle = \"hello\"\ntags = [\"x\", \"y\"]\n",

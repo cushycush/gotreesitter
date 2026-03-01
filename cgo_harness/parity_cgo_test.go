@@ -322,7 +322,7 @@ func parityReferenceSkipReason(err error) string {
 }
 
 func normalizedSource(name, src string) []byte {
-	if name == "yaml" || name == "swift" {
+	if name == "yaml" || name == "swift" || name == "gomod" || name == "ini" || name == "make" {
 		return []byte(src)
 	}
 	// Trim one trailing newline so both runtimes compare syntax tree shape
