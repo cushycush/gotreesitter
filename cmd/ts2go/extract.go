@@ -175,6 +175,12 @@ func ExtractGrammar(source string) (*ExtractedGrammar, error) {
 		return nil, fmt.Errorf("parse actions: %w", err)
 	}
 
+	// Normalize the small parse table to ensure all reduce-only groups
+	// include the end symbol (sym 0). Some grammars rely on tree-sitter C's
+	// error recovery to handle EOF at reduce states where end is omitted.
+	// Our Go parser doesn't do that recovery, so we patch the table here.
+	normalizeSmallParseTableEOF(g)
+
 	if err := extractAliasSequences(source, g); err != nil {
 		return nil, fmt.Errorf("alias sequences: %w", err)
 	}
@@ -662,6 +668,176 @@ func extractSmallParseTable(source string, g *ExtractedGrammar) error {
 
 	g.SmallParseTableMap = parseSmallParseTableMap(mapBody, g.LargeStateCount)
 	return nil
+}
+
+// normalizeSmallParseTableEOF patches both the dense and small parse tables
+// so that every reduce-only action group includes the end symbol (sym 0).
+// Tree-sitter's grammar generator omits end from many reduce groups because
+// the C runtime handles this via error recovery at EOF. Our Go parser does
+// not perform that recovery, so we add end explicitly.
+func normalizeSmallParseTableEOF(g *ExtractedGrammar) {
+	if len(g.ParseActions) == 0 {
+		return
+	}
+
+	// Build a map from C array index to whether the action group is
+	// reduce-only (no shifts, accepts, or recovers). The sectionValue
+	// in the SmallParseTable is a C array index, not a Go slice position.
+	isReduceOnly := make(map[uint16]bool)
+	for _, ag := range g.ParseActions {
+		if len(ag.Actions) == 0 {
+			continue
+		}
+		allReduce := true
+		for _, a := range ag.Actions {
+			if a.Type != "reduce" {
+				allReduce = false
+				break
+			}
+		}
+		if allReduce {
+			isReduceOnly[uint16(ag.Index)] = true
+		}
+	}
+
+	// Patch the dense parse table: for each state, if end (sym 0) has no
+	// action but the state has a reduce-only action for other terminals,
+	// assign the most common reduce action to end.
+	for state := range g.ParseTable {
+		row := g.ParseTable[state]
+		if len(row) == 0 || row[0] != 0 {
+			continue // already has an action for end, or empty row
+		}
+		// Find the most common reduce-only action among terminal symbols.
+		freq := make(map[uint16]int)
+		for sym := 1; sym < len(row) && sym < g.TokenCount; sym++ {
+			idx := row[sym]
+			if idx != 0 && isReduceOnly[idx] {
+				freq[idx]++
+			}
+		}
+		if len(freq) == 0 {
+			continue
+		}
+		var bestIdx uint16
+		var bestCount int
+		for idx, cnt := range freq {
+			if cnt > bestCount {
+				bestIdx = idx
+				bestCount = cnt
+			}
+		}
+		g.ParseTable[state][0] = bestIdx
+	}
+
+	// Parse the flat small table into structured groups per state,
+	// add end (sym 0) where missing, and rebuild the flat table.
+	if len(g.SmallParseTable) == 0 || len(g.SmallParseTableMap) == 0 {
+		return
+	}
+	type symGroup struct {
+		sectionValue uint16
+		symbols      []uint16
+	}
+
+	table := g.SmallParseTable
+	modified := false
+
+	// First pass: check if any group needs patching.
+	for _, offset := range g.SmallParseTableMap {
+		pos := int(offset)
+		if pos >= len(table) {
+			continue
+		}
+		groupCount := int(table[pos])
+		pos++
+		for i := 0; i < groupCount; i++ {
+			if pos+1 >= len(table) {
+				break
+			}
+			sectionValue := table[pos]
+			symbolCount := int(table[pos+1])
+			pos += 2
+
+			if isReduceOnly[sectionValue] {
+				hasEnd := false
+				for j := 0; j < symbolCount; j++ {
+					if pos+j < len(table) && table[pos+j] == 0 {
+						hasEnd = true
+						break
+					}
+				}
+				if !hasEnd {
+					modified = true
+				}
+			}
+			pos += symbolCount
+		}
+	}
+
+	if !modified {
+		return
+	}
+
+	// Second pass: rebuild the table with end added to reduce-only groups.
+	stateGroups := make([][]symGroup, len(g.SmallParseTableMap))
+	for si, offset := range g.SmallParseTableMap {
+		pos := int(offset)
+		if pos >= len(table) {
+			continue
+		}
+		groupCount := int(table[pos])
+		pos++
+		groups := make([]symGroup, 0, groupCount)
+		for i := 0; i < groupCount; i++ {
+			if pos+1 >= len(table) {
+				break
+			}
+			sv := table[pos]
+			sc := int(table[pos+1])
+			pos += 2
+			syms := make([]uint16, 0, sc+1)
+			for j := 0; j < sc; j++ {
+				if pos >= len(table) {
+					break
+				}
+				syms = append(syms, table[pos])
+				pos++
+			}
+
+			// Add end (sym 0) if this is a reduce-only group and end is missing.
+			if isReduceOnly[sv] {
+				hasEnd := false
+				for _, s := range syms {
+					if s == 0 {
+						hasEnd = true
+						break
+					}
+				}
+				if !hasEnd {
+					syms = append(syms, 0)
+				}
+			}
+			groups = append(groups, symGroup{sectionValue: sv, symbols: syms})
+		}
+		stateGroups[si] = groups
+	}
+
+	// Rebuild flat table and map.
+	var newTable []uint16
+	newMap := make([]uint32, len(g.SmallParseTableMap))
+	for si, groups := range stateGroups {
+		newMap[si] = uint32(len(newTable))
+		newTable = append(newTable, uint16(len(groups)))
+		for _, grp := range groups {
+			newTable = append(newTable, grp.sectionValue)
+			newTable = append(newTable, uint16(len(grp.symbols)))
+			newTable = append(newTable, grp.symbols...)
+		}
+	}
+
+	g.SmallParseTable = newTable
+	g.SmallParseTableMap = newMap
 }
 
 // parseSmallParseTableValues extracts all uint16 values from the small parse

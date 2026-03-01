@@ -114,3 +114,11 @@ func TestTop50ParseSmokeNoErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestTop50HasDedicatedSmokeSamples(t *testing.T) {
+	for _, name := range top50CorrectnessLanguages {
+		if _, ok := ParseSmokeSamples[name]; !ok {
+			t.Fatalf("top50 language %q is missing a dedicated ParseSmokeSample", name)
+		}
+	}
+}
