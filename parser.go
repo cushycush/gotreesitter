@@ -220,7 +220,7 @@ func acquireParserScratch() *parserScratch {
 	return parserScratchPool.Get().(*parserScratch)
 }
 
-func releaseParserScratch(s *parserScratch) {
+func releaseParserScratch(s *parserScratch, skipGSSClear bool) {
 	if s == nil {
 		return
 	}
@@ -253,6 +253,7 @@ func releaseParserScratch(s *parserScratch) {
 		s.nodeLinks = s.nodeLinks[:0]
 	}
 	s.entries.reset()
+	s.gss.skipClear = skipGSSClear
 	s.gss.reset()
 	parserScratchPool.Put(s)
 }
@@ -1759,12 +1760,12 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 	if timing != nil {
 		parseStart = time.Now()
 	}
+	deferParentLinks := reuse == nil && oldTree == nil
 	if closer, ok := ts.(interface{ Close() }); ok {
 		defer closer.Close()
 	}
 	scratch := acquireParserScratch()
-	defer releaseParserScratch(scratch)
-	deferParentLinks := reuse == nil && oldTree == nil
+	defer releaseParserScratch(scratch, deferParentLinks)
 	trackChildErrors := !deferParentLinks
 
 	arena := acquireNodeArena(arenaClass)

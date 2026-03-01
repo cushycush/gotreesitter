@@ -21,6 +21,7 @@ type gssStack struct {
 type gssScratch struct {
 	slabs      []gssNodeSlab
 	slabCursor int
+	skipClear  bool
 }
 
 type gssNodeSlab struct {
@@ -218,6 +219,7 @@ func (s *gssScratch) allocNode(entry stackEntry, prev *gssNode, depth int) *gssN
 
 func (s *gssScratch) reset() {
 	if len(s.slabs) == 0 {
+		s.skipClear = false
 		return
 	}
 	total := 0
@@ -240,12 +242,21 @@ func (s *gssScratch) reset() {
 			s.slabs = s.slabs[:len(s.slabs)-keepFrom]
 		}
 	}
+	if s.skipClear {
+		for i := range s.slabs {
+			s.slabs[i].used = 0
+		}
+		s.slabCursor = 0
+		s.skipClear = false
+		return
+	}
 	for i := range s.slabs {
 		slab := &s.slabs[i]
 		clear(slab.data[:slab.used])
 		slab.used = 0
 	}
 	s.slabCursor = 0
+	s.skipClear = false
 }
 
 func (s *glrStack) toGSS(scratch *gssScratch) gssStack {
