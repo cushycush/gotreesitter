@@ -126,6 +126,42 @@ jobs:
             -max-allocs-regression 0.05 \
             -max-rss-regression 0.10
 
+      - name: Perf Definitive Outcome Summary
+        if: always()
+        run: |
+          set -euo pipefail
+          OUT_DIR="${RUNNER_TEMP}/bench-gate"
+          if [ ! -f "${OUT_DIR}/base.txt" ] || [ ! -f "${OUT_DIR}/head.txt" ]; then
+            {
+              echo "### Perf Definitive Outcome"
+              echo ""
+              echo "- outcome: \`INCONCLUSIVE\`"
+              echo "- reason: benchmark artifacts missing"
+            } >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          go run ./cmd/benchgate \
+            -base "${OUT_DIR}/base.txt" \
+            -head "${OUT_DIR}/head.txt" \
+            -max-ns-regression 0.08 \
+            -max-bytes-regression 0.05 \
+            -max-allocs-regression 0.05 \
+            -exit-on-fail=false \
+            -post-definitive \
+            -definitive-output "${OUT_DIR}/definitive.md" || true
+
+          if [ -f "${OUT_DIR}/definitive.md" ]; then
+            cat "${OUT_DIR}/definitive.md" >> "${GITHUB_STEP_SUMMARY}"
+          else
+            {
+              echo "### Perf Definitive Outcome"
+              echo ""
+              echo "- outcome: \`INCONCLUSIVE\`"
+              echo "- reason: no definitive win/loss from current thresholds"
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Upload Perf Artifacts
         if: always()
         uses: actions/upload-artifact@v4
