@@ -14,6 +14,7 @@ type Query struct {
 	captures []string // capture name by index
 
 	rootCandidatesBySymbol map[Symbol][]int
+	rootCandidatesDense    [][]int
 	rootFallbackCandidates []int
 }
 
@@ -306,6 +307,11 @@ func (q *Query) executeNode(root *Node, lang *Language, source []byte) []QueryMa
 }
 
 func (q *Query) rootPatternCandidates(sym Symbol) []int {
+	if int(sym) < len(q.rootCandidatesDense) {
+		if cands := q.rootCandidatesDense[sym]; cands != nil {
+			return cands
+		}
+	}
 	if cands, ok := q.rootCandidatesBySymbol[sym]; ok {
 		return cands
 	}
@@ -412,8 +418,16 @@ func (q *Query) buildRootPatternIndex() {
 	fallback := mergePatternIndexLists(wildcard, complex)
 	q.rootFallbackCandidates = fallback
 	q.rootCandidatesBySymbol = make(map[Symbol][]int, len(bySymbolExact))
+	maxSymbol := Symbol(0)
 	for sym, exact := range bySymbolExact {
+		if sym > maxSymbol {
+			maxSymbol = sym
+		}
 		q.rootCandidatesBySymbol[sym] = mergePatternIndexLists(exact, fallback)
+	}
+	q.rootCandidatesDense = make([][]int, int(maxSymbol)+1)
+	for sym, candidates := range q.rootCandidatesBySymbol {
+		q.rootCandidatesDense[sym] = candidates
 	}
 }
 
