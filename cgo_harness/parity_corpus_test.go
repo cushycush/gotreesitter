@@ -198,8 +198,8 @@ func TestParityCorpusFreshParse(t *testing.T) {
 		doc := doc
 		name := fmt.Sprintf("%s/%s", doc.lang, doc.label)
 		t.Run(name, func(t *testing.T) {
-			if meta, ok := paritySkips[doc.lang]; ok && meta.skipReason != "" {
-				t.Skipf("known mismatch: %s", meta.skipReason)
+			if reason := paritySkipReason(doc.lang); reason != "" {
+				t.Skipf("known mismatch: %s", reason)
 			}
 			if reason, unstable := unstableParityCorpusLangs[doc.lang]; unstable && !includeUnstableParityCorpusLangs() {
 				t.Skipf("unstable corpus parity disabled by default: %s", reason)

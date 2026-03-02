@@ -85,6 +85,10 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 	expectedRootSymbol := Symbol(0)
 	hasExpectedRoot := false
 	shouldWireParentLinks := oldTree == nil
+	if p != nil && p.hasRootSymbol {
+		expectedRootSymbol = p.rootSymbol
+		hasExpectedRoot = true
+	}
 	if oldTree != nil && oldTree.RootNode() != nil {
 		expectedRootSymbol = oldTree.RootNode().symbol
 		hasExpectedRoot = true

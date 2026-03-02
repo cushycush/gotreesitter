@@ -22,6 +22,8 @@ type Parser struct {
 	reuseScratch      reuseScratch
 	reuseMu           sync.Mutex
 	fullArenaHint     uint32
+	rootSymbol        Symbol
+	hasRootSymbol     bool
 	hasRecoverState   []bool
 	hasRecoverSymbol  []bool
 	recoverByState    [][]recoverSymbolAction
@@ -122,8 +124,110 @@ func NewParser(lang *Language) *Parser {
 		}
 		p.recoverByState, p.hasRecoverState, p.hasRecoverSymbol = buildRecoverActionsByState(lang)
 		p.hasKeywordState = buildKeywordStates(lang)
+		p.rootSymbol, p.hasRootSymbol = p.inferRootSymbol()
 	}
 	return p
+}
+
+func (p *Parser) inferRootSymbol() (Symbol, bool) {
+	if p == nil || p.language == nil {
+		return 0, false
+	}
+	lang := p.language
+	if lang.SymbolCount == 0 || lang.TokenCount >= lang.SymbolCount {
+		return 0, false
+	}
+	// ts2go grammars use InitialState=1 (tree-sitter convention). Hand-built
+	// test grammars often leave InitialState=0 and may not have a unique
+	// start-symbol shape; skip inference there.
+	if lang.InitialState == 0 {
+		return 0, false
+	}
+	initial := lang.InitialState
+	var candidate Symbol
+	found := false
+	for sym := Symbol(lang.TokenCount); uint32(sym) < lang.SymbolCount; sym++ {
+		gotoState := p.lookupGoto(initial, sym)
+		if gotoState == 0 {
+			continue
+		}
+		if !p.stateHasAcceptOnEOF(gotoState) {
+			continue
+		}
+		if !found {
+			candidate = sym
+			found = true
+			continue
+		}
+		if p.preferRootSymbol(sym, candidate) {
+			candidate = sym
+		}
+	}
+	return candidate, found
+}
+
+func (p *Parser) stateHasAcceptOnEOF(state StateID) bool {
+	if p == nil || p.language == nil {
+		return false
+	}
+	idx := p.lookupActionIndex(state, 0)
+	if idx == 0 || int(idx) >= len(p.language.ParseActions) {
+		return false
+	}
+	actions := p.language.ParseActions[idx].Actions
+	for i := range actions {
+		if actions[i].Type == ParseActionAccept {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *Parser) preferRootSymbol(candidate, current Symbol) bool {
+	score := func(sym Symbol) int {
+		s := 0
+		if p != nil && p.language != nil && int(sym) < len(p.language.SymbolMetadata) {
+			meta := p.language.SymbolMetadata[sym]
+			if meta.Visible {
+				s += 2
+			}
+			if meta.Named {
+				s++
+			}
+		}
+		if p != nil && p.language != nil && int(sym) < len(p.language.SymbolNames) {
+			switch p.language.SymbolNames[sym] {
+			case "source_file", "program", "module", "document", "file":
+				s += 3
+			}
+		}
+		return s
+	}
+	candidateScore := score(candidate)
+	currentScore := score(current)
+	if candidateScore != currentScore {
+		return candidateScore > currentScore
+	}
+	return candidate < current
+}
+
+func (p *Parser) canFinalizeNoActionEOF(s *glrStack) bool {
+	if s == nil || s.dead {
+		return false
+	}
+	top := s.top()
+	if top.node == nil {
+		return true
+	}
+	// When we can infer the grammar root symbol, finalization can still
+	// produce a valid root wrapper even if this stack top is a terminal.
+	if p != nil && p.hasRootSymbol {
+		return true
+	}
+	if p != nil && p.language != nil && uint32(top.node.symbol) >= p.language.TokenCount {
+		return true
+	}
+	return false
 }
 
 func (p *Parser) parseIncrementalInternal(source []byte, oldTree *Tree, ts TokenSource, timing *incrementalParseTiming) *Tree {
@@ -132,12 +236,13 @@ func (p *Parser) parseIncrementalInternal(source []byte, oldTree *Tree, ts Token
 		return oldTree
 	}
 
-	// DFA with external scanner cannot safely skip — scanner state must be
-	// preserved token-by-token, so reuse is disabled for that combination.
-	// All other token sources (DFA without external scanner, custom lexers)
-	// support efficient skipping via PointSkippableTokenSource.
-	if _, isDFA := ts.(*dfaTokenSource); isDFA && p.language != nil && p.language.ExternalScanner != nil {
-		return p.parseInternal(source, ts, nil, nil, arenaClassFull, timing, 0)
+	// Subtree reuse is currently safe only on DFA token sources without
+	// external scanners. Custom token-source bridges can disagree on token
+	// boundaries after edits and produce incremental/fresh mismatches.
+	if dts, isDFA := ts.(*dfaTokenSource); !isDFA || (dts.language != nil && dts.language.ExternalScanner != nil) {
+		arenaClass := incrementalArenaClassForSource(source)
+		// Keep parse-time memory behavior consistent with incremental parses.
+		return p.parseInternal(source, ts, nil, nil, arenaClass, timing, 0)
 	}
 
 	p.reuseMu.Lock()
@@ -536,9 +641,14 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 			if len(actions) == 0 {
 				if tok.Symbol == 0 {
 					if tok.StartByte == tok.EndByte {
-						// True EOF. If this is the only stack, return result.
+						// True EOF. If this is the only stack, return result when
+						// the stack is in a state that can represent a complete root.
 						if len(stacks) == 1 {
-							return finalize(stacks, ParseStopAccepted)
+							if p.canFinalizeNoActionEOF(s) {
+								return finalize(stacks, ParseStopAccepted)
+							}
+							s.dead = true
+							continue
 						}
 						// Multiple stacks at EOF: this one is done.
 						// Mark dead so merge picks the best remaining.

@@ -51,7 +51,6 @@ var paritySkips = map[string]parityMeta{
 	"tlaplus":      {skipReason: "structural parse divergence"},
 	"todotxt":      {skipReason: "structural parse divergence (Go produces error nodes)"},
 	"uxntal":       {skipReason: "structural parse divergence"},
-	"vhdl":         {skipReason: "structural parse divergence"},
 	"vimdoc":       {skipReason: "structural parse divergence"},
 }
 
@@ -142,6 +141,26 @@ var parityCompareFields = func() bool {
 		return false
 	}
 }()
+
+var parityIgnoreKnownSkips = func() bool {
+	raw := strings.TrimSpace(os.Getenv("GTS_PARITY_IGNORE_KNOWN_SKIPS"))
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}()
+
+func paritySkipReason(name string) string {
+	if parityIgnoreKnownSkips {
+		return ""
+	}
+	if meta, ok := paritySkips[name]; ok {
+		return meta.skipReason
+	}
+	return ""
+}
 
 type nodeSnapshot struct {
 	Type       string
@@ -611,8 +630,8 @@ func TestParityFreshParse(t *testing.T) {
 		}
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			if meta, ok := paritySkips[tc.name]; ok && meta.skipReason != "" {
-				t.Skipf("known mismatch: %s", meta.skipReason)
+			if reason := paritySkipReason(tc.name); reason != "" {
+				t.Skipf("known mismatch: %s", reason)
 			}
 			runParityCase(t, tc, "fresh", normalizedSource(tc.name, tc.source))
 		})
@@ -628,8 +647,8 @@ func TestParityIncrementalParse(t *testing.T) {
 		}
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			if meta, ok := paritySkips[tc.name]; ok && meta.skipReason != "" {
-				t.Skipf("known mismatch: %s", meta.skipReason)
+			if reason := paritySkipReason(tc.name); reason != "" {
+				t.Skipf("known mismatch: %s", reason)
 			}
 
 			src := normalizedSource(tc.name, tc.source)
@@ -687,7 +706,6 @@ func TestParityIncrementalParse(t *testing.T) {
 					}
 					continue
 				}
-
 				// Candidate sites must also preserve Go incremental correctness:
 				// incremental parse on edited source must match Go fresh parse.
 				candidateOldTree, _, err := parseWithGo(tc, src, nil)
@@ -717,7 +735,6 @@ func TestParityIncrementalParse(t *testing.T) {
 					}
 					continue
 				}
-
 				validSiteCount++
 				if !chosenOK {
 					edited = candidateEdited
@@ -792,8 +809,8 @@ func TestParityHasNoErrors(t *testing.T) {
 		}
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			if meta, ok := paritySkips[tc.name]; ok && meta.skipReason != "" {
-				t.Skipf("known mismatch: %s", meta.skipReason)
+			if reason := paritySkipReason(tc.name); reason != "" {
+				t.Skipf("known mismatch: %s", reason)
 			}
 			cLang, err := ParityCLanguage(tc.name)
 			if err != nil {
