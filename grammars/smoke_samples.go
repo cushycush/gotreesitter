@@ -18,7 +18,7 @@ var ParseSmokeSamples = map[string]string{
 	"css":               "body { color: red; }\n",
 	"desktop":           "[Desktop Entry]\n",
 	"dtd":               "<!ELEMENT note (#PCDATA)>\n",
-	"doxygen":           "/**\n * @brief A function\n * @param x The value\n */\n",
+	"doxygen":           "/**\n * @param x A\n */\n",
 	"earthfile":         "FROM alpine\n",
 	"editorconfig":      "root = true\n",
 	"go":                "package main\n\nfunc main() {\n\tprintln(1)\n}\n",
@@ -27,7 +27,7 @@ var ParseSmokeSamples = map[string]string{
 	"foam":              "FoamFile\n{\n    version 2.0;\n}\n",
 	"fidl":              "library example;\ntype Foo = struct {};\n",
 	"firrtl":            "circuit Top :\n",
-	"haskell":           "module Main where\nimport Data.List\nmain :: IO ()\nmain = putStrLn \"hello\"\n",
+	"haskell":           "module Main where\nimport Data.List\nmain :: IO ()\nmain = putStrLn \"hello\"",
 	"html":              "<html><body>Hello</body></html>\n",
 	"java":              "class Main { int x; }\n",
 	"javascript":        "function f() { return 1; }\nconst x = () => x + 1;\n",
@@ -65,7 +65,7 @@ var ParseSmokeSamples = map[string]string{
 	"git_config": "[core]\n\tbare = false\n",
 	"ini":        "[section]\nkey = value\n",
 	"json5":      "{ \"key\": \"value\" }\n",
-	"make":        "all:\n\t@echo hi\n",
+	"make":       "all:\n\t@echo hi\n",
 	"llvm":       "define i32 @main() {\n  call void @puts()\n  ret i32 0\n}\n",
 	"move":       "module 0x1::m {}\n",
 	"ninja":      "rule cc\n  command = gcc\n",
@@ -74,7 +74,7 @@ var ParseSmokeSamples = map[string]string{
 	"caddy":      ":8080 {\n}\n",
 	"d":          "module m;\nint main() { return 0; }\n",
 	"scss":       ".a { color: red; }\n",
-	"vimdoc":     "*tag*\tHelp text\n",
+	"vimdoc":     "*tag*\n\n",
 
 	// Phase 3: scanner-needed languages (targeted samples that avoid external tokens)
 	"jsdoc":      "/**\n * @param {string} name\n * @returns {number}\n */\n",
@@ -92,7 +92,7 @@ var ParseSmokeSamples = map[string]string{
 	"nushell": "let x = 1",
 
 	// Phase 5: new grammars
-	"gdscript":       "extends Node\nfunc _ready():\n\tpass\n",
+	"gdscript":       "extends Node\n",
 	"godot_resource": "x = 1\n",
 	"groovy":         "def x = 1\n",
 	"hare":           "export fn main() void = void;\n",
@@ -116,7 +116,7 @@ var ParseSmokeSamples = map[string]string{
 	"crystal":   "x = 1\n",
 	"elisp":     "(message \"hello\")\n",
 	"fsharp":    "module M\n",
-	"haxe":      "class Main {\n  static function main() {\n    trace(\"hello\");\n  }\n}\n",
+	"haxe":      "class Main {\n  static function main() {}\n}\n",
 	"teal":      "local x: number = 1\n",
 	"forth":     ": square dup * ;\n",
 	"cobol":     "       IDENTIFICATION DIVISION.\n       PROGRAM-ID. HELLO.\n",

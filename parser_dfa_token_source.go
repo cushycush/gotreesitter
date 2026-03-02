@@ -36,6 +36,7 @@ type dfaTokenSource struct {
 }
 
 const maxConsecutiveZeroWidthTokens = 4
+const maxConsecutiveZeroWidthTokensExternal = 128
 
 func (d *dfaTokenSource) Close() {
 	if d.language == nil || d.language.ExternalScanner == nil || d.externalPayload == nil {
@@ -93,7 +94,11 @@ func (d *dfaTokenSource) Next() Token {
 				d.zeroWidthPos = d.lexer.pos
 				d.zeroWidthCount = 1
 			}
-			if d.zeroWidthCount > maxConsecutiveZeroWidthTokens {
+			limit := maxConsecutiveZeroWidthTokens
+			if d.language != nil && d.language.Name == "yaml" {
+				limit = maxConsecutiveZeroWidthTokensExternal
+			}
+			if d.zeroWidthCount > limit {
 				if d.lexer.pos < len(d.lexer.source) {
 					if DebugDFA.Load() {
 						fmt.Printf("  ZERO-WIDTH cap skip at pos=%d state=%d sym=%d\n", d.lexer.pos, d.state, tok.Symbol)
@@ -280,7 +285,8 @@ func (d *dfaTokenSource) nextExternalToken() (Token, bool) {
 	// C tree-sitter avoids this via its ERROR_STATE lex mode which causes
 	// the scanner to bail out via the __error_recovery sentinel. The Go
 	// runtime instead tracks tried indices per (position, state).
-	if d.lexer.pos == d.extZeroPos && d.state == d.extZeroState && len(d.extZeroTried) > 0 {
+	if d.language != nil && d.language.Name != "yaml" &&
+		d.lexer.pos == d.extZeroPos && d.state == d.extZeroState && len(d.extZeroTried) > 0 {
 		for i := range valid {
 			if i < len(d.extZeroTried) && d.extZeroTried[i] {
 				valid[i] = false

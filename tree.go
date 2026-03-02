@@ -297,7 +297,13 @@ func (n *Node) Text(source []byte) string {
 // Type returns the node's type name from the language.
 func (n *Node) Type(lang *Language) string {
 	if int(n.symbol) < len(lang.SymbolNames) {
-		return lang.SymbolNames[n.symbol]
+		name := lang.SymbolNames[n.symbol]
+		// Some generated grammars escape punctuation symbol names in parse
+		// tables (e.g. "\\?"). Match C tree-sitter display names.
+		if name == "\\?" {
+			return "?"
+		}
+		return name
 	}
 	return ""
 }

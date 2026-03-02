@@ -141,13 +141,15 @@ func init() {
 		// [0]=_descendant_operator [1]=_pseudo_class_selector_colon
 		// [2]=__error_recovery [3]=_concat
 		"scss": {
-			{false, false, false, false},       // state 0: no external tokens
-			{true, true, true, true},            // state 1: all tokens
-			{false, true, false, false},          // state 2: colon only
-			{true, true, false, true},            // state 3: desc_op, colon, concat
-			{true, true, false, false},           // state 4: desc_op, colon
-			{false, false, false, true},           // state 5: concat only
+			{false, false, false, false}, // state 0: no external tokens
+			{true, true, true, true},     // state 1: all tokens
+			{false, true, false, false},  // state 2: colon only
+			{true, true, false, true},    // state 3: desc_op, colon, concat
+			{true, true, false, false},   // state 4: desc_op, colon
+			{false, false, false, true},  // state 5: concat only
 		},
+		// YAML: generated from tree-sitter-yaml ts_external_scanner_states.
+		"yaml": yamlExternalLexStates,
 	}
 
 	// Register scanners in the embedded loader's registry so that direct

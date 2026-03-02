@@ -550,17 +550,27 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		if stateful, ok := ts.(parserStateTokenSource); ok {
 			stateful.SetParserState(stacks[0].top().state)
 			if len(stacks) > 1 {
-				glrBuf := scratch.glrStates[:0]
-				if cap(glrBuf) < len(stacks) {
-					glrBuf = make([]StateID, 0, len(stacks))
-				}
-				for si := range stacks {
-					if !stacks[si].dead {
-						glrBuf = append(glrBuf, stacks[si].top().state)
+				if p.language != nil && p.language.Name == "yaml" && p.language.ExternalScanner != nil {
+					// External scanners are stateful. Until scanner state is
+					// tracked per GLR stack, drive tokenization from the primary
+					// stack state only to avoid over-admitting tokens from state unions.
+					if len(scratch.glrStates) > 0 {
+						scratch.glrStates = scratch.glrStates[:0]
 					}
+					stateful.SetGLRStates(nil)
+				} else {
+					glrBuf := scratch.glrStates[:0]
+					if cap(glrBuf) < len(stacks) {
+						glrBuf = make([]StateID, 0, len(stacks))
+					}
+					for si := range stacks {
+						if !stacks[si].dead {
+							glrBuf = append(glrBuf, stacks[si].top().state)
+						}
+					}
+					scratch.glrStates = glrBuf
+					stateful.SetGLRStates(glrBuf)
 				}
-				scratch.glrStates = glrBuf
-				stateful.SetGLRStates(glrBuf)
 			} else {
 				if len(scratch.glrStates) > 0 {
 					scratch.glrStates = scratch.glrStates[:0]
@@ -720,9 +730,20 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				// scanner state can diverge from C runtime behavior. Until
 				// per-stack scanner state is modeled, keep external-scanner
 				// parses deterministic at conflicts.
-				if deterministicExternalConflicts && p.language != nil && p.language.ExternalScanner != nil {
-					act := actions[0]
-					p.applyAction(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks, &trackChildErrors)
+				if deterministicExternalConflicts && p.language != nil && p.language.Name == "yaml" && p.language.ExternalScanner != nil {
+					chosen := actions[0]
+					for ai := 1; ai < len(actions); ai++ {
+						cand := actions[ai]
+						if cand.Type == ParseActionShift {
+							chosen = cand
+							break
+						}
+						if chosen.Type == ParseActionReduce && cand.Type == ParseActionReduce &&
+							cand.DynamicPrecedence > chosen.DynamicPrecedence {
+							chosen = cand
+						}
+					}
+					p.applyAction(s, chosen, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks, &trackChildErrors)
 					continue
 				}
 				if perfCountersEnabled {

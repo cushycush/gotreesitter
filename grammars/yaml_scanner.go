@@ -450,7 +450,9 @@ func (e *yamlEnv) advSchStt(curChr int32) {
 	rlt := &e.rltSch
 	switch e.schStt {
 	case schSttFrz:
-		return
+		// Keep frozen state, but still run the post-switch non-whitespace
+		// coercion to string (matches upstream schema.core.c behavior).
+		break
 	case 0:
 		if curChr == '.' {
 			*rlt = rsStr
@@ -1298,7 +1300,7 @@ func (e *yamlEnv) scnBlkStrBgn(resultSymbol int) bool {
 	curInd := e.curInd()
 	ind := int16(-1)
 	if e.lka() >= '1' && e.lka() <= '9' {
-		ind = int16(e.lka()-'1')
+		ind = int16(e.lka() - '1')
 		e.adv()
 		if e.lka() == '+' || e.lka() == '-' {
 			e.adv()
@@ -1306,7 +1308,7 @@ func (e *yamlEnv) scnBlkStrBgn(resultSymbol int) bool {
 	} else if e.lka() == '+' || e.lka() == '-' {
 		e.adv()
 		if e.lka() >= '1' && e.lka() <= '9' {
-			ind = int16(e.lka()-'1')
+			ind = int16(e.lka() - '1')
 			e.adv()
 		}
 	}
