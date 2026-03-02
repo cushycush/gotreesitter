@@ -107,6 +107,8 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 	if len(nodes) == 1 {
 		candidate := nodes[0]
 		extendNodeToTrailingWhitespace(candidate, source)
+		p.normalizeRootSourceStart(candidate, source)
+		normalizeKnownSpanAttribution(candidate, source, p.language)
 		if !hasExpectedRoot || candidate.symbol == expectedRootSymbol {
 			if shouldWireParentLinks {
 				wireParentLinksWithScratch(candidate, linkScratch)
@@ -125,6 +127,8 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 		}
 		root := newParentNodeInArena(arena, expectedRootSymbol, true, rootChildren, nil, 0)
 		extendNodeToTrailingWhitespace(root, source)
+		p.normalizeRootSourceStart(root, source)
+		normalizeKnownSpanAttribution(root, source, p.language)
 		if shouldWireParentLinks {
 			wireParentLinksWithScratch(root, linkScratch)
 		}
@@ -212,6 +216,8 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 			}
 		}
 		extendNodeToTrailingWhitespace(realRoot, source)
+		p.normalizeRootSourceStart(realRoot, source)
+		normalizeKnownSpanAttribution(realRoot, source, p.language)
 		if !hasExpectedRoot || realRoot.symbol == expectedRootSymbol {
 			if shouldWireParentLinks {
 				wireParentLinksWithScratch(realRoot, linkScratch)
@@ -228,8 +234,82 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 	root := newParentNodeInArena(arena, rootSymbol, true, rootChildren, nil, 0)
 	root.hasError = true
 	extendNodeToTrailingWhitespace(root, source)
+	p.normalizeRootSourceStart(root, source)
+	normalizeKnownSpanAttribution(root, source, p.language)
 	if shouldWireParentLinks {
 		wireParentLinksWithScratch(root, linkScratch)
 	}
 	return newTreeWithArenas(root, source, p.language, arena, getBorrowed())
+}
+
+func (p *Parser) normalizeRootSourceStart(root *Node, source []byte) {
+	if root == nil || root.startByte == 0 || len(source) == 0 {
+		return
+	}
+	// Included-range parses intentionally preserve range-local root spans.
+	if p != nil && len(p.included) > 0 {
+		return
+	}
+	root.startByte = 0
+	root.startPoint = Point{}
+}
+
+// normalizeKnownSpanAttribution applies narrow compatibility fixes where
+// C tree-sitter attributes trailing trivia to a grouped node but this runtime
+// currently drops it during child normalization.
+func normalizeKnownSpanAttribution(root *Node, source []byte, lang *Language) {
+	normalizeHaskellImportsSpan(root, source, lang)
+}
+
+func bytesAreTrivia(b []byte) bool {
+	for _, c := range b {
+		switch c {
+		case ' ', '\t', '\n', '\r':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeHaskellImportsSpan(root *Node, source []byte, lang *Language) {
+	if root == nil || len(root.children) < 2 || len(source) == 0 || lang == nil || lang.Name != "haskell" {
+		return
+	}
+	for i := 0; i+1 < len(root.children); i++ {
+		left := root.children[i]
+		right := root.children[i+1]
+		if left == nil || right == nil {
+			continue
+		}
+		if left.Type(lang) != "imports" {
+			continue
+		}
+		if left.endByte >= right.startByte {
+			continue
+		}
+		if left.endByte > uint32(len(source)) || right.startByte > uint32(len(source)) {
+			continue
+		}
+		gap := source[left.endByte:right.startByte]
+		if !bytesAreTrivia(gap) {
+			continue
+		}
+		left.endByte = right.startByte
+		left.endPoint = advancePointByBytes(left.endPoint, gap)
+	}
+}
+
+func advancePointByBytes(start Point, b []byte) Point {
+	p := start
+	for _, c := range b {
+		if c == '\n' {
+			p.Row++
+			p.Column = 0
+			continue
+		}
+		p.Column++
+	}
+	return p
 }

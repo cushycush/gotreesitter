@@ -2,6 +2,26 @@
 
 This module contains CGo-only parity and baseline benchmark harnesses used to compare `gotreesitter` against native C tree-sitter parsers.
 
+## Unified Harness Gate
+
+From repo root, run the unified gate runner:
+
+```sh
+go run ./cmd/harnessgate -mode all
+```
+
+This executes:
+
+- root correctness (`go test ./... -count=1`)
+- curated cgo parity suites
+- stable perf trio (optionally benchgate-compared to a baseline)
+
+Artifacts are written under `harness_out/`.
+
+Framework details (oracles, corpus tiers, gate policy):
+
+- `cgo_harness/HARNESS_FRAMEWORK.md`
+
 ## Run Parity Tests
 
 ```sh

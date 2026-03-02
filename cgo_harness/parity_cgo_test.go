@@ -35,7 +35,6 @@ var paritySkips = map[string]parityMeta{
 	// These have real smoke samples and still diverge from C runtime shape.
 	"doxygen":  {skipReason: "structural parse divergence"},
 	"gdscript": {skipReason: "structural parse divergence"},
-	"haxe":     {skipReason: "structural parse divergence"},
 	"vimdoc":   {skipReason: "structural parse divergence"},
 }
 
@@ -126,37 +125,11 @@ var curatedStructuralLanguages = map[string]bool{
 	"zig":        true,
 }
 
-// curatedHighlightLanguages remains a tighter set for highlight-capture
-// parity gating. Structural parity can advance independently.
-var curatedHighlightLanguages = map[string]bool{
-	"bash":       true,
-	"c":          true,
-	"cpp":        true,
-	"css":        true,
-	"d":          true,
-	"elixir":     true,
-	"go":         true,
-	"html":       true,
-	"ini":        true,
-	"java":       true,
-	"javascript": true,
-	"julia":      true,
-	"kotlin":     true,
-	"lua":        true,
-	"make":       true,
-	"php":        true,
-	"python":     true,
-	"ruby":       true,
-	"rust":       true,
-	"scala":      true,
-	"scss":       true,
-	"sql":        true,
-	"swift":      true,
-	"toml":       true,
-	"tsx":        true,
-	"typescript": true,
-	"yaml":       true,
-}
+// curatedHighlightLanguages mirrors structural parity breadth (top-set) and
+// uses per-language no-regression thresholds in parity_highlight_test.go.
+// Languages with no shipped highlight query (e.g. swift currently) are skipped
+// by the highlight parity runner.
+var curatedHighlightLanguages = curatedStructuralLanguages
 
 var parityEntriesByName, paritySupportByName = func() (map[string]grammars.LangEntry, map[string]grammars.ParseSupport) {
 	entries := make(map[string]grammars.LangEntry)

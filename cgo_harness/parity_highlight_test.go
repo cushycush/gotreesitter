@@ -35,13 +35,14 @@ func (h highlightCapture) String() string {
 //
 // Tier 3: All other languages — diagnostic only (logged, never blocking).
 
-// knownHighlightDivergence tracks C-only capture counts for curated languages.
-// This map can shrink but must not grow.
+// knownHighlightDivergence tracks C-only capture counts for curated languages
+// with strict custom thresholds.
 var knownHighlightDivergence = map[string]int{
 	"julia": 1, // keyword.import "end" in module_definition alternation
 }
 
-// knownHighlightGoOnly tracks Go-only capture counts for curated languages.
+// knownHighlightGoOnly tracks Go-only capture counts for curated languages with
+// strict custom thresholds.
 var knownHighlightGoOnly = map[string]int{
 	// All curated languages currently have 0 Go-only captures.
 }
@@ -277,26 +278,43 @@ func TestParityHighlight(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			goOnlyCount, cMissingCount := runHighlightParity(t, tc)
+			goThresh, cThresh := highlightThresholdsForLanguage(tc.name)
 
 			// Check Go-only (false positives) against curated threshold.
-			goThresh := knownHighlightGoOnly[tc.name]
 			if goOnlyCount > goThresh {
 				t.Errorf("Go-only captures: %d (threshold %d, %d new)",
 					goOnlyCount, goThresh, goOnlyCount-goThresh)
 			} else if goOnlyCount == 0 && goThresh > 0 {
-				t.Logf("IMPROVED: Go-only was %d, now 0 — remove %q from knownHighlightGoOnly", goThresh, tc.name)
+				t.Logf("IMPROVED: Go-only was %d, now 0 — lower threshold for %q", goThresh, tc.name)
 			}
 
 			// Check C-missing against curated threshold.
-			cThresh := knownHighlightDivergence[tc.name]
 			if cMissingCount > cThresh {
 				t.Errorf("C-missing captures: %d (threshold %d, %d new)",
 					cMissingCount, cThresh, cMissingCount-cThresh)
 			} else if cMissingCount == 0 && cThresh > 0 {
-				t.Logf("IMPROVED: C-missing was %d, now 0 — remove %q from knownHighlightDivergence", cThresh, tc.name)
+				t.Logf("IMPROVED: C-missing was %d, now 0 — lower threshold for %q", cThresh, tc.name)
 			}
 		})
 	}
+}
+
+func highlightThresholdsForLanguage(name string) (goOnly, cMissing int) {
+	if v, ok := knownHighlightGoOnly[name]; ok {
+		goOnly = v
+	}
+	if v, ok := knownHighlightDivergence[name]; ok {
+		cMissing = v
+	}
+	if tol, ok := knownDegradedHighlight[name]; ok {
+		if tol.goOnly > goOnly {
+			goOnly = tol.goOnly
+		}
+		if tol.cMissing > cMissing {
+			cMissing = tol.cMissing
+		}
+	}
+	return goOnly, cMissing
 }
 
 // TestParityHighlightAllGrammars runs highlight parity across all 206 languages
