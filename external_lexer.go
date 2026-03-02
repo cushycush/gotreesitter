@@ -61,8 +61,12 @@ func (l *ExternalLexer) Advance(skip bool) {
 	if skip {
 		l.startPos = l.pos
 		l.startPoint = l.point
-		l.endPos = l.pos
-		l.endPoint = l.point
+		// Note: endPos/endPoint are NOT updated here.  In C tree-sitter,
+		// ts_lexer_advance(skip=true) only moves token_start_position, not
+		// token_end_position.  MarkEnd() is the sole way to advance endPos.
+		// This matters for scanners (e.g. YAML) that mark the end before
+		// skipping whitespace and then return a zero-width token: the parser
+		// must re-position at the mark, not past the skipped bytes.
 	}
 }
 
@@ -94,8 +98,19 @@ func (l *ExternalLexer) token() (Token, bool) {
 	if !l.hasResult {
 		return Token{}, false
 	}
+	// When endPos < startPos the scanner marked a position before skip
+	// advanced startPos past it.  This yields a zero-width token at the
+	// mark position — the parser will re-position the lexer there so the
+	// skipped bytes are re-encountered on the next scan, matching C
+	// tree-sitter semantics.
 	if l.endPos < l.startPos {
-		return Token{}, false
+		return Token{
+			Symbol:     l.resultSymbol,
+			StartByte:  uint32(l.endPos),
+			EndByte:    uint32(l.endPos),
+			StartPoint: l.endPoint,
+			EndPoint:   l.endPoint,
+		}, true
 	}
 
 	return Token{
