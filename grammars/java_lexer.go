@@ -57,9 +57,9 @@ func NewJavaTokenSource(src []byte, lang *gotreesitter.Language) (*JavaTokenSour
 	}
 
 	ts := &JavaTokenSource{
-		src:            src,
-		lang:           lang,
-		cur:            newSourceCursor(src),
+		src:  src,
+		lang: lang,
+		cur:  newSourceCursor(src),
 	}
 
 	tl := newTokenLookup(lang, "java")
@@ -102,6 +102,12 @@ func NewJavaTokenSourceOrEOF(src []byte, lang *gotreesitter.Language) gotreesitt
 		return tokenSourceInitError{sourceLen: uint32(len(src))}
 	}
 	return ts
+}
+
+// SupportsIncrementalReuse reports that JavaTokenSource preserves stable token
+// boundaries across edits and supports deterministic SkipToByte behavior.
+func (ts *JavaTokenSource) SupportsIncrementalReuse() bool {
+	return true
 }
 
 func (ts *JavaTokenSource) Next() gotreesitter.Token {

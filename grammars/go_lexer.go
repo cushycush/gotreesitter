@@ -152,6 +152,12 @@ func (ts *GoTokenSource) Reset(src []byte) {
 	ts.initScanner(0)
 }
 
+// SupportsIncrementalReuse reports that GoTokenSource preserves stable token
+// boundaries across edits and supports deterministic SkipToByte* behavior.
+func (ts *GoTokenSource) SupportsIncrementalReuse() bool {
+	return true
+}
+
 func (ts *GoTokenSource) initScanner(base int) {
 	if base < 0 {
 		base = 0

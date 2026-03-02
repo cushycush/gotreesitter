@@ -51,9 +51,9 @@ func NewLuaTokenSource(src []byte, lang *gotreesitter.Language) (*LuaTokenSource
 	}
 
 	ts := &LuaTokenSource{
-		src:            src,
-		lang:           lang,
-		cur:            newSourceCursor(src),
+		src:  src,
+		lang: lang,
+		cur:  newSourceCursor(src),
 	}
 
 	tl := newTokenLookup(lang, "lua")
@@ -91,6 +91,12 @@ func NewLuaTokenSourceOrEOF(src []byte, lang *gotreesitter.Language) gotreesitte
 		return tokenSourceInitError{sourceLen: uint32(len(src))}
 	}
 	return ts
+}
+
+// SupportsIncrementalReuse reports that LuaTokenSource preserves stable token
+// boundaries across edits and supports deterministic SkipToByte behavior.
+func (ts *LuaTokenSource) SupportsIncrementalReuse() bool {
+	return true
 }
 
 func (ts *LuaTokenSource) Next() gotreesitter.Token {

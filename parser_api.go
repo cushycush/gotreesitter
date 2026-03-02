@@ -181,6 +181,15 @@ type PointSkippableTokenSource interface {
 	SkipToByteWithPoint(offset uint32, pt Point) Token
 }
 
+// IncrementalReuseTokenSource is an opt-in marker for custom token sources
+// that are safe for incremental subtree reuse. Implementations must provide
+// stable token boundaries across edits and support deterministic SkipToByte*
+// behavior so reused-tree fast-forwarding remains correct.
+type IncrementalReuseTokenSource interface {
+	TokenSource
+	SupportsIncrementalReuse() bool
+}
+
 type parserStateTokenSource interface {
 	SetParserState(state StateID)
 	// SetGLRStates provides all active GLR stack states so the token source

@@ -103,6 +103,12 @@ func NewHTMLTokenSourceOrEOF(src []byte, lang *gotreesitter.Language) gotreesitt
 	return ts
 }
 
+// SupportsIncrementalReuse reports that HTMLTokenSource preserves stable token
+// boundaries across edits and supports deterministic SkipToByte behavior.
+func (ts *HTMLTokenSource) SupportsIncrementalReuse() bool {
+	return true
+}
+
 func (ts *HTMLTokenSource) Next() gotreesitter.Token {
 	if ts.done {
 		return ts.eofToken()

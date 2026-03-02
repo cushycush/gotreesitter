@@ -236,10 +236,9 @@ func (p *Parser) parseIncrementalInternal(source []byte, oldTree *Tree, ts Token
 		return oldTree
 	}
 
-	// Subtree reuse is currently safe only on DFA token sources without
-	// external scanners. Custom token-source bridges can disagree on token
-	// boundaries after edits and produce incremental/fresh mismatches.
-	if dts, isDFA := ts.(*dfaTokenSource); !isDFA || (dts.language != nil && dts.language.ExternalScanner != nil) {
+	// Subtree reuse is safe for DFA token sources without external scanners
+	// and for custom token sources that explicitly opt in.
+	if !tokenSourceSupportsIncrementalReuse(ts) {
 		arenaClass := incrementalArenaClassForSource(source)
 		// Keep parse-time memory behavior consistent with incremental parses.
 		return p.parseInternal(source, ts, nil, nil, arenaClass, timing, 0)
@@ -268,6 +267,19 @@ func (p *Parser) parseIncrementalInternal(source []byte, oldTree *Tree, ts Token
 		}
 	}
 	return tree
+}
+
+func tokenSourceSupportsIncrementalReuse(ts TokenSource) bool {
+	if ts == nil {
+		return false
+	}
+	if dts, ok := ts.(*dfaTokenSource); ok {
+		return dts.language == nil || dts.language.ExternalScanner == nil
+	}
+	if reusable, ok := ts.(IncrementalReuseTokenSource); ok {
+		return reusable.SupportsIncrementalReuse()
+	}
+	return false
 }
 
 func incrementalArenaClassForSource(source []byte) arenaClass {

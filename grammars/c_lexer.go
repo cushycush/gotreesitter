@@ -70,9 +70,9 @@ func NewCTokenSource(src []byte, lang *gotreesitter.Language) (*CTokenSource, er
 	}
 
 	ts := &CTokenSource{
-		src:            src,
-		lang:           lang,
-		cur:            newSourceCursor(src),
+		src:  src,
+		lang: lang,
+		cur:  newSourceCursor(src),
 	}
 
 	tl := newTokenLookup(lang, "c")
@@ -108,6 +108,12 @@ func NewCTokenSourceOrEOF(src []byte, lang *gotreesitter.Language) gotreesitter.
 		return tokenSourceInitError{sourceLen: uint32(len(src))}
 	}
 	return ts
+}
+
+// SupportsIncrementalReuse reports that CTokenSource preserves stable token
+// boundaries across edits and supports deterministic SkipToByte behavior.
+func (ts *CTokenSource) SupportsIncrementalReuse() bool {
+	return true
 }
 
 func (ts *CTokenSource) Next() gotreesitter.Token {
@@ -270,8 +276,8 @@ func (ts *CTokenSource) buildSymbolTables() {
 	}
 
 	base := &CTokenSource{
-		literalSymbols: literalSymbols,
-		quoteSymbol:    ts.quoteSymbol,
+		literalSymbols:   literalSymbols,
+		quoteSymbol:      ts.quoteSymbol,
 		apostropheSymbol: ts.apostropheSymbol,
 	}
 	stringOpeners := base.collectOpeners([]string{"u8\"", "L\"", "U\"", "u\"", "\""}, ts.quoteSymbol)

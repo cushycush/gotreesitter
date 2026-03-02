@@ -405,6 +405,88 @@ func main() {
 	}
 }
 
+func TestParseGoIncrementalWithTokenSourceReusesSubtrees(t *testing.T) {
+	lang := grammars.GoLanguage()
+	parser := gotreesitter.NewParser(lang)
+
+	src := []byte(`package main
+
+func main() {
+	v := 0
+	_ = v
+}
+`)
+	editAt := bytes.Index(src, []byte("v := 0"))
+	if editAt < 0 {
+		t.Fatal("could not find edit marker")
+	}
+	editAt += len("v := ")
+
+	start := pointAtOffset(src, editAt)
+	end := pointAtOffset(src, editAt+1)
+	edit := gotreesitter.InputEdit{
+		StartByte:   uint32(editAt),
+		OldEndByte:  uint32(editAt + 1),
+		NewEndByte:  uint32(editAt + 1),
+		StartPoint:  start,
+		OldEndPoint: end,
+		NewEndPoint: end,
+	}
+
+	ts := mustGoTokenSource(t, src, lang)
+	oldTree, err := parser.ParseWithTokenSource(src, ts)
+	if err != nil {
+		t.Fatalf("initial ParseWithTokenSource failed: %v", err)
+	}
+	if oldTree.RootNode() == nil {
+		t.Fatal("initial parse returned nil root")
+	}
+
+	next := append([]byte(nil), src...)
+	next[editAt] = '1'
+	oldTree.Edit(edit)
+	ts.Reset(next)
+
+	newTree, prof, err := parser.ParseIncrementalWithTokenSourceProfiled(next, oldTree, ts)
+	if err != nil {
+		t.Fatalf("ParseIncrementalWithTokenSourceProfiled failed: %v", err)
+	}
+	if newTree.RootNode() == nil {
+		t.Fatal("incremental parse returned nil root")
+	}
+	if got, want := newTree.RootNode().EndByte(), uint32(len(next)); got != want {
+		t.Fatalf("incremental parse truncated: root.EndByte=%d want=%d", got, want)
+	}
+	if newTree.RootNode().HasError() {
+		t.Fatal("incremental parse produced error root")
+	}
+	if prof.ReusedSubtrees == 0 {
+		t.Fatalf("expected subtree reuse, got profile: %+v", prof)
+	}
+	if prof.ReusedBytes == 0 {
+		t.Fatalf("expected reused bytes > 0, got profile: %+v", prof)
+	}
+
+	// Sanity-check against a fresh parse of the edited source.
+	freshTS := mustGoTokenSource(t, next, lang)
+	freshTree, err := parser.ParseWithTokenSource(next, freshTS)
+	if err != nil {
+		t.Fatalf("fresh ParseWithTokenSource failed: %v", err)
+	}
+	if freshTree.RootNode() == nil {
+		t.Fatal("fresh parse returned nil root")
+	}
+	if got, want := freshTree.RootNode().EndByte(), uint32(len(next)); got != want {
+		t.Fatalf("fresh parse truncated: root.EndByte=%d want=%d", got, want)
+	}
+	if freshTree.RootNode().HasError() {
+		t.Fatal("fresh parse produced error root")
+	}
+	if !bytes.Equal([]byte(newTree.RootNode().Text(next)), []byte(freshTree.RootNode().Text(next))) {
+		t.Fatalf("incremental root text mismatch with fresh parse")
+	}
+}
+
 func TestParseGoIncrementalRangeClauseReturnEdit(t *testing.T) {
 	lang := grammars.GoLanguage()
 

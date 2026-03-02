@@ -101,6 +101,12 @@ func NewJSONTokenSourceOrEOF(src []byte, lang *gotreesitter.Language) gotreesitt
 	return ts
 }
 
+// SupportsIncrementalReuse reports that JSONTokenSource preserves stable token
+// boundaries across edits and supports deterministic SkipToByte behavior.
+func (ts *JSONTokenSource) SupportsIncrementalReuse() bool {
+	return true
+}
+
 func (ts *JSONTokenSource) Next() gotreesitter.Token {
 	if len(ts.pending) > 0 {
 		tok := ts.pending[0]
