@@ -1383,7 +1383,7 @@ var importParityGrammars = []importParityGrammar{
 			"struct Foo { int x; };\n",
 			"void f(int a, int b) {}\n",
 		},
-		genTimeout:     90 * time.Second,
+		genTimeout:     60 * time.Second,
 		expectImport:   true,
 		expectGenerate: true,
 		expectNoErrors: 5,
