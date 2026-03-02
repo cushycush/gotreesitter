@@ -11,6 +11,19 @@ type parseConfig struct {
 	profiling   bool
 }
 
+// ParserLogType categorizes parser log messages.
+type ParserLogType uint8
+
+const (
+	// ParserLogParse emits parser-loop lifecycle and control-flow logs.
+	ParserLogParse ParserLogType = iota
+	// ParserLogLex emits token-source and token-consumption logs.
+	ParserLogLex
+)
+
+// ParserLogger receives parser debug logs when configured via SetLogger.
+type ParserLogger func(kind ParserLogType, message string)
+
 const fullParseRetryMaxGLRStacks = 8
 
 type resettableTokenSource interface {
@@ -64,6 +77,22 @@ func (p *Parser) Language() *Language {
 		return nil
 	}
 	return p.language
+}
+
+// SetLogger installs a parser debug logger. Pass nil to disable logging.
+func (p *Parser) SetLogger(logger ParserLogger) {
+	if p == nil {
+		return
+	}
+	p.logger = logger
+}
+
+// Logger returns the currently configured parser debug logger.
+func (p *Parser) Logger() ParserLogger {
+	if p == nil {
+		return nil
+	}
+	return p.logger
 }
 
 // SetTimeoutMicros configures a per-parse timeout in microseconds.

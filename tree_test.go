@@ -1,6 +1,9 @@
 package gotreesitter
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // testLanguage returns a minimal Language for use in tree tests.
 func testLanguage() *Language {
@@ -431,6 +434,25 @@ func TestTreeRootNodeWithOffsetShiftsDescendants(t *testing.T) {
 	}
 	if got, want := tree.RootNode().StartPoint(), (Point{Row: 0, Column: 1}); got != want {
 		t.Fatalf("original root start point mutated: got %+v want %+v", got, want)
+	}
+}
+
+func TestTreeWriteDOT(t *testing.T) {
+	lang := testLanguage()
+	left := NewLeafNode(Symbol(1), true, 0, 3, Point{Row: 0, Column: 0}, Point{Row: 0, Column: 3})
+	right := NewLeafNode(Symbol(2), true, 3, 6, Point{Row: 0, Column: 3}, Point{Row: 0, Column: 6})
+	root := NewParentNode(Symbol(3), true, []*Node{left, right}, nil, 0)
+	tree := NewTree(root, []byte("abcdef"), lang)
+
+	dot := tree.DOT(lang)
+	if !strings.Contains(dot, "digraph gotreesitter") {
+		t.Fatalf("DOT missing graph header: %q", dot)
+	}
+	if !strings.Contains(dot, "expression [0,6)") {
+		t.Fatalf("DOT missing root label: %q", dot)
+	}
+	if !strings.Contains(dot, "n0 -> n") {
+		t.Fatalf("DOT missing edge: %q", dot)
 	}
 }
 

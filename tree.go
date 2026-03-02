@@ -2,6 +2,7 @@ package gotreesitter
 
 import (
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 )
@@ -727,6 +728,65 @@ func (t *Tree) Source() []byte { return t.source }
 
 // Language returns the language used to parse this tree.
 func (t *Tree) Language() *Language { return t.language }
+
+// WriteDOT writes a DOT graph representation of this tree to w.
+func (t *Tree) WriteDOT(w io.Writer, lang *Language) error {
+	if w == nil {
+		return fmt.Errorf("tree: nil writer")
+	}
+	if t == nil || t.root == nil {
+		_, err := io.WriteString(w, "digraph gotreesitter {\n}\n")
+		return err
+	}
+
+	type dotItem struct {
+		node *Node
+		id   int
+	}
+
+	if _, err := io.WriteString(w, "digraph gotreesitter {\n"); err != nil {
+		return err
+	}
+
+	nextID := 1
+	stack := []dotItem{{node: t.root, id: 0}}
+	for len(stack) > 0 {
+		last := len(stack) - 1
+		item := stack[last]
+		stack = stack[:last]
+		n := item.node
+		if n == nil {
+			continue
+		}
+
+		label := fmt.Sprintf("%s [%d,%d)", n.Type(lang), n.StartByte(), n.EndByte())
+		if _, err := fmt.Fprintf(w, "  n%d [label=%q];\n", item.id, label); err != nil {
+			return err
+		}
+
+		for _, child := range n.children {
+			if child == nil {
+				continue
+			}
+			childID := nextID
+			nextID++
+			if _, err := fmt.Fprintf(w, "  n%d -> n%d;\n", item.id, childID); err != nil {
+				return err
+			}
+			stack = append(stack, dotItem{node: child, id: childID})
+		}
+	}
+
+	_, err := io.WriteString(w, "}\n")
+	return err
+}
+
+// DOT returns a DOT graph representation of this tree.
+func (t *Tree) DOT(lang *Language) string {
+	var b strings.Builder
+	_ = t.WriteDOT(&b, lang)
+	return b.String()
+}
 
 // Copy returns an independent copy of this tree.
 //

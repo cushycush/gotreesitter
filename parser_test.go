@@ -1397,6 +1397,46 @@ func TestParserTimeoutMicrosStopsParse(t *testing.T) {
 	}
 }
 
+func TestParserLoggerReceivesEvents(t *testing.T) {
+	lang := buildArithmeticLanguage()
+	parser := NewParser(lang)
+
+	var parseEvents int
+	var lexEvents int
+	parser.SetLogger(func(kind ParserLogType, msg string) {
+		if msg == "" {
+			t.Fatal("logger message should not be empty")
+		}
+		switch kind {
+		case ParserLogParse:
+			parseEvents++
+		case ParserLogLex:
+			lexEvents++
+		}
+	})
+
+	if _, err := parser.Parse([]byte("1+2")); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if parseEvents == 0 {
+		t.Fatal("expected at least one parse log event")
+	}
+	if lexEvents == 0 {
+		t.Fatal("expected at least one lex log event")
+	}
+
+	// Nil logger disables logging.
+	parser.SetLogger(nil)
+	parseEvents = 0
+	lexEvents = 0
+	if _, err := parser.Parse([]byte("1+2")); err != nil {
+		t.Fatalf("Parse() with nil logger error = %v", err)
+	}
+	if parseEvents != 0 || lexEvents != 0 {
+		t.Fatalf("expected no events with nil logger, got parse=%d lex=%d", parseEvents, lexEvents)
+	}
+}
+
 // buildReservedWordLanguage constructs a minimal language to test reserved word
 // handling in promoteKeyword. Symbols:
 //

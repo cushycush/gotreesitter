@@ -2,6 +2,7 @@ package gotreesitter
 
 import (
 	"bytes"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +29,7 @@ type Parser struct {
 	forceRawSpanAll   bool
 	forceRawSpanTable []bool
 	included          []Range
+	logger            ParserLogger
 	timeoutMicros     uint64
 	cancellationFlag  *uint32
 	denseLimit        int
@@ -193,6 +195,13 @@ func canReuseUnchangedTree(source []byte, oldTree *Tree, lang *Language) bool {
 	return bytes.Equal(oldSource, source)
 }
 
+func (p *Parser) logf(kind ParserLogType, format string, args ...any) {
+	if p == nil || p.logger == nil {
+		return
+	}
+	p.logger(kind, fmt.Sprintf(format, args...))
+}
+
 // parseInternal is the core GLR parsing loop shared by Parse and
 // ParseWithTokenSource.
 //
@@ -204,6 +213,7 @@ func canReuseUnchangedTree(source []byte, oldTree *Tree, lang *Language) bool {
 // merged; distinct alternatives are preserved.
 func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor, oldTree *Tree, arenaClass arenaClass, timing *incrementalParseTiming, maxStacksOverride int) *Tree {
 	parseStart := time.Now()
+	p.logf(ParserLogParse, "start len=%d incremental=%t", len(source), reuse != nil || oldTree != nil)
 	deferParentLinks := reuse == nil && oldTree == nil
 	if closer, ok := ts.(interface{ Close() }); ok {
 		defer closer.Close()
@@ -282,6 +292,14 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		if tree != nil {
 			tree.setParseRuntime(parseRuntime)
 		}
+		p.logf(
+			ParserLogParse,
+			"stop reason=%s truncated=%t tokens=%d max_stacks=%d",
+			parseRuntime.StopReason,
+			parseRuntime.Truncated,
+			parseRuntime.TokensConsumed,
+			parseRuntime.MaxStacksSeen,
+		)
 		return tree
 	}
 	finalize := func(stacks []glrStack, stopReason ParseStopReason) *Tree {
@@ -437,6 +455,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		// --- Token acquisition and incremental reuse ---
 		if needToken {
 			tok = ts.Next()
+			p.logf(ParserLogLex, "token sym=%d start=%d end=%d", tok.Symbol, tok.StartByte, tok.EndByte)
 			perfTokensConsumed++
 			lastTokenEndByte = tok.EndByte
 			lastTokenSymbol = tok.Symbol
