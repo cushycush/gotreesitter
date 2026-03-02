@@ -560,7 +560,9 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		// --- Token acquisition and incremental reuse ---
 		if needToken {
 			tok = ts.Next()
-			p.logf(ParserLogLex, "token sym=%d start=%d end=%d", tok.Symbol, tok.StartByte, tok.EndByte)
+			if p.logger != nil {
+				p.logf(ParserLogLex, "token sym=%d start=%d end=%d", tok.Symbol, tok.StartByte, tok.EndByte)
+			}
 			perfTokensConsumed++
 			lastTokenEndByte = tok.EndByte
 			lastTokenSymbol = tok.Symbol
