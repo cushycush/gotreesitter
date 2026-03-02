@@ -381,35 +381,14 @@ func GenerateWithReport(g *Grammar) (*GenerateReport, error) {
 		keywordSet,
 	)
 
-	lexStates, err := buildLexDFA(ng.Terminals, ng.ExtraSymbols, lexModes)
+	lexStates, lexModeOffsets, err := buildLexDFA(ng.Terminals, ng.ExtraSymbols, lexModes)
 	if err != nil {
 		return nil, fmt.Errorf("build lex DFA: %w", err)
 	}
 
-	lexModeOffsets := make([]int, len(lexModes))
-	offset := 0
-	for i, mode := range lexModes {
-		lexModeOffsets[i] = offset
-		var modePatterns []TerminalPattern
-		extraSet := make(map[int]bool)
-		for _, e := range ng.ExtraSymbols {
-			extraSet[e] = true
-		}
-		for _, p := range ng.Terminals {
-			if mode.validSymbols[p.SymbolID] || extraSet[p.SymbolID] {
-				modePatterns = append(modePatterns, p)
-			}
-		}
-		combined, _ := buildCombinedNFA(modePatterns)
-		if combined != nil {
-			dfa := subsetConstruction(combined)
-			offset += len(dfa)
-		}
-	}
-
 	var keywordLexStates []gotreesitter.LexState
 	if len(ng.KeywordEntries) > 0 {
-		kls, err := buildLexDFA(ng.KeywordEntries, nil, []lexModeSpec{{
+		kls, _, err := buildLexDFA(ng.KeywordEntries, nil, []lexModeSpec{{
 			validSymbols:   allSymbolsSet(ng.KeywordEntries),
 			skipWhitespace: false,
 		}})

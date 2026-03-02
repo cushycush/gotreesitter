@@ -22,15 +22,18 @@ type dfaTransition struct {
 // buildLexDFA constructs a DFA from the terminal patterns and produces
 // LexState tables compatible with the gotreesitter runtime.
 // It builds per-lex-mode DFAs based on which terminals are valid in each mode.
-func buildLexDFA(patterns []TerminalPattern, extraSymbols []int, lexModes []lexModeSpec) ([]gotreesitter.LexState, error) {
+// Returns the concatenated LexStates and per-mode start offsets.
+func buildLexDFA(patterns []TerminalPattern, extraSymbols []int, lexModes []lexModeSpec) ([]gotreesitter.LexState, []int, error) {
 	extraSet := make(map[int]bool)
 	for _, e := range extraSymbols {
 		extraSet[e] = true
 	}
 
 	var allStates []gotreesitter.LexState
+	modeOffsets := make([]int, len(lexModes))
 
-	for _, mode := range lexModes {
+	for mi, mode := range lexModes {
+		modeOffsets[mi] = len(allStates)
 		// Filter patterns to only those valid in this mode.
 		var modePatterns []TerminalPattern
 		for _, p := range patterns {
@@ -42,7 +45,7 @@ func buildLexDFA(patterns []TerminalPattern, extraSymbols []int, lexModes []lexM
 		// Build combined NFA for this mode's terminals.
 		combined, err := buildCombinedNFA(modePatterns)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		// Convert NFA to DFA via subset construction.
@@ -80,7 +83,7 @@ func buildLexDFA(patterns []TerminalPattern, extraSymbols []int, lexModes []lexM
 		allStates = append(allStates, lexStates...)
 	}
 
-	return allStates, nil
+	return allStates, modeOffsets, nil
 }
 
 // lexModeSpec describes what a lex mode should recognize.
