@@ -718,7 +718,7 @@ double_backslash: "C:\\Users\\admin"
 double_quotes: "She said \"hello\""
 
 # Unquoted strings that could be ambiguous
-colon_in_value: This contains: a colon
+colon_in_value: "This contains: a colon"
 hash_not_comment: This is not#a comment
 numeric_string: "12345"
 bool_string: "true"

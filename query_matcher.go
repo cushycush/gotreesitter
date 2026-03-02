@@ -209,18 +209,18 @@ func (q *Query) matchChildStepsRecursive(
 		if fieldName == "" {
 			return false
 		}
-
-		fieldChild := parent.ChildByFieldName(fieldName, lang)
-		if fieldChild != nil {
-			fieldIdx := -1
-			for i, child := range children {
-				if child == fieldChild {
-					fieldIdx = i
-					break
-				}
+		// A parent can have multiple children with the same field name.
+		// Iterate children directly instead of ChildByFieldName (first match only).
+		for i := nextChildIdx; i < len(children); i++ {
+			child := children[i]
+			if child == nil {
+				continue
 			}
-			if fieldIdx >= nextChildIdx && q.nodeMatchesStep(step, fieldChild, lang) {
-				candidateIndices = append(candidateIndices, fieldIdx)
+			if parent.FieldNameForChild(i, lang) != fieldName {
+				continue
+			}
+			if q.nodeMatchesStep(step, child, lang) {
+				candidateIndices = append(candidateIndices, i)
 			}
 		}
 	} else {
@@ -236,6 +236,45 @@ func (q *Query) matchChildStepsRecursive(
 		maxCount = len(candidateIndices)
 	}
 	if minCount > len(candidateIndices) {
+		return false
+	}
+
+	// When this is the final child step and it requires exactly one match,
+	// accumulate captures from all matching sibling candidates. This matches
+	// tree-sitter query behavior for patterns like:
+	//   (flow_mapping (_ key: (...) @property))
+	// where each sibling pair should contribute captures.
+	if childPos == len(childSteps)-1 && minCount == 1 && maxCount == 1 && !step.anchorBefore && !step.anchorAfter {
+		any := false
+		checkpoint := len(*captures)
+		for _, childIdx := range candidateIndices {
+			child := children[childIdx]
+			childCheckpoint := len(*captures)
+			if !q.matchStepWithRollback(steps, cs.stepIdx, child, lang, source, captures) {
+				*captures = (*captures)[:childCheckpoint]
+				continue
+			}
+			hasNamed := false
+			firstNamedPos := -1
+			lastNamedPos := -1
+			if namedPos := namedPosByIndex[childIdx]; namedPos >= 0 {
+				hasNamed = true
+				firstNamedPos = namedPos
+				lastNamedPos = namedPos
+			}
+			if !q.stepAnchorsSatisfied(
+				step, childPos, hasNamed, firstNamedPos, lastNamedPos,
+				prevHasNamed, prevLastNamedPos, parentLastNamedPos,
+			) {
+				*captures = (*captures)[:childCheckpoint]
+				continue
+			}
+			any = true
+		}
+		if any {
+			return true
+		}
+		*captures = (*captures)[:checkpoint]
 		return false
 	}
 

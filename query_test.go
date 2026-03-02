@@ -1674,6 +1674,27 @@ func TestMatchNoMatchField(t *testing.T) {
 	}
 }
 
+func TestMatchFieldScansAllSiblingsWithSameFieldName(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildRepeatedFieldTree(lang)
+
+	q, err := NewQuery(`(program name: (identifier) @name)`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	matches := q.Execute(tree)
+	if len(matches) != 1 {
+		t.Fatalf("matches: got %d, want 1", len(matches))
+	}
+	if len(matches[0].Captures) != 1 {
+		t.Fatalf("captures: got %d, want 1", len(matches[0].Captures))
+	}
+	if got := matches[0].Captures[0].Node.Text(tree.Source()); got != "a" {
+		t.Fatalf("capture text: got %q, want %q", got, "a")
+	}
+}
+
 func TestMatchWildcard(t *testing.T) {
 	lang := queryTestLanguage()
 	tree := buildSimpleTree(lang)
@@ -2429,6 +2450,18 @@ func buildFieldedTree(lang *Language) *Tree {
 	program := parent(Symbol(7), true,
 		[]*Node{funcDecl},
 		[]FieldID{0})
+	return NewTree(program, source, lang)
+}
+
+// buildRepeatedFieldTree creates a parent with two children using the same
+// field ID, where only the second child is an identifier.
+func buildRepeatedFieldTree(lang *Language) *Tree {
+	source := []byte("1 a")
+	num := leaf(Symbol(2), true, 0, 1)
+	id := leaf(Symbol(1), true, 2, 3)
+	program := parent(Symbol(7), true,
+		[]*Node{num, id},
+		[]FieldID{1, 1}) // both children are fieldID 1 = "name"
 	return NewTree(program, source, lang)
 }
 
