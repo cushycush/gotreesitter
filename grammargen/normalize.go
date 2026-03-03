@@ -229,6 +229,11 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 		})
 	}
 
+	// Phase 1c: Lift inline Token/ImmToken nodes from nonterminal rules.
+	// These become anonymous terminal symbols (e.g. _rule_token1) so they
+	// get terminal IDs before nonterminals are registered.
+	inlineTokens := liftInlineTokens(g, st)
+
 	// Phase 2: Register named terminals (rules that are token() or token.immediate()
 	// or simple patterns, and rules that resolve to string literals like "true").
 	// Also register nonterminals.
@@ -308,7 +313,7 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 	}
 
 	// Phase 6: Extract terminal patterns for DFA generation.
-	terminals, err := extractTerminals(g, st, stringLiterals, namedTokens, inlinePatterns, keywordSet)
+	terminals, err := extractTerminals(g, st, stringLiterals, namedTokens, inlinePatterns, inlineTokens, keywordSet)
 	if err != nil {
 		return nil, fmt.Errorf("extract terminals: %w", err)
 	}
@@ -531,6 +536,74 @@ func isTerminalRule(r *Rule) bool {
 	return false
 }
 
+// inlineTokenEntry stores information about an inline Token/ImmToken found
+// inside a nonterminal rule tree. These need anonymous terminal symbols.
+type inlineTokenEntry struct {
+	name      string // anonymous terminal name, e.g. "_rule_token1"
+	rule      *Rule  // the original Token/ImmToken node (for pattern extraction)
+	immediate bool   // true if ImmToken
+}
+
+// liftInlineTokens walks nonterminal rules in the grammar, finds inline
+// Token/ImmToken nodes (not at the rule top level), registers anonymous
+// terminal symbols for them, and replaces them with Sym references.
+// This must run before tokenCount is recorded so inline tokens get terminal IDs.
+func liftInlineTokens(g *Grammar, st *symbolTable) []inlineTokenEntry {
+	var entries []inlineTokenEntry
+	counter := make(map[string]int) // per-parent-rule counters
+
+	for _, name := range g.RuleOrder {
+		rule := g.Rules[name]
+		if isTerminalRule(rule) {
+			continue
+		}
+		g.Rules[name] = liftTokensInRule(rule, name, st, &entries, counter)
+	}
+
+	return entries
+}
+
+// liftTokensInRule recursively walks a rule tree, replacing inline Token/ImmToken
+// nodes with Sym references to newly-registered anonymous terminal symbols.
+func liftTokensInRule(r *Rule, parentName string, st *symbolTable, entries *[]inlineTokenEntry, counter map[string]int) *Rule {
+	if r == nil {
+		return r
+	}
+
+	switch r.Kind {
+	case RuleToken, RuleImmToken:
+		// Inline Token/ImmToken inside a nonterminal rule.
+		// Create an anonymous terminal symbol for it.
+		counter[parentName]++
+		anonName := fmt.Sprintf("_%s_token%d", parentName, counter[parentName])
+
+		st.addSymbol(anonName, SymbolInfo{
+			Name:    anonName,
+			Visible: false,
+			Named:   false,
+			Kind:    SymbolTerminal,
+		})
+
+		*entries = append(*entries, inlineTokenEntry{
+			name:      anonName,
+			rule:      r,
+			immediate: r.Kind == RuleImmToken,
+		})
+
+		return Sym(anonName)
+
+	case RuleString, RulePattern, RuleSymbol, RuleBlank:
+		// Leaf nodes — no Token/ImmToken inside.
+		return r
+	}
+
+	// Recurse into children.
+	for i, c := range r.Children {
+		r.Children[i] = liftTokensInRule(c, parentName, st, entries, counter)
+	}
+	return r
+}
+
 // prepareRule normalizes a rule tree for production extraction:
 // - Expands Optional(x) → Choice(x, Blank())
 // - Replaces Repeat(x) and Repeat1(x) with auxiliary nonterminal symbols
@@ -665,7 +738,7 @@ func resolveExtras(g *Grammar, st *symbolTable) []int {
 // extractTerminals builds TerminalPattern entries for DFA generation.
 // When keywordSet is non-nil, string terminals that are keywords are excluded
 // from the main DFA (they're handled by the keyword DFA instead).
-func extractTerminals(g *Grammar, st *symbolTable, stringLits []string, namedTokens []string, inlinePatterns []string, keywordSet map[int]bool) ([]TerminalPattern, error) {
+func extractTerminals(g *Grammar, st *symbolTable, stringLits []string, namedTokens []string, inlinePatterns []string, inlineTokens []inlineTokenEntry, keywordSet map[int]bool) ([]TerminalPattern, error) {
 	var patterns []TerminalPattern
 	priority := 0
 
@@ -722,6 +795,25 @@ func extractTerminals(g *Grammar, st *symbolTable, stringLits []string, namedTok
 			Rule:      expanded,
 			Priority:  priority,
 			Immediate: imm,
+		})
+		priority++
+	}
+
+	// Inline token patterns (Token/ImmToken found inside nonterminal rules).
+	for _, entry := range inlineTokens {
+		id, ok := st.lookup(entry.name)
+		if !ok {
+			continue
+		}
+		expanded, _, err := expandTokenRule(entry.rule)
+		if err != nil {
+			return nil, fmt.Errorf("expand inline token %q: %w", entry.name, err)
+		}
+		patterns = append(patterns, TerminalPattern{
+			SymbolID:  id,
+			Rule:      expanded,
+			Priority:  priority,
+			Immediate: entry.immediate,
 		})
 		priority++
 	}
@@ -911,6 +1003,18 @@ func flattenTokenInner(r *Rule) (*Rule, error) {
 		// Symbol reference inside token — this typically means the token
 		// references another rule. Return as-is; the caller should resolve.
 		return r, nil
+	case RuleAlias:
+		// Alias inside token — strip the alias metadata and flatten the content.
+		if len(r.Children) > 0 {
+			return flattenTokenInner(r.Children[0])
+		}
+		return Blank(), nil
+	case RuleField:
+		// Field inside token — strip the field metadata and flatten the content.
+		if len(r.Children) > 0 {
+			return flattenTokenInner(r.Children[0])
+		}
+		return Blank(), nil
 	default:
 		return nil, fmt.Errorf("unexpected rule kind %d inside token", r.Kind)
 	}
