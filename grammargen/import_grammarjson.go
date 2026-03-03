@@ -3,6 +3,7 @@ package grammargen
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // ImportGrammarJSON parses a tree-sitter grammar.json file (the canonical
@@ -159,6 +160,7 @@ type jsonRuleNode struct {
 	Content json.RawMessage   `json:"content"` // for wrappers (TOKEN, PREC*, REPEAT, etc.)
 	Members []json.RawMessage `json:"members"` // for SEQ, CHOICE
 	Named   bool              `json:"named"`   // for ALIAS
+	Flags   string            `json:"flags"`   // for PATTERN: "i" = case-insensitive
 }
 
 // convertJSONRule converts a grammar.json rule node to a Grammar Rule.
@@ -180,6 +182,9 @@ func convertJSONRule(data json.RawMessage) (*Rule, error) {
 		val, ok := node.Value.(string)
 		if !ok {
 			return nil, fmt.Errorf("PATTERN value not a string: %v", node.Value)
+		}
+		if strings.Contains(node.Flags, "i") {
+			val = makeCaseInsensitivePattern(val)
 		}
 		return Pat(val), nil
 
@@ -302,4 +307,60 @@ func convertJSONRuleList(members []json.RawMessage) ([]*Rule, error) {
 		rules[i] = r
 	}
 	return rules, nil
+}
+
+// makeCaseInsensitivePattern converts a regex pattern to case-insensitive form
+// by expanding ASCII letters to character classes. For example, "DUP" becomes
+// "[Dd][Uu][Pp]". Characters inside character classes are expanded in-place.
+func makeCaseInsensitivePattern(pattern string) string {
+	var b strings.Builder
+	b.Grow(len(pattern) * 4)
+	inClass := false
+	escaped := false
+	for _, ch := range pattern {
+		if escaped {
+			b.WriteRune(ch)
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			b.WriteRune(ch)
+			escaped = true
+			continue
+		}
+		if ch == '[' {
+			inClass = true
+			b.WriteRune(ch)
+			continue
+		}
+		if ch == ']' {
+			inClass = false
+			b.WriteRune(ch)
+			continue
+		}
+		if isASCIILetter(ch) {
+			if inClass {
+				// Inside a character class, add both cases
+				lo := rune(ch | 0x20)
+				up := rune(ch &^ 0x20)
+				b.WriteRune(lo)
+				b.WriteRune(up)
+			} else {
+				// Outside a class, wrap in a class
+				lo := rune(ch | 0x20)
+				up := rune(ch &^ 0x20)
+				b.WriteRune('[')
+				b.WriteRune(lo)
+				b.WriteRune(up)
+				b.WriteRune(']')
+			}
+		} else {
+			b.WriteRune(ch)
+		}
+	}
+	return b.String()
+}
+
+func isASCIILetter(ch rune) bool {
+	return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
 }
