@@ -41,6 +41,7 @@ Correctness and perf are intentionally separate gates.
     - `TestParityIssue3Repros`
     - `TestParityGLRCanaryGo`
     - `TestParityGLRCanarySet`
+    - `TestParityGLRCapPressureTopLanguages`
     - `TestParityHighlight`
 - Perf gate:
   - Stable bench trio only:
