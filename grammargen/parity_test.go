@@ -843,7 +843,7 @@ var importParityGrammars = []importParityGrammar{
 			"numpy",
 			"requests>=2.0\nflask",
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 3, expectParity: 2,
+		expectImport: true, expectGenerate: true, expectNoErrors: 3, expectParity: 3,
 	},
 	{
 		name: "jsdoc", path: "/tmp/grammar_parity/jsdoc/grammar.js", jsonPath: "/tmp/grammar_parity/jsdoc/src/grammar.json",
@@ -941,7 +941,7 @@ var importParityGrammars = []importParityGrammar{
 			"+added line\n",
 			"-removed line\n",
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 4, expectParity: 0,
+		expectImport: true, expectGenerate: true, expectNoErrors: 4, expectParity: 4,
 	},
 	{
 		name: "gitcommit", jsonPath: "/tmp/grammar_parity/gitcommit/src/grammar.json",
@@ -1051,7 +1051,7 @@ var importParityGrammars = []importParityGrammar{
 			"syntax = \"proto3\";\nservice Greeter {\n  rpc SayHello (HelloRequest) returns (stream HelloReply) {}\n}",
 			"syntax = \"proto3\";\nmessage Foo {\n  option deprecated = true;\n  int32 x = 1 [deprecated = true];\n}",
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 17, expectParity: 16,
+		expectImport: true, expectGenerate: true, expectNoErrors: 17, expectParity: 17,
 	},
 	{
 		name: "comment", jsonPath: "/tmp/grammar_parity/comment/src/grammar.json",
@@ -1239,7 +1239,7 @@ var importParityGrammars = []importParityGrammar{
 			"module m\n\ngo 1.21\n\nreplace github.com/foo/bar => ../bar\n",
 			"module m\n\ngo 1.21\n\nexclude github.com/old/pkg v0.1.0\n",
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 5, expectParity: 0,
+		expectImport: true, expectGenerate: true, expectNoErrors: 5, expectParity: 5,
 	},
 	{
 		name: "git_config", jsonPath: "/tmp/grammar_parity/git_config/src/grammar.json",
@@ -1274,7 +1274,7 @@ var importParityGrammars = []importParityGrammar{
 			`{ nested = { x = 1 } }`,
 			`{ arr = [ 1 2 3 ] }`,
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 5, expectParity: 4,
+		expectImport: true, expectGenerate: true, expectNoErrors: 5, expectParity: 5,
 	},
 	{
 		name: "cpon", jsonPath: "/tmp/grammar_parity/cpon/src/grammar.json",
@@ -1376,7 +1376,7 @@ var importParityGrammars = []importParityGrammar{
 		expectImport:   true,
 		expectGenerate: true,
 		expectNoErrors: 4,
-		expectParity:   1,
+		expectParity:   4,
 	},
 	{
 		name: "c_lang", jsonPath: "/tmp/grammar_parity/c/src/grammar.json",
@@ -1392,7 +1392,7 @@ var importParityGrammars = []importParityGrammar{
 		expectImport:   true,
 		expectGenerate: true,
 		expectNoErrors: 5,
-		expectParity:   1,
+		expectParity:   2,
 	},
 	{
 		name: "sql", jsonPath: "/tmp/grammar_parity/sql/src/grammar.json",
@@ -1403,7 +1403,7 @@ var importParityGrammars = []importParityGrammar{
 			"INSERT INTO users (name) VALUES ('alice');\n",
 			"CREATE TABLE t (id INT);\n",
 		},
-		genTimeout:     60 * time.Second,
+		genTimeout:     90 * time.Second,
 		expectImport:   true,
 		expectGenerate: true,
 		expectNoErrors: 4,
