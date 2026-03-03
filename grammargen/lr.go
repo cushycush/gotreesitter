@@ -714,15 +714,24 @@ func resolveActionConflict(actions []lrAction, ng *NormalizedGrammar) ([]lrActio
 			return reduces, nil // keep all for GLR
 		}
 
-		// Higher precedence wins. At equal precedence, first wins (depends on
-		// closure computation order, matching tree-sitter's default behavior).
+		// Higher precedence wins. At equal precedence, use tie-breaking:
+		// 1. Prefer longer RHS (more specific/contextual production)
+		// 2. Prefer lower production index (earlier in grammar)
 		best := reduces[0]
-		bestPrec := ng.Productions[best.prodIdx].Prec
+		bestProd := &ng.Productions[best.prodIdx]
 		for _, r := range reduces[1:] {
-			p := ng.Productions[r.prodIdx].Prec
-			if p > bestPrec {
+			rProd := &ng.Productions[r.prodIdx]
+			if rProd.Prec > bestProd.Prec {
 				best = r
-				bestPrec = p
+				bestProd = rProd
+			} else if rProd.Prec == bestProd.Prec {
+				if len(rProd.RHS) > len(bestProd.RHS) {
+					best = r
+					bestProd = rProd
+				} else if len(rProd.RHS) == len(bestProd.RHS) && r.prodIdx < best.prodIdx {
+					best = r
+					bestProd = rProd
+				}
 			}
 		}
 		return []lrAction{best}, nil

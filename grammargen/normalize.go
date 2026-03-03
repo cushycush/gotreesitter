@@ -286,14 +286,24 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 	auxCounter := 0
 	processedRules := make(map[string]*Rule)
 	auxRules := make(map[string]*Rule)
+	auxOrigin := make(map[string]string) // aux rule name → originating grammar rule name
 
 	for _, name := range nonterminals {
 		rule := g.Rules[name]
 		if rule == nil {
 			continue
 		}
+		prevAuxCount := len(auxRules)
 		processed := prepareRule(cloneRule(rule), name, st, auxRules, &auxCounter)
 		processedRules[name] = processed
+		// Track which grammar rule each new auxiliary rule originates from.
+		if len(auxRules) > prevAuxCount {
+			for auxName := range auxRules {
+				if _, tracked := auxOrigin[auxName]; !tracked {
+					auxOrigin[auxName] = name
+				}
+			}
+		}
 	}
 
 	// Phase 5: Mark extra symbols.
@@ -352,11 +362,25 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 	}
 
 	// Extract productions for auxiliary rules.
+	// Sort by originating grammar rule's definition order first, then by name.
+	// This ensures that auxiliary rules from earlier-defined grammar rules get
+	// lower production indices, matching tree-sitter's conflict resolution behavior.
+	ruleOrderIdx := make(map[string]int, len(nonterminals))
+	for i, name := range nonterminals {
+		ruleOrderIdx[name] = i
+	}
 	auxNames := make([]string, 0, len(auxRules))
 	for name := range auxRules {
 		auxNames = append(auxNames, name)
 	}
-	sort.Strings(auxNames)
+	sort.Slice(auxNames, func(i, j int) bool {
+		oi := ruleOrderIdx[auxOrigin[auxNames[i]]]
+		oj := ruleOrderIdx[auxOrigin[auxNames[j]]]
+		if oi != oj {
+			return oi < oj
+		}
+		return auxNames[i] < auxNames[j]
+	})
 	for _, name := range auxNames {
 		rule := auxRules[name]
 		symID, _ := st.lookupNonterm(name)
