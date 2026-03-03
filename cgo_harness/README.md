@@ -26,7 +26,7 @@ Framework details (oracles, corpus tiers, gate policy):
 
 ```sh
 go test . -tags treesitter_c_parity \
-  -run '^TestParityFreshParse$|^TestParityHasNoErrors$|^TestParityIssue3Repros$|^TestParityGLRCanaryGo$' \
+  -run '^TestParityFreshParse$|^TestParityHasNoErrors$|^TestParityIssue3Repros$|^TestParityGLRCanaryGo$|^TestParityGLRCanarySet$' \
   -count=1 -v
 
 go test . -tags treesitter_c_parity \
