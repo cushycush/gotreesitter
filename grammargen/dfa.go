@@ -418,6 +418,7 @@ func computeLexModes(
 	externalSymbols []int,
 	wordSymbolID int,
 	keywordSymbols map[int]bool,
+	extraFirstSets map[int]map[int]bool, // nonterminal extra → first-set terminals
 ) ([]lexModeSpec, []int) {
 	extraSet := make(map[int]bool)
 	for _, e := range extraSymbols {
@@ -452,6 +453,28 @@ func computeLexModes(
 				}
 				if keywordSymbols[sym] {
 					hasKeyword = true
+				}
+			}
+		}
+
+		// Extra terminal symbols (e.g., whitespace pattern) must be valid
+		// in every lex mode so they can always be recognized. Only include
+		// terminal extras (ID < tokenCount); nonterminal extras are handled
+		// by the parser, not the lexer. But also include the first-set
+		// terminals of nonterminal extras so the lexer can recognize the
+		// start of nonterminal extra rules (like comment → [;#]...).
+		for _, e := range extraSymbols {
+			if e > 0 && e < tokenCount {
+				validSyms[e] = true
+			}
+		}
+		for e := range extraSet {
+			if e >= tokenCount {
+				// Nonterminal extra — add its first-set terminals.
+				if first := extraFirstSets[e]; first != nil {
+					for t := range first {
+						validSyms[t] = true
+					}
 				}
 			}
 		}
