@@ -4,12 +4,12 @@ package grammars
 
 func init() {
 	Register(LangEntry{
-		Name:           "eds",
-		Extensions:     nil,
-		Language:       EdsLanguage,
-		HighlightQuery: edsHighlightQuery,
+		Name:               "eds",
+		Extensions:         nil,
+		Language:           EdsLanguage,
+		HighlightQuery:     edsHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("eds"),
 	})
 }
 
-const edsHighlightQuery = ""
+const edsHighlightQuery = "(section_name) @type\n(key) @property\n(value) @string\n"

@@ -4,12 +4,12 @@ package grammars
 
 func init() {
 	Register(LangEntry{
-		Name:           "angular",
-		Extensions:     nil,
-		Language:       AngularLanguage,
-		HighlightQuery: angularHighlightQuery,
+		Name:               "angular",
+		Extensions:         nil,
+		Language:           AngularLanguage,
+		HighlightQuery:     angularHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("angular"),
 	})
 }
 
-const angularHighlightQuery = ""
+const angularHighlightQuery = "(tag_name) @tag\n(text) @string\n"

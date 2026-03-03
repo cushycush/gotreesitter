@@ -4,12 +4,12 @@ package grammars
 
 func init() {
 	Register(LangEntry{
-		Name:           "markdown_inline",
-		Extensions:     nil,
-		Language:       MarkdownInlineLanguage,
-		HighlightQuery: markdownInlineHighlightQuery,
+		Name:               "markdown_inline",
+		Extensions:         nil,
+		Language:           MarkdownInlineLanguage,
+		HighlightQuery:     markdownInlineHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("markdown_inline"),
 	})
 }
 
-const markdownInlineHighlightQuery = ""
+const markdownInlineHighlightQuery = "((emphasis\n  (strong_emphasis)) @markup.strong)\n\n((strong_emphasis) @markup.strong\n  (#not-has-parent? @markup.strong emphasis))\n"
