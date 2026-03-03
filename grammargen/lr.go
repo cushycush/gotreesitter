@@ -714,7 +714,8 @@ func resolveActionConflict(actions []lrAction, ng *NormalizedGrammar) ([]lrActio
 			return reduces, nil // keep all for GLR
 		}
 
-		// Higher precedence wins.
+		// Higher precedence wins. At equal precedence, first wins (depends on
+		// closure computation order, matching tree-sitter's default behavior).
 		best := reduces[0]
 		bestPrec := ng.Productions[best.prodIdx].Prec
 		for _, r := range reduces[1:] {

@@ -2,6 +2,7 @@ package grammargen
 
 import (
 	"fmt"
+	"strconv"
 	"unicode/utf8"
 )
 
@@ -276,6 +277,16 @@ func decodeCharClassRune(s string, pos int) (rune, int) {
 			return '\r', 1 + size
 		case 't':
 			return '\t', 1 + size
+		case 'x':
+			// \xNN — two hex digits
+			hexStart := pos + 1 + size
+			if hexStart+2 <= len(s) {
+				n, err := strconv.ParseUint(s[hexStart:hexStart+2], 16, 8)
+				if err == nil {
+					return rune(n), 1 + size + 2
+				}
+			}
+			return next, 1 + size
 		default:
 			return next, 1 + size
 		}
