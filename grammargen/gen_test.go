@@ -2272,3 +2272,56 @@ func TestLoxEmbeddedTests(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// ── Mustache Grammar Tests ──
+
+func TestMustacheGrammar(t *testing.T) {
+	g := MustacheGrammar()
+	lang, err := GenerateLanguage(g)
+	if err != nil {
+		t.Fatalf("GenerateLanguage failed: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"empty", ""},
+		{"raw text only", "Hello, world!"},
+		{"interpolation", "Hello, {{name}}!"},
+		{"unescaped triple", "Hello, {{{name}}}!"},
+		{"unescaped ampersand", "Hello, {{&name}}!"},
+		{"section", "{{#show}}visible{{/show}}"},
+		{"inverted section", "{{^show}}hidden{{/show}}"},
+		{"comment", "{{! this is a comment }}"},
+		{"partial", "{{>header}}"},
+		{"dotted name", "{{person.name}}"},
+		{"implicit iterator", "{{.}}"},
+		{"mixed content", "Hello {{name}}, you have {{count}} items."},
+		{"nested sections", "{{#a}}{{#b}}inner{{/b}}{{/a}}"},
+		{"multiple interpolations", "{{first}} {{last}}"},
+		{"section with content", "{{#list}}item: {{name}}\n{{/list}}"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parser := gotreesitter.NewParser(lang)
+			tree, err := parser.Parse([]byte(tt.input))
+			if err != nil {
+				t.Fatalf("Parse failed: %v", err)
+			}
+			sexp := tree.RootNode().SExpr(lang)
+			t.Logf("input: %q → %s", tt.input, sexp)
+			if strings.Contains(sexp, "ERROR") {
+				t.Errorf("tree contains ERROR: %s", sexp)
+			}
+		})
+	}
+}
+
+func TestMustacheEmbeddedTests(t *testing.T) {
+	g := MustacheGrammar()
+	if err := RunTests(g); err != nil {
+		t.Fatal(err)
+	}
+}
