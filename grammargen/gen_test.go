@@ -2134,3 +2134,72 @@ func TestImportRealCSSGrammarJS(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================
+// Production-Grade Authored Grammars
+// ============================================================
+
+func TestINIGrammar(t *testing.T) {
+	g := INIGrammar()
+	lang, err := GenerateLanguage(g)
+	if err != nil {
+		t.Fatalf("GenerateLanguage failed: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"empty", "", "(document)"},
+		{"simple pair", "key=value", "(document (pair (key) (bare_value)))"},
+		{"colon delimiter", "key:value", "(document (pair (key) (bare_value)))"},
+		{"spaced pair", "key = value", "(document (pair (key) (bare_value)))"},
+		{"empty value", "key=", "(document (pair (key)))"},
+		{"section with pairs", "[server]\nhost=localhost\nport=8080",
+			"(document (section (section_header (section_name)) (pair (key) (bare_value)) (pair (key) (bare_value))))"},
+		{"semicolon comment", "; this is a comment", "(document (comment))"},
+		{"hash comment", "# hash comment", "(document (comment))"},
+		{"subsection", "[remote \"origin\"]\nurl=git@github.com:user/repo.git",
+			"(document (section (section_header (section_name) (subsection_name)) (pair (key) (bare_value))))"},
+		{"quoted value", "key=\"hello world\"", "(document (pair (key) (quoted_string)))"},
+		{"global pair then section", "key=value\n[section]\nother=val",
+			"(document (pair (key) (bare_value)) (section (section_header (section_name)) (pair (key) (bare_value))))"},
+		{"multiple sections", "[a]\nx=1\n[b]\ny=2",
+			"(document (section (section_header (section_name)) (pair (key) (bare_value))) (section (section_header (section_name)) (pair (key) (bare_value))))"},
+		{"value with spaces", "name = John Doe", "(document (pair (key) (bare_value)))"},
+		{"dotted section", "[forge.example]\nUser=hg",
+			"(document (section (section_header (section_name)) (pair (key) (bare_value))))"},
+		{"mixed comments", "; comment\nkey=val\n# another comment",
+			"(document (comment) (pair (key) (bare_value)) (comment))"},
+		{"git config style", "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false",
+			"(document (section (section_header (section_name)) (pair (key) (bare_value)) (pair (key) (bare_value)) (pair (key) (bare_value))))"},
+		{"python configparser", "[DEFAULT]\nServerAliveInterval = 45\nCompression = yes",
+			"(document (section (section_header (section_name)) (pair (key) (bare_value)) (pair (key) (bare_value))))"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parser := gotreesitter.NewParser(lang)
+			tree, err := parser.Parse([]byte(tt.input))
+			if err != nil {
+				t.Fatalf("Parse failed: %v", err)
+			}
+			sexp := tree.RootNode().SExpr(lang)
+			t.Logf("input: %q → %s", tt.input, sexp)
+			if strings.Contains(sexp, "ERROR") {
+				t.Errorf("tree contains ERROR: %s", sexp)
+			}
+			if tt.expected != "" && sexp != tt.expected {
+				t.Errorf("tree mismatch:\n  got:      %s\n  expected: %s", sexp, tt.expected)
+			}
+		})
+	}
+}
+
+func TestINIEmbeddedTests(t *testing.T) {
+	g := INIGrammar()
+	if err := RunTests(g); err != nil {
+		t.Fatal(err)
+	}
+}
