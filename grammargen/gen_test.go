@@ -2203,3 +2203,72 @@ func TestINIEmbeddedTests(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// ── Lox Grammar Tests ──
+
+func TestLoxGrammar(t *testing.T) {
+	g := LoxGrammar()
+	lang, err := GenerateLanguage(g)
+	if err != nil {
+		t.Fatalf("GenerateLanguage failed: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"empty", ""},
+		{"print", "print 42;"},
+		{"var decl", "var x = 1;"},
+		{"var no init", "var y;"},
+		{"assignment", "x = 42;"},
+		{"arithmetic", "1 + 2 * 3;"},
+		{"comparison", "a < b;"},
+		{"equality", "a == b;"},
+		{"logical", "a or b and c;"},
+		{"unary", "!true;"},
+		{"unary neg", "-x;"},
+		{"string", `"hello";`},
+		{"nil", "nil;"},
+		{"grouping", "(1 + 2) * 3;"},
+		{"function", "fun add(a, b) { return a + b; }"},
+		{"call", "add(1, 2);"},
+		{"method call", "obj.method(x);"},
+		{"class", `class Dog { bark() { print "woof"; } }`},
+		{"inheritance", "class Poodle < Dog { }"},
+		{"this", "this.x;"},
+		{"super", "super.method;"},
+		{"if", "if (x) print x;"},
+		{"if else", "if (x) print x; else print y;"},
+		{"while", "while (true) { print 1; }"},
+		{"for", "for (var i = 0; i < 10; i = i + 1) print i;"},
+		{"block", "{ var x = 1; print x; }"},
+		{"nested calls", "f(g(x));"},
+		{"chained member", "a.b.c;"},
+		{"comment", "// this is a comment\nprint 1;"},
+		{"multiple fns", "fun a() {} fun b() {}"},
+		{"fib", "fun fib(n) { if (n < 2) return n; return fib(n - 1) + fib(n - 2); }"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parser := gotreesitter.NewParser(lang)
+			tree, err := parser.Parse([]byte(tt.input))
+			if err != nil {
+				t.Fatalf("Parse failed: %v", err)
+			}
+			sexp := tree.RootNode().SExpr(lang)
+			t.Logf("input: %q → %s", tt.input, sexp)
+			if strings.Contains(sexp, "ERROR") {
+				t.Errorf("tree contains ERROR: %s", sexp)
+			}
+		})
+	}
+}
+
+func TestLoxEmbeddedTests(t *testing.T) {
+	g := LoxGrammar()
+	if err := RunTests(g); err != nil {
+		t.Fatal(err)
+	}
+}
