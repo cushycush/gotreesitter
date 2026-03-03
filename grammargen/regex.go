@@ -392,6 +392,16 @@ func (p *regexParser) parseEscapeChar() (rune, error) {
 		return '\r', nil
 	case 't':
 		return '\t', nil
+	case 'a':
+		return '\a', nil
+	case 'b':
+		return '\b', nil
+	case 'f':
+		return '\f', nil
+	case 'v':
+		return '\v', nil
+	case '0':
+		return 0, nil
 	case '\\':
 		return '\\', nil
 	case '"':

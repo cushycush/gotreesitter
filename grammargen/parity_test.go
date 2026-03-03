@@ -994,7 +994,7 @@ var importParityGrammars = []importParityGrammar{
 			"digraph { \"node with spaces\" -> other }",
 			"strict digraph { a -> b; a -> b; }",
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 15, expectParity: 14,
+		expectImport: true, expectGenerate: true, expectNoErrors: 15, expectParity: 15,
 	},
 	{
 		name: "ron", jsonPath: "/tmp/grammar_parity/ron/src/grammar.json",
@@ -1142,7 +1142,7 @@ var importParityGrammars = []importParityGrammar{
 			`null`, `"hello"`, `42`, `.foo | select(. > 2)`,
 			`[range(10)]`, `.a as $x | $x + 1`, `try .foo catch "default"`,
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 15, expectParity: 0,
+		expectImport: true, expectGenerate: true, expectNoErrors: 15, expectParity: 14,
 	},
 	{
 		name: "hcl", jsonPath: "/tmp/grammar_parity/hcl/src/grammar.json",
@@ -1197,13 +1197,13 @@ var importParityGrammars = []importParityGrammar{
 		name: "todotxt", jsonPath: "/tmp/grammar_parity/todotxt/src/grammar.json",
 		blobFunc: grammars.TodotxtLanguage,
 		samples: []string{
-			"Buy milk",
-			"(A) Call mom",
-			"x 2024-01-15 Pay bills",
-			"(B) 2024-02-01 Write report +project @office",
-			"Pick up groceries +shopping @store",
+			"Buy milk\n",
+			"(A) Call mom\n",
+			"x 2024-01-15 Pay bills\n",
+			"(B) 2024-02-01 Write report +project @office\n",
+			"Pick up groceries +shopping @store\n",
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 5, expectParity: 0,
+		expectImport: true, expectGenerate: true, expectNoErrors: 5, expectParity: 5,
 	},
 	{
 		name: "git_rebase", jsonPath: "/tmp/grammar_parity/git_rebase/src/grammar.json",
@@ -1262,7 +1262,7 @@ var importParityGrammars = []importParityGrammar{
 			"variable x 42 x !",
 			"10 0 do i . loop",
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 5, expectParity: 1,
+		expectImport: true, expectGenerate: true, expectNoErrors: 5, expectParity: 5,
 	},
 	{
 		name: "corn", jsonPath: "/tmp/grammar_parity/corn/src/grammar.json",
@@ -1299,7 +1299,7 @@ var importParityGrammars = []importParityGrammar{
 			`(list 1 2 3)`,
 			`'(a b c)`,
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 7, expectParity: 6,
+		expectImport: true, expectGenerate: true, expectNoErrors: 7, expectParity: 7,
 	},
 	{
 		name: "textproto", jsonPath: "/tmp/grammar_parity/textproto/src/grammar.json",
@@ -1387,7 +1387,7 @@ var importParityGrammars = []importParityGrammar{
 		expectImport:   true,
 		expectGenerate: true,
 		expectNoErrors: 5,
-		expectParity:   0,
+		expectParity:   1,
 	},
 	{
 		name: "sql", jsonPath: "/tmp/grammar_parity/sql/src/grammar.json",

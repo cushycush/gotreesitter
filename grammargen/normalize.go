@@ -1156,10 +1156,16 @@ func expandInlineRules(g *Grammar) *Grammar {
 	// appear in sequences (e.g., 6^3 = 216 alternatives from a 6-way choice
 	// inlined at 3 positions). Keep such rules as hidden nonterminals instead.
 	inlineBodies := make(map[string]*Rule)
+	// For inline rules too wide to expand, rename them to be hidden (prefix '_')
+	// so they don't create visible nodes in the parse tree.
+	hiddenRenames := make(map[string]string)
 	for _, name := range g.Inline {
 		if rule, ok := g.Rules[name]; ok {
 			if choiceWidth(rule) <= 4 {
 				inlineBodies[name] = rule
+			} else if !strings.HasPrefix(name, "_") {
+				// Too wide to inline but currently visible — make hidden.
+				hiddenRenames[name] = "_" + name
 			}
 		}
 	}
@@ -1170,16 +1176,35 @@ func expandInlineRules(g *Grammar) *Grammar {
 		if inlineSet[name] && inlineBodies[name] != nil {
 			continue // drop inlined rules
 		}
-		out.Define(name, substituteInlineRefs(g.Rules[name], inlineBodies))
+		outName := name
+		if renamed, ok := hiddenRenames[name]; ok {
+			outName = renamed
+		}
+		rule := substituteInlineRefs(g.Rules[name], inlineBodies)
+		rule = applyHiddenRenames(rule, hiddenRenames)
+		out.Define(outName, rule)
 	}
 
 	// Copy other fields.
 	for _, extra := range g.Extras {
-		out.Extras = append(out.Extras, substituteInlineRefs(extra, inlineBodies))
+		r := substituteInlineRefs(extra, inlineBodies)
+		out.Extras = append(out.Extras, applyHiddenRenames(r, hiddenRenames))
 	}
-	out.Conflicts = g.Conflicts
+	// Rename conflict group entries too.
+	for _, group := range g.Conflicts {
+		outGroup := make([]string, len(group))
+		for i, name := range group {
+			if renamed, ok := hiddenRenames[name]; ok {
+				outGroup[i] = renamed
+			} else {
+				outGroup[i] = name
+			}
+		}
+		out.Conflicts = append(out.Conflicts, outGroup)
+	}
 	for _, ext := range g.Externals {
-		out.Externals = append(out.Externals, substituteInlineRefs(ext, inlineBodies))
+		r := substituteInlineRefs(ext, inlineBodies)
+		out.Externals = append(out.Externals, applyHiddenRenames(r, hiddenRenames))
 	}
 	out.Word = g.Word
 	out.Supertypes = g.Supertypes
@@ -1228,6 +1253,37 @@ func substituteInlineRefs(r *Rule, inlineBodies map[string]*Rule) *Rule {
 	out.Children = make([]*Rule, len(r.Children))
 	for i, c := range r.Children {
 		out.Children[i] = substituteInlineRefs(c, inlineBodies)
+	}
+	return &out
+}
+
+// applyHiddenRenames renames symbol references according to the hidden renames map.
+func applyHiddenRenames(r *Rule, renames map[string]string) *Rule {
+	if r == nil || len(renames) == 0 {
+		return r
+	}
+	if r.Kind == RuleSymbol {
+		if newName, ok := renames[r.Value]; ok {
+			cp := *r
+			cp.Value = newName
+			return &cp
+		}
+		return r
+	}
+	if len(r.Children) == 0 {
+		return r
+	}
+	out := *r
+	out.Children = make([]*Rule, len(r.Children))
+	changed := false
+	for i, c := range r.Children {
+		out.Children[i] = applyHiddenRenames(c, renames)
+		if out.Children[i] != c {
+			changed = true
+		}
+	}
+	if !changed {
+		return r
 	}
 	return &out
 }

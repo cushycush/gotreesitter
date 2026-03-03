@@ -548,18 +548,25 @@ func buildAliasSequences(lang *gotreesitter.Language, ng *NormalizedGrammar) {
 		return
 	}
 
-	// Build a map from alias name → symbol ID. Create new symbols if needed.
-	aliasSymMap := make(map[string]gotreesitter.Symbol)
+	// Build a map from (alias name, named) → symbol ID. Create new symbols if needed.
+	// An alias with Named=false (e.g. keyword "subgraph") must not reuse a Named=true
+	// symbol (rule "subgraph") — they need separate symbol IDs, just like tree-sitter.
+	type aliasKey struct {
+		name  string
+		named bool
+	}
+	aliasSymMap := make(map[aliasKey]gotreesitter.Symbol)
 	for _, prod := range ng.Productions {
 		for _, ai := range prod.Aliases {
-			if _, ok := aliasSymMap[ai.Name]; ok {
+			ak := aliasKey{ai.Name, ai.Named}
+			if _, ok := aliasSymMap[ak]; ok {
 				continue
 			}
-			// Check if the alias name matches an existing symbol.
+			// Check if the alias name matches an existing symbol with the same Named status.
 			found := false
 			for i, sn := range lang.SymbolNames {
-				if sn == ai.Name {
-					aliasSymMap[ai.Name] = gotreesitter.Symbol(i)
+				if sn == ai.Name && lang.SymbolMetadata[i].Named == ai.Named {
+					aliasSymMap[ak] = gotreesitter.Symbol(i)
 					found = true
 					break
 				}
@@ -574,7 +581,7 @@ func buildAliasSequences(lang *gotreesitter.Language, ng *NormalizedGrammar) {
 					Named:   ai.Named,
 				})
 				lang.SymbolCount = uint32(len(lang.SymbolNames))
-				aliasSymMap[ai.Name] = newID
+				aliasSymMap[ak] = newID
 			}
 		}
 	}
@@ -596,7 +603,7 @@ func buildAliasSequences(lang *gotreesitter.Language, ng *NormalizedGrammar) {
 		row := make([]gotreesitter.Symbol, len(prod.RHS))
 		for _, ai := range prod.Aliases {
 			if ai.ChildIndex < len(row) {
-				row[ai.ChildIndex] = aliasSymMap[ai.Name]
+				row[ai.ChildIndex] = aliasSymMap[aliasKey{ai.Name, ai.Named}]
 			}
 		}
 		lang.AliasSequences[prod.ProductionID] = row
