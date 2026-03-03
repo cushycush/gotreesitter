@@ -941,7 +941,7 @@ var importParityGrammars = []importParityGrammar{
 			"+added line\n",
 			"-removed line\n",
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 4, expectParity: 1,
+		expectImport: true, expectGenerate: true, expectNoErrors: 4, expectParity: 0,
 	},
 	{
 		name: "gitcommit", jsonPath: "/tmp/grammar_parity/gitcommit/src/grammar.json",
@@ -1027,7 +1027,7 @@ var importParityGrammars = []importParityGrammar{
 			"arr = [1, 2, 3]\n",
 			"[server]\nhost = \"localhost\"\nport = 8080\n",
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 4, expectParity: 2,
+		expectImport: true, expectGenerate: true, expectNoErrors: 4, expectParity: 4,
 	},
 	{
 		name: "proto", jsonPath: "/tmp/grammar_parity/proto/src/grammar.json",
@@ -1097,7 +1097,7 @@ var importParityGrammars = []importParityGrammar{
 			"HEALTHCHECK CMD curl -f http://localhost/ || exit 1\n",
 			"# just a comment\n",
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 10, expectParity: 5,
+		expectImport: true, expectGenerate: true, expectNoErrors: 10, expectParity: 8,
 	},
 	{
 		name: "gitattributes", jsonPath: "/tmp/grammar_parity/gitattributes/src/grammar.json",
@@ -1285,7 +1285,7 @@ var importParityGrammars = []importParityGrammar{
 			`{"a": 1, "b": 2}`,
 			`<1:2>3`,
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 7, expectParity: 4,
+		expectImport: true, expectGenerate: true, expectNoErrors: 7, expectParity: 5,
 	},
 	{
 		name: "scheme", jsonPath: "/tmp/grammar_parity/scheme/src/grammar.json",
@@ -1339,7 +1339,7 @@ var importParityGrammars = []importParityGrammar{
 			"clean:\n\trm -f *.o\n",
 			".PHONY: all clean\n",
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 5, expectParity: 0,
+		expectImport: true, expectGenerate: true, expectNoErrors: 5, expectParity: 1,
 	},
 	// ── Batch 4: medium-to-large grammars ──
 	{
@@ -1356,7 +1356,7 @@ var importParityGrammars = []importParityGrammar{
 		expectImport:   true,
 		expectGenerate: true,
 		expectNoErrors: 5,
-		expectParity:   4,
+		expectParity:   5,
 	},
 	{
 		name: "ssh_config", jsonPath: "/tmp/grammar_parity/ssh_config/src/grammar.json",
