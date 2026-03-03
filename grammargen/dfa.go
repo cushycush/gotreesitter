@@ -54,6 +54,20 @@ func buildLexDFA(patterns []TerminalPattern, extraSymbols []int, skipExtras map[
 		// Convert NFA to DFA via subset construction.
 		dfa := subsetConstruction(combined)
 
+		// Prune transitions from immediate-accepting DFA states that can
+		// only reach non-immediate (catch-all) patterns. This prevents
+		// greedy patterns like [^\r\n]+ from defeating immediate tokens
+		// like "-", "---", "+", "+++" in diff-style grammars.
+		immediateSyms := make(map[int]bool)
+		for _, p := range modePatterns {
+			if p.Immediate {
+				immediateSyms[p.SymbolID] = true
+			}
+		}
+		if len(immediateSyms) > 0 {
+			pruneImmediateTransitions(dfa, immediateSyms)
+		}
+
 		// Mark skip states only for invisible extra symbols (like whitespace).
 		// Named/visible extras (like `comment`) must NOT be skipped — they
 		// produce tree nodes via shift-extra parse actions.
@@ -409,6 +423,64 @@ func addWhitespaceSkip(state *gotreesitter.LexState) {
 	sort.Slice(state.Transitions, func(i, j int) bool {
 		return state.Transitions[i].Lo < state.Transitions[j].Lo
 	})
+}
+
+// pruneImmediateTransitions removes transitions from DFA states that accept
+// an immediate token when those transitions can only lead to non-immediate
+// (catch-all) accepts. This prevents greedy patterns like [^\r\n]+ from
+// defeating shorter immediate tokens like "-" or "---".
+//
+// In tree-sitter's C lexer, immediate token paths are "dead-end" — once the
+// lexer matches an immediate token like "-", it can only continue to other
+// immediate tokens like "--" or "---", but never fall through to a catch-all
+// like "context". This function replicates that behavior in our combined DFA.
+func pruneImmediateTransitions(dfa []dfaState, immediateSyms map[int]bool) {
+	n := len(dfa)
+	if n == 0 {
+		return
+	}
+
+	// Step 1: Compute canReachImmediate[i] = true if state i (or any
+	// reachable descendant) accepts an immediate token.
+	canReachImmediate := make([]bool, n)
+	for i, s := range dfa {
+		if s.accept > 0 && immediateSyms[s.accept] {
+			canReachImmediate[i] = true
+		}
+	}
+
+	// Propagate backwards: if any successor can reach an immediate accept,
+	// so can the current state. Iterate until stable.
+	for changed := true; changed; {
+		changed = false
+		for i, s := range dfa {
+			if canReachImmediate[i] {
+				continue
+			}
+			for _, t := range s.transitions {
+				if canReachImmediate[t.nextState] {
+					canReachImmediate[i] = true
+					changed = true
+					break
+				}
+			}
+		}
+	}
+
+	// Step 2: For each state that accepts an immediate token, keep only
+	// transitions whose targets can reach another immediate token accept.
+	for i := range dfa {
+		if dfa[i].accept == 0 || !immediateSyms[dfa[i].accept] {
+			continue
+		}
+		var kept []dfaTransition
+		for _, t := range dfa[i].transitions {
+			if canReachImmediate[t.nextState] {
+				kept = append(kept, t)
+			}
+		}
+		dfa[i].transitions = kept
+	}
 }
 
 // computeLexModes determines the lex modes needed for the parse table.

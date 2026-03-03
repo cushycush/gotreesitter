@@ -149,6 +149,13 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 			if p != nil && p.language != nil && int(n.symbol) < len(p.language.SymbolMetadata) && p.language.SymbolMetadata[n.symbol].Visible {
 				extras = append(extras, n)
 			}
+		} else if n.startByte == n.endByte && p != nil && p.language != nil &&
+			int(n.symbol) < len(p.language.SymbolMetadata) &&
+			!p.language.SymbolMetadata[n.symbol].Visible {
+			// Zero-width invisible nodes (e.g. epsilon reductions of hidden
+			// repeat helpers) are ignorable during root recovery — they should
+			// not prevent identification of the real root.
+			continue
 		} else {
 			if realRoot != nil {
 				realRoot = nil // more than one non-extra -> genuine error
