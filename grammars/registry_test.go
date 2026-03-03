@@ -325,6 +325,11 @@ func TestDetectLanguageFilename(t *testing.T) {
 		// With directory prefix.
 		{"/home/user/.bashrc", "bash"},
 		{"some/path/Makefile", "make"},
+		// Exact filenames take priority over extension suffix matches.
+		// .tmux.conf and nginx.conf are linguist filenames; without
+		// correct priority they'd match the generic ".conf" extension.
+		{".tmux.conf", "bash"},
+		{"nginx.conf", "nginx"},
 		// Extended extensions via linguist.
 		{"build.mk", "make"},
 		{"build.mak", "make"},
@@ -375,6 +380,9 @@ func TestDetectLanguageByShebangComprehensive(t *testing.T) {
 		{"#!/usr/bin/ruby", "ruby"},
 		// env with flags (e.g., env -S).
 		{"#!/usr/bin/env -S python3", "python"},
+		// env with VAR=value assignments.
+		{"#!/usr/bin/env PYTHONPATH=/foo python3", "python"},
+		{"#!/usr/bin/env -S VAR=val python3", "python"},
 		// Not a shebang.
 		{"not a shebang", ""},
 		{"", ""},
@@ -429,6 +437,18 @@ func TestDisplayNamePopulated(t *testing.T) {
 		got := DisplayName(entry)
 		if got != tt.want {
 			t.Errorf("DisplayName(%q) = %q, want %q", tt.grammar, got, tt.want)
+		}
+	}
+}
+
+func TestDetectLanguageByNameRoundTrip(t *testing.T) {
+	// Every registered grammar must be resolvable by its own name.
+	for _, entry := range registry {
+		got := DetectLanguageByName(entry.Name)
+		if got == nil {
+			t.Errorf("DetectLanguageByName(%q) = nil, want grammar entry", entry.Name)
+		} else if got.Name != entry.Name {
+			t.Errorf("DetectLanguageByName(%q) = %q, want %q (alias shadows direct name)", entry.Name, got.Name, entry.Name)
 		}
 	}
 }

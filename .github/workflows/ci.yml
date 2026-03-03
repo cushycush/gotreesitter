@@ -46,9 +46,15 @@ jobs:
       - name: Check linguist_gen.go freshness
         run: |
           set -euo pipefail
-          go run ./cmd/gen_linguist -manifest grammars/languages.manifest -out grammars/linguist_gen.go
+          # Regenerate using the vendored languages.yml to keep the check
+          # deterministic (not affected by upstream linguist changes).
+          go run ./cmd/gen_linguist \
+            -manifest grammars/languages.manifest \
+            -languages-yml grammars/languages.yml \
+            -out grammars/linguist_gen.go
           if ! git diff --exit-code grammars/linguist_gen.go; then
-            echo "::error::grammars/linguist_gen.go is stale. Run: go run ./cmd/gen_linguist -manifest grammars/languages.manifest"
+            echo "::error::grammars/linguist_gen.go is stale. Regenerate:"
+            echo "::error::  go run ./cmd/gen_linguist -manifest grammars/languages.manifest -languages-yml grammars/languages.yml"
             exit 1
           fi
 
@@ -70,7 +76,7 @@ jobs:
 
           echo "lock: $lock_count | blobs: $blob_count | gen functions: $gen_count"
 
-          # Check blob files match lock entries.
+          # Three-way consistency: lock ↔ blobs ↔ gen functions.
           missing_blobs=$(comm -23 <(echo "$lock_names") <(echo "$blob_names"))
           if [ -n "$missing_blobs" ]; then
             echo "::error::Grammar blobs missing for lock entries: $missing_blobs"
@@ -83,8 +89,15 @@ jobs:
             echo "::warning::Orphan blobs not in lock file: $orphan_blobs"
           fi
 
-          if [ "$blob_count" -ne "$lock_count" ]; then
-            echo "::error::Blob count ($blob_count) != lock count ($lock_count)"
+          missing_gen=$(comm -23 <(echo "$lock_names") <(echo "$gen_names"))
+          if [ -n "$missing_gen" ]; then
+            echo "::error::embedded_grammars_gen.go missing functions for: $missing_gen"
+            echo "Run: go run ./cmd/ts2go -manifest grammars/languages.lock -outdir ./grammars -package grammars"
+            exit 1
+          fi
+
+          if [ "$blob_count" -ne "$lock_count" ] || [ "$gen_count" -ne "$lock_count" ]; then
+            echo "::error::Count mismatch — lock: $lock_count, blobs: $blob_count, gen: $gen_count"
             exit 1
           fi
 

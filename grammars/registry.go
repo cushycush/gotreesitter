@@ -37,22 +37,25 @@ func Register(entry LangEntry) {
 }
 
 // DetectLanguage returns the LangEntry for a filename, or nil if unknown.
-// Checks in order: registry extensions, exact filename match (linguist),
-// then linguist extended extensions.
+// Checks in order: exact filename match (linguist), registry extensions,
+// then linguist extended extensions. Exact filenames take priority over
+// suffix matching so that e.g. ".tmux.conf" resolves to bash rather than
+// matching the generic ".conf" extension.
 func DetectLanguage(filename string) *LangEntry {
-	// 1. Match by registry extensions (from languages.manifest).
+	// 1. Exact filename match (e.g., "Makefile", "Dockerfile", ".bashrc",
+	//    "nginx.conf"). Most specific, so checked first.
+	base := path.Base(filename)
+	if grammarName, ok := linguistFilenames[base]; ok {
+		return lookupByName(grammarName)
+	}
+
+	// 2. Match by registry extensions (from languages.manifest).
 	for i := range registry {
 		for _, ext := range registry[i].Extensions {
 			if strings.HasSuffix(filename, ext) {
 				return &registry[i]
 			}
 		}
-	}
-
-	// 2. Exact filename match (e.g., "Makefile", "Dockerfile", ".bashrc").
-	base := path.Base(filename)
-	if grammarName, ok := linguistFilenames[base]; ok {
-		return lookupByName(grammarName)
 	}
 
 	// 3. Linguist extended extensions (e.g., ".mk" for make, ".rake" for ruby).
@@ -108,12 +111,16 @@ func extractInterpreter(line string) string {
 	// Get the binary name from the path.
 	binary := path.Base(parts[0])
 
-	// If it's "env", the interpreter is the next argument.
+	// If it's "env", the interpreter is the next non-flag, non-VAR=val argument.
 	if binary == "env" {
 		for _, arg := range parts[1:] {
-			if !strings.HasPrefix(arg, "-") {
-				return strings.ToLower(arg)
+			if strings.HasPrefix(arg, "-") {
+				continue // skip flags like -S, -u
 			}
+			if strings.Contains(arg, "=") {
+				continue // skip VAR=value env assignments
+			}
+			return strings.ToLower(arg)
 		}
 		return ""
 	}
@@ -154,12 +161,18 @@ func normalizeLinguistKey(name string) string {
 // alias, or gotreesitter grammar name. Returns nil if unknown.
 //
 // Accepts: "C++", "cpp", "Go", "golang", "Shell", "bash", "F#", "fsharp", etc.
+// Direct grammar names always take priority over linguist aliases to prevent
+// shadowing (e.g., "eex" resolves to the eex grammar, not heex via alias).
 func DetectLanguageByName(name string) *LangEntry {
 	key := normalizeLinguistKey(name)
+	// Direct grammar name takes priority over alias mapping.
+	if entry := lookupByName(key); entry != nil {
+		return entry
+	}
 	if grammarName, ok := linguistToGrammar[key]; ok {
 		return lookupByName(grammarName)
 	}
-	return lookupByName(key)
+	return nil
 }
 
 // DisplayName returns the linguist canonical display name for a language
