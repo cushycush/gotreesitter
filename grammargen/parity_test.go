@@ -1097,7 +1097,7 @@ var importParityGrammars = []importParityGrammar{
 			"HEALTHCHECK CMD curl -f http://localhost/ || exit 1\n",
 			"# just a comment\n",
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 10, expectParity: 8,
+		expectImport: true, expectGenerate: true, expectNoErrors: 10, expectParity: 9,
 	},
 	{
 		name: "gitattributes", jsonPath: "/tmp/grammar_parity/gitattributes/src/grammar.json",

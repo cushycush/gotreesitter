@@ -64,7 +64,8 @@ func Generate(g *Grammar) ([]byte, error) {
 	)
 
 	// Phase 5: Build lex DFA per mode.
-	lexStates, lexModeOffsets, err := buildLexDFA(ng.Terminals, ng.ExtraSymbols, lexModes)
+	skipExtras := computeSkipExtras(ng)
+	lexStates, lexModeOffsets, err := buildLexDFA(ng.Terminals, ng.ExtraSymbols, skipExtras, lexModes)
 	if err != nil {
 		return nil, fmt.Errorf("build lex DFA: %w", err)
 	}
@@ -72,7 +73,7 @@ func Generate(g *Grammar) ([]byte, error) {
 	// Phase 5b: Build keyword DFA if word token is declared.
 	var keywordLexStates []gotreesitter.LexState
 	if len(ng.KeywordEntries) > 0 {
-		kls, _, err := buildLexDFA(ng.KeywordEntries, nil, []lexModeSpec{{
+		kls, _, err := buildLexDFA(ng.KeywordEntries, nil, nil, []lexModeSpec{{
 			validSymbols:   allSymbolsSet(ng.KeywordEntries),
 			skipWhitespace: false,
 		}})
@@ -153,7 +154,8 @@ func GenerateLanguage(g *Grammar) (*gotreesitter.Language, error) {
 		extraFS,
 	)
 
-	lexStates, lexModeOffsets, err := buildLexDFA(ng.Terminals, ng.ExtraSymbols, lexModes)
+	skipExtras := computeSkipExtras(ng)
+	lexStates, lexModeOffsets, err := buildLexDFA(ng.Terminals, ng.ExtraSymbols, skipExtras, lexModes)
 	if err != nil {
 		return nil, fmt.Errorf("build lex DFA: %w", err)
 	}
@@ -161,7 +163,7 @@ func GenerateLanguage(g *Grammar) (*gotreesitter.Language, error) {
 	// Build keyword DFA if word token is declared.
 	var keywordLexStates []gotreesitter.LexState
 	if len(ng.KeywordEntries) > 0 {
-		kls, _, err := buildLexDFA(ng.KeywordEntries, nil, []lexModeSpec{{
+		kls, _, err := buildLexDFA(ng.KeywordEntries, nil, nil, []lexModeSpec{{
 			validSymbols:   allSymbolsSet(ng.KeywordEntries),
 			skipWhitespace: false,
 		}})
@@ -243,6 +245,19 @@ func computeFirst(sym int, prods []Production, tokenCount int, result map[int]bo
 			break
 		}
 	}
+}
+
+// computeSkipExtras returns the set of extra symbol IDs that should be
+// silently consumed (Skip=true in the DFA). Only invisible/anonymous extras
+// are skipped. Visible extras like `comment` produce tree nodes.
+func computeSkipExtras(ng *NormalizedGrammar) map[int]bool {
+	skip := make(map[int]bool)
+	for _, e := range ng.ExtraSymbols {
+		if e > 0 && e < len(ng.Symbols) && !ng.Symbols[e].Visible {
+			skip[e] = true
+		}
+	}
+	return skip
 }
 
 // encodeLanguageBlob serializes a Language using gob+gzip.

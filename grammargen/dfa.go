@@ -22,8 +22,11 @@ type dfaTransition struct {
 // buildLexDFA constructs a DFA from the terminal patterns and produces
 // LexState tables compatible with the gotreesitter runtime.
 // It builds per-lex-mode DFAs based on which terminals are valid in each mode.
+// skipExtras contains only the extras that should be silently consumed (e.g.,
+// whitespace). Visible extras like `comment` should NOT be in skipExtras — they
+// produce tree nodes via shift-extra parse actions.
 // Returns the concatenated LexStates and per-mode start offsets.
-func buildLexDFA(patterns []TerminalPattern, extraSymbols []int, lexModes []lexModeSpec) ([]gotreesitter.LexState, []int, error) {
+func buildLexDFA(patterns []TerminalPattern, extraSymbols []int, skipExtras map[int]bool, lexModes []lexModeSpec) ([]gotreesitter.LexState, []int, error) {
 	extraSet := make(map[int]bool)
 	for _, e := range extraSymbols {
 		extraSet[e] = true
@@ -51,9 +54,11 @@ func buildLexDFA(patterns []TerminalPattern, extraSymbols []int, lexModes []lexM
 		// Convert NFA to DFA via subset construction.
 		dfa := subsetConstruction(combined)
 
-		// Mark skip states for extra symbols.
+		// Mark skip states only for invisible extra symbols (like whitespace).
+		// Named/visible extras (like `comment`) must NOT be skipped — they
+		// produce tree nodes via shift-extra parse actions.
 		for i := range dfa {
-			if dfa[i].accept > 0 && extraSet[dfa[i].accept] {
+			if dfa[i].accept > 0 && skipExtras[dfa[i].accept] {
 				dfa[i].skip = true
 			}
 		}
