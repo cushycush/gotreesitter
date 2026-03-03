@@ -786,14 +786,17 @@ func extractTerminals(g *Grammar, st *symbolTable, stringLits []string, namedTok
 			continue
 		}
 		rule := g.Rules[name]
-		expanded, imm, err := expandTokenRule(rule)
+		expanded, imm, prec, err := expandTokenRule(rule)
 		if err != nil {
 			return nil, fmt.Errorf("expand token %q: %w", name, err)
 		}
+		// Apply lexer precedence bias: negative prec → higher priority number
+		// (lower DFA priority), positive prec → lower priority number (higher DFA priority).
+		adjustedPriority := priority - prec*1000
 		patterns = append(patterns, TerminalPattern{
 			SymbolID:  id,
 			Rule:      expanded,
-			Priority:  priority,
+			Priority:  adjustedPriority,
 			Immediate: imm,
 		})
 		priority++
@@ -805,14 +808,15 @@ func extractTerminals(g *Grammar, st *symbolTable, stringLits []string, namedTok
 		if !ok {
 			continue
 		}
-		expanded, _, err := expandTokenRule(entry.rule)
+		expanded, _, prec, err := expandTokenRule(entry.rule)
 		if err != nil {
 			return nil, fmt.Errorf("expand inline token %q: %w", entry.name, err)
 		}
+		adjustedPriority := priority - prec*1000
 		patterns = append(patterns, TerminalPattern{
 			SymbolID:  id,
 			Rule:      expanded,
-			Priority:  priority,
+			Priority:  adjustedPriority,
 			Immediate: entry.immediate,
 		})
 		priority++
@@ -851,7 +855,7 @@ func identifyKeywords(g *Grammar, st *symbolTable, stringLits []string) (map[int
 	}
 
 	// Build a test DFA from the word pattern.
-	expanded, _, err := expandTokenRule(wordRule)
+	expanded, _, _, err := expandTokenRule(wordRule)
 	if err != nil {
 		return nil, nil, nil
 	}
@@ -910,30 +914,52 @@ func matchesDFA(dfa []dfaState, s string) bool {
 }
 
 // expandTokenRule flattens a token rule into a Rule tree suitable for
-// NFA construction. Returns the expanded rule and whether it's immediate.
-func expandTokenRule(r *Rule) (*Rule, bool, error) {
+// NFA construction. Returns the expanded rule, whether it's immediate,
+// and the lexer precedence bias (from TOKEN(PREC(n, ...))).
+func expandTokenRule(r *Rule) (*Rule, bool, int, error) {
 	if r == nil {
-		return Blank(), false, nil
+		return Blank(), false, 0, nil
 	}
 	switch r.Kind {
 	case RuleString:
-		return Str(r.Value), false, nil
+		return Str(r.Value), false, 0, nil
 	case RulePattern:
 		expanded, err := expandPatternRule(r.Value)
-		return expanded, false, err
+		return expanded, false, 0, err
 	case RuleToken:
-		inner, err := flattenTokenInner(r.Children[0])
-		return inner, false, err
+		inner, prec, err := flattenTokenInnerPrec(r.Children[0])
+		return inner, false, prec, err
 	case RuleImmToken:
-		inner, err := flattenTokenInner(r.Children[0])
-		return inner, true, err
+		inner, prec, err := flattenTokenInnerPrec(r.Children[0])
+		return inner, true, prec, err
 	case RulePrec, RulePrecLeft, RulePrecRight, RulePrecDynamic:
 		if len(r.Children) > 0 {
-			return expandTokenRule(r.Children[0])
+			rule, imm, _, err := expandTokenRule(r.Children[0])
+			return rule, imm, r.Prec, err
 		}
-		return Blank(), false, nil
+		return Blank(), false, 0, nil
 	default:
-		return Blank(), false, fmt.Errorf("unexpected rule kind %d in token position", r.Kind)
+		return Blank(), false, 0, fmt.Errorf("unexpected rule kind %d in token position", r.Kind)
+	}
+}
+
+// flattenTokenInnerPrec extracts precedence from the top-level PREC wrapper
+// inside a token() rule, then flattens the rest for NFA construction.
+func flattenTokenInnerPrec(r *Rule) (*Rule, int, error) {
+	if r == nil {
+		rule, err := flattenTokenInner(r)
+		return rule, 0, err
+	}
+	switch r.Kind {
+	case RulePrec, RulePrecLeft, RulePrecRight, RulePrecDynamic:
+		if len(r.Children) > 0 {
+			rule, err := flattenTokenInner(r.Children[0])
+			return rule, r.Prec, err
+		}
+		return Blank(), r.Prec, nil
+	default:
+		rule, err := flattenTokenInner(r)
+		return rule, 0, err
 	}
 }
 

@@ -412,6 +412,8 @@ func (p *regexParser) parseEscapeChar() (rune, error) {
 		return r, nil
 	case 'u':
 		return p.parseUnicodeEscape()
+	case 'x':
+		return p.parseHexEscape()
 	default:
 		return r, nil
 	}
@@ -549,6 +551,20 @@ func rangeTableToRuneRanges(table *unicode.RangeTable) []runeRange {
 		}
 	}
 	return ranges
+}
+
+// parseHexEscape parses \xNN (exactly 2 hex digits).
+func (p *regexParser) parseHexEscape() (rune, error) {
+	if p.pos+2 > len(p.input) {
+		return 0, fmt.Errorf("incomplete \\x escape")
+	}
+	hex := p.input[p.pos : p.pos+2]
+	p.pos += 2
+	n, err := strconv.ParseUint(hex, 16, 8)
+	if err != nil {
+		return 0, fmt.Errorf("invalid \\x escape: %s", hex)
+	}
+	return rune(n), nil
 }
 
 // parseUnicodeEscape parses \uXXXX or \u{XXXX} (variable-length braced form).
