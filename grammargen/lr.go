@@ -458,13 +458,36 @@ func (ctx *lrContext) getBetaFirst(item lrItem) *betaResult {
 	return result
 }
 
-// buildItemSets constructs LALR(1) item sets using core-based merging.
-// States with the same core (same prodIdx+dot pairs, ignoring lookaheads)
-// are merged, producing dramatically fewer states than full LR(1).
+// buildItemSets constructs LR(1) item sets with LALR-like merging.
+//
+// The algorithm starts as LALR(1) — states with the same core (same prodIdx+dot
+// pairs) are candidates for merging. However, states are only merged when the
+// merge would not change the set of valid terminals for lex mode computation.
+// Specifically, two core-identical states are kept separate if they have
+// different sets of reduce-lookahead terminals (terminals that trigger a reduce
+// action). This prevents lex mode pollution where greedy patterns become valid
+// in parser states where they shouldn't be.
+//
+// This is between LALR(1) and canonical LR(1): it merges more than LR(1) but
+// less than LALR(1), specifically refusing merges that would cause lex mode
+// conflicts. This matches tree-sitter's behavior of building canonical LR(1)
+// and then minimizing with token-conflict awareness.
 func (ctx *lrContext) buildItemSets() []lrItemSet {
 	ctx.itemSetMap = make(map[string]int)
 	ctx.coreMap = make(map[string]int)
 	ctx.transitions = make(map[int]map[int]int)
+	// mergeMap maps extendedCoreKey → state index (for lex-safe merging).
+	mergeMap := make(map[string]int)
+
+	// For large grammars, extended merging can cause state explosion.
+	// Use production count as a heuristic: grammars with many productions
+	// (like SQL at 190+) should use LALR from the start.
+	// Extended merging splits states with different reduce-lookahead terminal
+	// sets to prevent lex mode pollution. This creates more states than LALR but
+	// gives better lex modes. For very large grammars, fall back to LALR to
+	// avoid state explosion. The 8000-state cap provides an additional safety net.
+	const maxExtendedStates = 8000
+	useExtendedMerging := len(ctx.ng.Productions) <= 800
 
 	// Initial item set: closure of [S' → .S, $end]
 	initialSet := ctx.closureToSet([]lrItem{{
@@ -474,9 +497,11 @@ func (ctx *lrContext) buildItemSets() []lrItemSet {
 	}})
 	initialSet.key = itemSetKey(initialSet.items)
 	initialCore := coreKey(initialSet.items)
+	extKey := extendedMergeKey(initialSet.items, ctx.ng.Productions)
 	ctx.itemSets = []lrItemSet{initialSet}
 	ctx.itemSetMap[initialSet.key] = 0
 	ctx.coreMap[initialCore] = 0
+	mergeMap[extKey] = 0
 
 	worklist := []int{0}
 	inWorklist := map[int]bool{0: true}
@@ -521,30 +546,10 @@ func (ctx *lrContext) buildItemSets() []lrItemSet {
 			closedSet := ctx.closureToSet(advanced)
 			core := coreKey(closedSet.items)
 
-			var targetIdx int
-			if existingIdx, exists := ctx.coreMap[core]; exists {
-				targetIdx = existingIdx
-				// LALR merge: add any new lookaheads to the existing state.
-				newItems := mergeItemsReturnNew(&ctx.itemSets[existingIdx], closedSet.items)
-				if len(newItems) > 0 {
-					// Incremental closure: only propagate the newly-added items
-					// through the existing state's persistent seen set.
-					ctx.closureIncremental(&ctx.itemSets[existingIdx], newItems)
-					if !inWorklist[existingIdx] {
-						worklist = append(worklist, existingIdx)
-						inWorklist[existingIdx] = true
-					}
-				}
-			} else {
-				// New core — create a new state.
-				targetIdx = len(ctx.itemSets)
-				closedSet.key = itemSetKey(closedSet.items)
-				ctx.itemSetMap[closedSet.key] = targetIdx
-				ctx.coreMap[core] = targetIdx
-				ctx.itemSets = append(ctx.itemSets, closedSet)
-				worklist = append(worklist, targetIdx)
-				inWorklist[targetIdx] = true
-			}
+			targetIdx := ctx.findOrCreateState(closedSet, core, mergeMap,
+				useExtendedMerging && len(ctx.itemSets) < maxExtendedStates,
+				&worklist, &inWorklist)
+
 			// Record transition for table construction.
 			if ctx.transitions[stateIdx] == nil {
 				ctx.transitions[stateIdx] = make(map[int]int)
@@ -554,6 +559,115 @@ func (ctx *lrContext) buildItemSets() []lrItemSet {
 	}
 
 	return ctx.itemSets
+}
+
+// findOrCreateState looks up or creates a state for the given item set.
+// When useExtended is true, it uses the extended merge key (core + reduce
+// lookahead terminals) to avoid lex mode pollution. When false, it falls back
+// to standard LALR core-based merging.
+func (ctx *lrContext) findOrCreateState(
+	closedSet lrItemSet,
+	core string,
+	mergeMap map[string]int,
+	useExtended bool,
+	worklist *[]int,
+	inWorklist *map[int]bool,
+) int {
+	// 1. Check exact LR(1) key — if we've seen this exact item set, reuse it.
+	closedSet.key = itemSetKey(closedSet.items)
+	if idx, ok := ctx.itemSetMap[closedSet.key]; ok {
+		return idx
+	}
+
+	if useExtended {
+		// 2a. Extended merging: use core + reduce-lookahead key.
+		extKey := extendedMergeKey(closedSet.items, ctx.ng.Productions)
+		if idx, ok := mergeMap[extKey]; ok {
+			// Merge lookaheads into existing state.
+			newItems := mergeItemsReturnNew(&ctx.itemSets[idx], closedSet.items)
+			if len(newItems) > 0 {
+				// Re-close with new items and re-enqueue.
+				ctx.closureIncremental(&ctx.itemSets[idx], newItems)
+				ctx.itemSets[idx].key = itemSetKey(ctx.itemSets[idx].items)
+				ctx.itemSetMap[ctx.itemSets[idx].key] = idx
+				if !(*inWorklist)[idx] {
+					*worklist = append(*worklist, idx)
+					(*inWorklist)[idx] = true
+				}
+			}
+			return idx
+		}
+		// No extended match — create a new state.
+		newIdx := len(ctx.itemSets)
+		ctx.itemSets = append(ctx.itemSets, closedSet)
+		ctx.itemSetMap[closedSet.key] = newIdx
+		ctx.coreMap[core] = newIdx // may overwrite, that's OK
+		mergeMap[extKey] = newIdx
+		*worklist = append(*worklist, newIdx)
+		(*inWorklist)[newIdx] = true
+		return newIdx
+	}
+
+	// 2b. LALR fallback: merge by core key.
+	if idx, ok := ctx.coreMap[core]; ok {
+		newItems := mergeItemsReturnNew(&ctx.itemSets[idx], closedSet.items)
+		if len(newItems) > 0 {
+			ctx.closureIncremental(&ctx.itemSets[idx], newItems)
+			ctx.itemSets[idx].key = itemSetKey(ctx.itemSets[idx].items)
+			ctx.itemSetMap[ctx.itemSets[idx].key] = idx
+			if !(*inWorklist)[idx] {
+				*worklist = append(*worklist, idx)
+				(*inWorklist)[idx] = true
+			}
+		}
+		return idx
+	}
+
+	// 3. No match at all — create new state.
+	newIdx := len(ctx.itemSets)
+	ctx.itemSets = append(ctx.itemSets, closedSet)
+	ctx.itemSetMap[closedSet.key] = newIdx
+	ctx.coreMap[core] = newIdx
+	extKey := extendedMergeKey(closedSet.items, ctx.ng.Productions)
+	mergeMap[extKey] = newIdx
+	*worklist = append(*worklist, newIdx)
+	(*inWorklist)[newIdx] = true
+	return newIdx
+}
+
+// extendedMergeKey computes a merge key that includes both the core (prodIdx+dot)
+// and the set of terminal symbols in reduce-item lookaheads. States with the same
+// core but different reduce-terminal sets are kept separate to prevent lex mode
+// pollution (where greedy patterns become valid in states where they shouldn't be).
+func extendedMergeKey(items []lrItem, prods []Production) string {
+	// Start with the core key.
+	core := coreKey(items)
+
+	// Collect the set of all terminal symbols appearing as reduce lookaheads.
+	var reduceLookaheads []int
+	seen := make(map[int]bool)
+	for _, item := range items {
+		prod := &prods[item.prodIdx]
+		if item.dot >= len(prod.RHS) && !seen[item.lookahead] {
+			// This is a reduce item — include its lookahead.
+			seen[item.lookahead] = true
+			reduceLookaheads = append(reduceLookaheads, item.lookahead)
+		}
+	}
+
+	if len(reduceLookaheads) == 0 {
+		// No reduce items — core-only merging is safe (pure shift states).
+		return core
+	}
+
+	sort.Ints(reduceLookaheads)
+	buf := make([]byte, 0, len(core)+1+len(reduceLookaheads)*2)
+	buf = append(buf, core...)
+	buf = append(buf, '|')
+	for _, la := range reduceLookaheads {
+		buf = append(buf, byte(la>>8), byte(la))
+	}
+	return string(buf)
 }
 
 // mergeItemsReturnNew adds items from src into dst using dst's persistent seen
