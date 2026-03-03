@@ -383,14 +383,15 @@ func GenerateWithReport(g *Grammar) (*GenerateReport, error) {
 		extraFS,
 	)
 
-	lexStates, lexModeOffsets, err := buildLexDFA(ng.Terminals, ng.ExtraSymbols, lexModes)
+	skipExtras := computeSkipExtras(ng)
+	lexStates, lexModeOffsets, err := buildLexDFA(ng.Terminals, ng.ExtraSymbols, skipExtras, lexModes)
 	if err != nil {
 		return nil, fmt.Errorf("build lex DFA: %w", err)
 	}
 
 	var keywordLexStates []gotreesitter.LexState
 	if len(ng.KeywordEntries) > 0 {
-		kls, _, err := buildLexDFA(ng.KeywordEntries, nil, []lexModeSpec{{
+		kls, _, err := buildLexDFA(ng.KeywordEntries, nil, nil, []lexModeSpec{{
 			validSymbols:   allSymbolsSet(ng.KeywordEntries),
 			skipWhitespace: false,
 		}})
