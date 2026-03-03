@@ -265,6 +265,8 @@ func (n *Node) Children() []*Node { return n.children }
 
 // SExpr returns a tree-sitter-style S-expression for this node.
 // It includes only named nodes for stable debug snapshots.
+// Invisible named nodes (supertypes) are transparent — their children
+// are included directly without wrapping.
 func (n *Node) SExpr(lang *Language) string {
 	if n == nil || lang == nil {
 		return ""
@@ -272,6 +274,20 @@ func (n *Node) SExpr(lang *Language) string {
 	if !n.IsNamed() {
 		return ""
 	}
+
+	// Invisible named nodes (e.g. supertypes) are transparent:
+	// skip the node itself but include its children's output directly.
+	if int(n.symbol) < len(lang.SymbolMetadata) && !lang.SymbolMetadata[n.symbol].Visible {
+		parts := make([]string, 0, n.ChildCount())
+		for i := 0; i < n.ChildCount(); i++ {
+			s := n.Child(i).SExpr(lang)
+			if s != "" {
+				parts = append(parts, s)
+			}
+		}
+		return strings.Join(parts, " ")
+	}
+
 	name := n.Type(lang)
 	if n.ChildCount() == 0 {
 		return "(" + name + ")"
