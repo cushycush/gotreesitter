@@ -272,6 +272,11 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 				break
 			}
 		}
+		// Supertypes are transparent wrappers — tree-sitter marks them
+		// Visible=false so they don't appear as explicit tree nodes.
+		if isSupertype {
+			visible = false
+		}
 		st.addSymbol(name, SymbolInfo{
 			Name:      name,
 			Visible:   visible,
