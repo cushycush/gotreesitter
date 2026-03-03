@@ -2325,3 +2325,170 @@ func TestMustacheEmbeddedTests(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// ============================================================
+// Pipeline Validation Tests
+// ============================================================
+
+// TestBlobRoundTrip verifies the full pipeline for each authored grammar:
+// Grammar → Generate blob → decode blob → parse inputs → compare with direct generation.
+func TestBlobRoundTrip(t *testing.T) {
+	type grammarCase struct {
+		name    string
+		grammar func() *Grammar
+		inputs  []string
+	}
+	cases := []grammarCase{
+		{
+			name:    "INI",
+			grammar: INIGrammar,
+			inputs: []string{
+				"",
+				"key=value",
+				"[server]\nhost=localhost\nport=8080",
+				"; comment\nkey=val",
+				"key=\"hello world\"",
+			},
+		},
+		{
+			name:    "Lox",
+			grammar: LoxGrammar,
+			inputs: []string{
+				"",
+				"print 42;",
+				"var x = 1;",
+				"1 + 2 * 3;",
+				"fun fib(n) { if (n < 2) return n; return fib(n - 1) + fib(n - 2); }",
+				"class Dog < Animal { bark() { print \"woof\"; } }",
+			},
+		},
+		{
+			name:    "Mustache",
+			grammar: MustacheGrammar,
+			inputs: []string{
+				"",
+				"Hello, world!",
+				"Hello, {{name}}!",
+				"{{{raw}}}",
+				"{{#section}}content{{/section}}",
+				"{{person.name}}",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := tc.grammar()
+
+			// Generate directly.
+			directLang, err := GenerateLanguage(g)
+			if err != nil {
+				t.Fatalf("GenerateLanguage failed: %v", err)
+			}
+
+			// Generate blob and decode.
+			blob, err := Generate(g)
+			if err != nil {
+				t.Fatalf("Generate blob failed: %v", err)
+			}
+			t.Logf("blob size: %d bytes", len(blob))
+
+			blobLang, err := decodeLanguageBlob(blob)
+			if err != nil {
+				t.Fatalf("decodeLanguageBlob failed: %v", err)
+			}
+
+			// Verify structural properties match.
+			if directLang.SymbolCount != blobLang.SymbolCount {
+				t.Errorf("SymbolCount mismatch: direct=%d blob=%d", directLang.SymbolCount, blobLang.SymbolCount)
+			}
+			if directLang.StateCount != blobLang.StateCount {
+				t.Errorf("StateCount mismatch: direct=%d blob=%d", directLang.StateCount, blobLang.StateCount)
+			}
+			if directLang.TokenCount != blobLang.TokenCount {
+				t.Errorf("TokenCount mismatch: direct=%d blob=%d", directLang.TokenCount, blobLang.TokenCount)
+			}
+
+			// Parse all inputs with both and compare S-expressions.
+			for _, input := range tc.inputs {
+				directParser := gotreesitter.NewParser(directLang)
+				blobParser := gotreesitter.NewParser(blobLang)
+
+				directTree, err := directParser.Parse([]byte(input))
+				if err != nil {
+					t.Errorf("direct parse failed for %q: %v", input, err)
+					continue
+				}
+				blobTree, err := blobParser.Parse([]byte(input))
+				if err != nil {
+					t.Errorf("blob parse failed for %q: %v", input, err)
+					continue
+				}
+
+				directSexp := directTree.RootNode().SExpr(directLang)
+				blobSexp := blobTree.RootNode().SExpr(blobLang)
+				if directSexp != blobSexp {
+					t.Errorf("S-expr mismatch for %q:\n  direct: %s\n  blob:   %s", input, directSexp, blobSexp)
+				}
+			}
+		})
+	}
+}
+
+// TestGenerateCAuthoredGrammars validates C code emission for each authored grammar.
+func TestGenerateCAuthoredGrammars(t *testing.T) {
+	type grammarCase struct {
+		name     string
+		grammar  func() *Grammar
+		expected []string // strings that must appear in the generated C code
+	}
+	cases := []grammarCase{
+		{
+			name:    "INI",
+			grammar: INIGrammar,
+			expected: []string{
+				"#include <tree_sitter/parser.h>",
+				"#define LANGUAGE_VERSION",
+				"tree_sitter_ini",
+				"ts_symbol_names",
+				"ts_lex",
+			},
+		},
+		{
+			name:    "Lox",
+			grammar: LoxGrammar,
+			expected: []string{
+				"#include <tree_sitter/parser.h>",
+				"tree_sitter_lox",
+				"ts_parse_table",
+				"ts_lex",
+				"ts_field_names",
+			},
+		},
+		{
+			name:    "Mustache",
+			grammar: MustacheGrammar,
+			expected: []string{
+				"#include <tree_sitter/parser.h>",
+				"tree_sitter_mustache",
+				"ts_lex",
+				"ts_symbol_names",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cCode, err := GenerateC(tc.grammar())
+			if err != nil {
+				t.Fatalf("GenerateC failed: %v", err)
+			}
+			t.Logf("C code size: %d bytes", len(cCode))
+			for _, s := range tc.expected {
+				if !strings.Contains(cCode, s) {
+					t.Errorf("C code missing %q", s)
+				}
+			}
+		})
+	}
+}
