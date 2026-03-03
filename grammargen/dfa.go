@@ -496,7 +496,6 @@ func computeLexModes(
 		// tokens are valid, then don't skip whitespace.
 		skipWS := !hasImmediate || len(validSyms) > countImmediate(validSyms, immediateTokens)
 
-		// Build key from sorted valid symbols.
 		key := buildModeKey(validSyms, skipWS)
 
 		if modeIdx, ok := modeMap[key]; ok {
@@ -543,3 +542,4 @@ func buildModeKey(syms map[int]bool, skip bool) string {
 	}
 	return string(buf)
 }
+
