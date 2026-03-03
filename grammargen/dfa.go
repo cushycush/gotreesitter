@@ -426,8 +426,12 @@ func computeLexModes(
 	extraFirstSets map[int]map[int]bool, // nonterminal extra → first-set terminals
 ) ([]lexModeSpec, []int) {
 	extraSet := make(map[int]bool)
+	hasTerminalExtras := false
 	for _, e := range extraSymbols {
 		extraSet[e] = true
+		if e > 0 && e < tokenCount {
+			hasTerminalExtras = true
+		}
 	}
 
 	// External tokens are handled by the external scanner, not the DFA.
@@ -492,9 +496,10 @@ func computeLexModes(
 		}
 
 		// Determine if whitespace should be skipped in this mode.
-		// If any valid token is an immediate token and NO non-immediate
-		// tokens are valid, then don't skip whitespace.
-		skipWS := !hasImmediate || len(validSyms) > countImmediate(validSyms, immediateTokens)
+		// When the grammar has no terminal extras (extras=[]), whitespace
+		// must never be skipped — the grammar handles all whitespace explicitly.
+		// Otherwise, skip whitespace unless ALL valid tokens are immediate.
+		skipWS := hasTerminalExtras && (!hasImmediate || len(validSyms) > countImmediate(validSyms, immediateTokens))
 
 		key := buildModeKey(validSyms, skipWS)
 
