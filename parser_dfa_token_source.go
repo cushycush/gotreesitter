@@ -16,6 +16,7 @@ type dfaTokenSource struct {
 	hasKeywordState   []bool
 	externalPayload   any
 	externalValid     []bool
+	fallbackLexStates []uint16
 	glrStates         []StateID // all active GLR stack states
 
 	// Zero-width external token loop prevention.
@@ -57,6 +58,9 @@ func acquireDFATokenSource(lexer *Lexer, language *Language, lookupActionIndex f
 	ts.hasKeywordState = hasKeywordState
 	ts.externalPayload = nil
 	ts.glrStates = nil
+	if len(ts.fallbackLexStates) > 0 {
+		ts.fallbackLexStates = ts.fallbackLexStates[:0]
+	}
 	if len(ts.externalValid) > 0 {
 		ts.externalValid = ts.externalValid[:0]
 	}
@@ -69,6 +73,16 @@ func acquireDFATokenSource(lexer *Lexer, language *Language, lookupActionIndex f
 	ts.zeroWidthCount = 0
 	if language != nil && language.ExternalScanner != nil {
 		ts.externalPayload = language.ExternalScanner.Create()
+	}
+	if language != nil {
+		seen := make(map[uint16]struct{}, len(language.LexModes))
+		for _, lm := range language.LexModes {
+			if _, ok := seen[lm.LexState]; ok {
+				continue
+			}
+			seen[lm.LexState] = struct{}{}
+			ts.fallbackLexStates = append(ts.fallbackLexStates, lm.LexState)
+		}
 	}
 	return ts
 }
@@ -94,6 +108,7 @@ func (d *dfaTokenSource) Close() {
 	d.language = nil
 	d.lookupActionIndex = nil
 	d.hasKeywordState = nil
+	d.fallbackLexStates = nil
 	d.glrStates = nil
 	d.extZeroPos = -1
 	d.extZeroState = 0
@@ -119,11 +134,34 @@ func (d *dfaTokenSource) Next() Token {
 			tok = extTok
 			tokenFromExternal = true
 		} else {
+			startPos := d.lexer.pos
+			startRow := d.lexer.row
+			startCol := d.lexer.col
 			lexState := uint16(0)
 			if int(d.state) < len(d.language.LexModes) {
 				lexState = d.language.LexModes[d.state].LexState
 			}
 			tok = d.lexer.Next(lexState)
+			// If this lex mode failed to produce any token at a non-EOF
+			// position, probe other known lex start states before falling back
+			// to rune-skipping error recovery.
+			if d.language != nil &&
+				d.language.Name == "jsdoc" &&
+				tok.Symbol == 0 &&
+				startPos < len(d.lexer.source) &&
+				len(d.fallbackLexStates) > 1 &&
+				!d.hasAnyActionForSymbol(0) {
+				d.lexer.pos, d.lexer.row, d.lexer.col = startPos, startRow, startCol
+				if alt, ok := d.probeAlternativeLexToken(startPos, startRow, startCol, lexState); ok {
+					tok = alt
+					if DebugDFA.Load() {
+						fmt.Printf("  DFA fallback lex-state probe hit sym=%d at pos=%d state=%d\n", tok.Symbol, startPos, d.state)
+					}
+				} else {
+					d.lexer.pos, d.lexer.row, d.lexer.col = startPos, startRow, startCol
+					tok = d.lexer.Next(lexState)
+				}
+			}
 			tok = d.promoteKeyword(tok)
 		}
 
@@ -196,6 +234,42 @@ func (d *dfaTokenSource) Next() Token {
 	}
 }
 
+func (d *dfaTokenSource) probeAlternativeLexToken(startPos int, startRow, startCol uint32, skipState uint16) (Token, bool) {
+	bestFound := false
+	bestTok := Token{}
+	bestPos := startPos
+	bestRow := startRow
+	bestCol := startCol
+	bestLen := -1
+	bestSym := Symbol(^uint16(0))
+
+	for _, st := range d.fallbackLexStates {
+		if st == skipState {
+			continue
+		}
+		d.lexer.pos, d.lexer.row, d.lexer.col = startPos, startRow, startCol
+		tok, ok := d.lexer.scan(st, startPos, startRow, startCol)
+		if !ok || tok.Symbol == 0 || tok.EndByte <= tok.StartByte {
+			continue
+		}
+		matchLen := int(tok.EndByte - tok.StartByte)
+		if !bestFound || matchLen > bestLen || (matchLen == bestLen && tok.Symbol < bestSym) {
+			bestFound = true
+			bestTok = tok
+			bestLen = matchLen
+			bestSym = tok.Symbol
+			bestPos, bestRow, bestCol = d.lexer.pos, d.lexer.row, d.lexer.col
+		}
+	}
+
+	if !bestFound {
+		d.lexer.pos, d.lexer.row, d.lexer.col = startPos, startRow, startCol
+		return Token{}, false
+	}
+	d.lexer.pos, d.lexer.row, d.lexer.col = bestPos, bestRow, bestCol
+	return bestTok, true
+}
+
 func (d *dfaTokenSource) SetParserState(state StateID) {
 	d.state = state
 }
@@ -205,7 +279,7 @@ func (d *dfaTokenSource) SetGLRStates(states []StateID) {
 }
 
 func (d *dfaTokenSource) hasAnyActionForSymbol(sym Symbol) bool {
-	if d == nil || d.lookupActionIndex == nil || sym == 0 {
+	if d == nil || d.lookupActionIndex == nil {
 		return false
 	}
 	if len(d.glrStates) == 0 {
