@@ -26,6 +26,8 @@ type lrAction struct {
 	prodIdx  int   // reduce production index
 	prec     int   // for shift: precedence of the item's production
 	assoc    Assoc // for shift: associativity of the item's production
+	lhsSym   int   // LHS nonterminal of the production (for conflict detection)
+	lhsSyms  []int // additional LHS symbols (when shifts from multiple rules merge)
 }
 
 type lrActionKind int
@@ -96,10 +98,11 @@ func buildLRTables(ng *NormalizedGrammar) (*LRTables, error) {
 				if nextSym < tokenCount {
 					// Terminal → shift action
 					tables.addAction(stateIdx, nextSym, lrAction{
-						kind:  lrShift,
-						state: targetState,
-						prec:  prod.Prec,
-						assoc: prod.Assoc,
+						kind:   lrShift,
+						state:  targetState,
+						prec:   prod.Prec,
+						assoc:  prod.Assoc,
+						lhsSym: prod.LHS,
 					})
 				} else {
 					// Nonterminal → goto
@@ -115,6 +118,7 @@ func buildLRTables(ng *NormalizedGrammar) (*LRTables, error) {
 					tables.addAction(stateIdx, item.lookahead, lrAction{
 						kind:    lrReduce,
 						prodIdx: item.prodIdx,
+						lhsSym:  prod.LHS,
 					})
 				}
 			}
@@ -136,6 +140,19 @@ func (t *LRTables) addAction(state, sym int, action lrAction) {
 				if action.prec > a.prec {
 					existing[i].prec = action.prec
 					existing[i].assoc = action.assoc
+				}
+				// Accumulate all contributing LHS symbols for conflict detection.
+				if action.lhsSym != a.lhsSym && action.lhsSym != 0 {
+					found := false
+					for _, s := range existing[i].lhsSyms {
+						if s == action.lhsSym {
+							found = true
+							break
+						}
+					}
+					if !found {
+						existing[i].lhsSyms = append(existing[i].lhsSyms, action.lhsSym)
+					}
 				}
 				return
 			}
@@ -812,8 +829,18 @@ func resolveActionConflict(actions []lrAction, ng *NormalizedGrammar) ([]lrActio
 			}
 		}
 
-		// Check declared conflicts for GLR.
+		// Check declared conflicts for GLR: if the shift and reduce involve
+		// different nonterminals from the same conflict group, keep both.
+		if shiftMatchesConflictGroup(shift, reduce.lhsSym, ng) {
+			return actions, nil // keep both for GLR
+		}
+		// Also check using just the reduce LHS (backward compat).
 		if isDeclaredConflict(reduce.prodIdx, ng) {
+			return actions, nil // keep both for GLR
+		}
+		// Transitive check: trace hidden helper symbols back to ancestor
+		// named symbols to find conflict group membership.
+		if isTransitiveConflict(shift, reduce, ng) {
 			return actions, nil // keep both for GLR
 		}
 
@@ -854,6 +881,42 @@ func resolveActionConflict(actions []lrAction, ng *NormalizedGrammar) ([]lrActio
 	return actions, nil
 }
 
+// shiftMatchesConflictGroup checks if a shift action involves a nonterminal
+// from the same declared conflict group as the given reduce LHS. It checks
+// both the primary lhsSym and any accumulated lhsSyms from merged shifts.
+func shiftMatchesConflictGroup(shift lrAction, reduceLHS int, ng *NormalizedGrammar) bool {
+	if len(ng.Conflicts) == 0 {
+		return false
+	}
+	// Collect all LHS symbols contributing to this shift.
+	allShiftLHS := make([]int, 0, 1+len(shift.lhsSyms))
+	if shift.lhsSym != 0 {
+		allShiftLHS = append(allShiftLHS, shift.lhsSym)
+	}
+	allShiftLHS = append(allShiftLHS, shift.lhsSyms...)
+
+	for _, cgroup := range ng.Conflicts {
+		hasReduce := false
+		for _, sym := range cgroup {
+			if sym == reduceLHS {
+				hasReduce = true
+				break
+			}
+		}
+		if !hasReduce {
+			continue
+		}
+		for _, sym := range cgroup {
+			for _, shiftLHS := range allShiftLHS {
+				if sym == shiftLHS && shiftLHS != reduceLHS {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // isDeclaredConflict checks if the production's LHS is part of a declared conflict.
 func isDeclaredConflict(prodIdx int, ng *NormalizedGrammar) bool {
 	prod := &ng.Productions[prodIdx]
@@ -863,6 +926,135 @@ func isDeclaredConflict(prodIdx int, ng *NormalizedGrammar) bool {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+// isTransitiveConflict checks if a shift/reduce conflict should be kept
+// as a GLR fork by tracing hidden helper symbols (from repeat/optional
+// sugar) back to their ancestor named symbols and checking if siblings
+// in the production chain are in declared conflict groups.
+//
+// This handles cases like C's typedef ambiguity where:
+//   - shift: _empty_declaration → . type_specifier ; (shift primitive_type)
+//   - reduce: __declaration_specifiers_repeat30 → ε
+//
+// The reduce's helper LHS traces up through _declaration_specifiers to
+// declaration/function_definition, which has _declarator as a sibling.
+// Since [type_specifier, _declarator] is a declared conflict, this should
+// be a GLR fork.
+func isTransitiveConflict(shift lrAction, reduce lrAction, ng *NormalizedGrammar) bool {
+	if len(ng.Conflicts) == 0 {
+		return false
+	}
+
+	// Build a set of all symbols in any conflict group for fast lookup.
+	conflictSyms := make(map[int]bool)
+	for _, cg := range ng.Conflicts {
+		for _, s := range cg {
+			conflictSyms[s] = true
+		}
+	}
+
+	// Quick check: if neither side directly involves conflict symbols, check
+	// if the reduce's LHS is a hidden helper that traces to conflict symbols.
+	reduceLHS := ng.Productions[reduce.prodIdx].LHS
+	if conflictSyms[reduceLHS] {
+		return false // already handled by isDeclaredConflict
+	}
+
+	// Build reverse index: symbol → productions that use it on RHS.
+	reverseIdx := make(map[int][]int) // symbol → production indices
+	for i, prod := range ng.Productions {
+		for _, s := range prod.RHS {
+			reverseIdx[s] = append(reverseIdx[s], i)
+		}
+	}
+
+	// BFS from reduceLHS upward through productions. At each level,
+	// check if any sibling RHS symbol or the LHS is in a conflict group.
+	// Also collect the shift-side conflict symbols for matching.
+	allShiftLHS := make(map[int]bool)
+	if shift.lhsSym != 0 {
+		allShiftLHS[shift.lhsSym] = true
+	}
+	for _, s := range shift.lhsSyms {
+		allShiftLHS[s] = true
+	}
+
+	// For the shift side, also check which conflict symbols appear in
+	// productions that share an RHS with the shift's LHS.
+	shiftConflictSyms := make(map[int]bool)
+	for s := range allShiftLHS {
+		if conflictSyms[s] {
+			shiftConflictSyms[s] = true
+		}
+		// Check productions that contain s on RHS — their other RHS symbols
+		// or LHS might be in conflict groups.
+		for _, pi := range reverseIdx[s] {
+			prod := &ng.Productions[pi]
+			if conflictSyms[prod.LHS] {
+				shiftConflictSyms[prod.LHS] = true
+			}
+			for _, rs := range prod.RHS {
+				if conflictSyms[rs] {
+					shiftConflictSyms[rs] = true
+				}
+			}
+		}
+	}
+
+	if len(shiftConflictSyms) == 0 {
+		return false
+	}
+
+	// BFS upward from reduceLHS.
+	visited := make(map[int]bool)
+	visited[reduceLHS] = true
+	queue := []int{reduceLHS}
+	maxDepth := 4 // limit depth to avoid explosion
+
+	for depth := 0; depth < maxDepth && len(queue) > 0; depth++ {
+		var next []int
+		for _, sym := range queue {
+			for _, pi := range reverseIdx[sym] {
+				prod := &ng.Productions[pi]
+				// Check if the LHS or any sibling RHS symbol is in a conflict
+				// group that also contains a shift-side conflict symbol.
+				var foundReduceSide []int
+				if conflictSyms[prod.LHS] {
+					foundReduceSide = append(foundReduceSide, prod.LHS)
+				}
+				for _, rs := range prod.RHS {
+					if conflictSyms[rs] && rs != sym {
+						foundReduceSide = append(foundReduceSide, rs)
+					}
+				}
+				for _, rcs := range foundReduceSide {
+					for _, cg := range ng.Conflicts {
+						hasReduce, hasShift := false, false
+						for _, cs := range cg {
+							if cs == rcs {
+								hasReduce = true
+							}
+							if shiftConflictSyms[cs] {
+								hasShift = true
+							}
+						}
+						if hasReduce && hasShift {
+							return true
+						}
+					}
+				}
+
+				// Continue BFS upward through hidden/helper symbols.
+				if !visited[prod.LHS] {
+					visited[prod.LHS] = true
+					next = append(next, prod.LHS)
+				}
+			}
+		}
+		queue = next
 	}
 	return false
 }
