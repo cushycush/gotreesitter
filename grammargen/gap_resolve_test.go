@@ -138,8 +138,8 @@ func extractRoot(sexp string) string {
 
 // Sample sets — pulled from parity_test.go expectations.
 func iniSamples() []string {
-	return []string{"key=value", "[section]\nkey=value", "; comment\nkey=value",
-		"[section]\n; comment\nkey = value\nkey2 = value2"}
+	return []string{"key=value\n", "[section]\nkey=value\n", "; comment\nkey=value\n",
+		"[section]\n; comment\nkey = value\nkey2 = value2\n"}
 }
 func requirementsSamples() []string {
 	return []string{"flask", "flask>=2.0", "flask>=2.0,<3.0"}

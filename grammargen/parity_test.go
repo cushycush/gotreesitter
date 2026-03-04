@@ -1392,7 +1392,7 @@ var importParityGrammars = []importParityGrammar{
 		expectImport:   true,
 		expectGenerate: true,
 		expectNoErrors: 5,
-		expectParity:   2,
+		expectParity:   5,
 	},
 	{
 		name: "sql", jsonPath: "/tmp/grammar_parity/sql/src/grammar.json",
