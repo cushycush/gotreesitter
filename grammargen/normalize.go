@@ -139,6 +139,14 @@ func (st *symbolTable) addSymbol(name string, info SymbolInfo) int {
 
 	// Terminals (anonymous, named tokens, externals).
 	if id, ok := st.byName[name]; ok {
+		// Symbol 0 is reserved for EOF ("end"). Never reuse it for a
+		// grammar terminal (e.g., jq's "end" keyword).
+		if id == 0 {
+			newID := len(st.symbols)
+			st.byName[name] = newID
+			st.symbols = append(st.symbols, info)
+			return newID
+		}
 		// If re-registering as a named token (e.g., true: "true"),
 		// upgrade the existing entry from anonymous to named,
 		// but only if it's still a terminal (not a nonterminal).

@@ -1142,7 +1142,7 @@ var importParityGrammars = []importParityGrammar{
 			`null`, `"hello"`, `42`, `.foo | select(. > 2)`,
 			`[range(10)]`, `.a as $x | $x + 1`, `try .foo catch "default"`,
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 15, expectParity: 14,
+		expectImport: true, expectGenerate: true, expectNoErrors: 15, expectParity: 15,
 	},
 	{
 		name: "hcl", jsonPath: "/tmp/grammar_parity/hcl/src/grammar.json",
