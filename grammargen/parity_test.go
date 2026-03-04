@@ -944,7 +944,7 @@ var importParityGrammars = []importParityGrammar{
 		expectImport: true, expectGenerate: true, expectNoErrors: 4, expectParity: 4,
 	},
 	{
-		name: "gitcommit", jsonPath: "/tmp/grammar_parity/gitcommit/src/grammar.json",
+		name: "gitcommit", jsonPath: "/tmp/grammar_parity/gitcommit_gbprod/src/grammar.json",
 		blobFunc: grammars.GitcommitLanguage,
 		samples: []string{
 			"Initial commit\n",
@@ -952,7 +952,7 @@ var importParityGrammars = []importParityGrammar{
 			"feat: add new feature\n",
 			"# comment only\n",
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 4, expectParity: 2,
+		expectImport: true, expectGenerate: true, expectNoErrors: 4, expectParity: 3,
 	},
 	{
 		name: "graphql", jsonPath: "/tmp/grammar_parity/graphql/src/grammar.json",
