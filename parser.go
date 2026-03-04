@@ -28,6 +28,8 @@ type Parser struct {
 	hasRecoverSymbol  []bool
 	recoverByState    [][]recoverSymbolAction
 	hasKeywordState   []bool
+	defaultReduce     []ParseAction
+	hasDefaultReduce  []bool
 	forceRawSpanAll   bool
 	forceRawSpanTable []bool
 	included          []Range
@@ -56,6 +58,9 @@ const (
 	// maxConsecutivePrimaryReduces prevents infinite reduce loops on the
 	// primary stack when no token advancement occurs.
 	maxConsecutivePrimaryReduces = 10
+	// maxDefaultPreLexReduces bounds default-reduction chaining that runs
+	// before lexing a new token on single-stack parses.
+	maxDefaultPreLexReduces = 512
 )
 
 // IncrementalParseProfile attributes incremental parse time into coarse buckets.
@@ -125,8 +130,23 @@ func NewParser(lang *Language) *Parser {
 		p.recoverByState, p.hasRecoverState, p.hasRecoverSymbol = buildRecoverActionsByState(lang)
 		p.hasKeywordState = buildKeywordStates(lang)
 		p.rootSymbol, p.hasRootSymbol = p.inferRootSymbol()
+		p.defaultReduce, p.hasDefaultReduce = p.buildDefaultReduceActions()
 	}
 	return p
+}
+
+func (p *Parser) defaultReduceAction(state StateID) (ParseAction, bool) {
+	if p == nil {
+		return ParseAction{}, false
+	}
+	idx := int(state)
+	if idx < 0 || idx >= len(p.hasDefaultReduce) || !p.hasDefaultReduce[idx] {
+		return ParseAction{}, false
+	}
+	if idx >= len(p.defaultReduce) {
+		return ParseAction{}, false
+	}
+	return p.defaultReduce[idx], true
 }
 
 func (p *Parser) inferRootSymbol() (Symbol, bool) {
@@ -546,6 +566,51 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		}
 		if nodeCount > maxNodes {
 			return finalize(stacks, ParseStopNodeLimit)
+		}
+
+		// In a single-stack parse, reduce-only states can safely perform
+		// default reductions before requesting lookahead. This mirrors
+		// tree-sitter's behavior and avoids over-lexing broad tokens (e.g. .*).
+		if needToken && len(stacks) == 1 && !stacks[0].dead {
+			if _, dfaSource := ts.(*dfaTokenSource); dfaSource {
+				reduceSteps := 0
+				for reduceSteps < maxDefaultPreLexReduces {
+					act, ok := p.defaultReduceAction(stacks[0].top().state)
+					if !ok {
+						break
+					}
+					anyReduced := false
+					p.applyAction(
+						&stacks[0],
+						act,
+						Token{},
+						&anyReduced,
+						&nodeCount,
+						arena,
+						&scratch.entries,
+						&scratch.gss,
+						&scratch.tmpEntries,
+						deferParentLinks,
+						&trackChildErrors,
+					)
+					if !anyReduced || stacks[0].dead {
+						break
+					}
+					reduceSteps++
+					if stacks[0].accepted {
+						return finalize(stacks[:1], ParseStopAccepted)
+					}
+					if stacks[0].depth() > maxDepth {
+						return finalize(stacks, ParseStopStackDepthLimit)
+					}
+					if nodeCount > maxNodes {
+						return finalize(stacks, ParseStopNodeLimit)
+					}
+				}
+				if stacks[0].dead {
+					return finalizeErrorTree(ParseStopNoStacksAlive)
+				}
+			}
 		}
 
 		// Use the primary (first) stack's state for DFA lex mode selection.
