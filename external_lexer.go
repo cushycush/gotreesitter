@@ -11,6 +11,7 @@ type ExternalLexer struct {
 	startPos int
 	pos      int
 	endPos   int
+	endMarked bool
 
 	startPoint Point
 	point      Point
@@ -27,6 +28,7 @@ func newExternalLexer(source []byte, pos int, row, col uint32) *ExternalLexer {
 		startPos:   pos,
 		pos:        pos,
 		endPos:     pos,
+		endMarked:  false,
 		startPoint: pt,
 		point:      pt,
 		endPoint:   pt,
@@ -61,12 +63,6 @@ func (l *ExternalLexer) Advance(skip bool) {
 	if skip {
 		l.startPos = l.pos
 		l.startPoint = l.point
-		// Note: endPos/endPoint are NOT updated here.  In C tree-sitter,
-		// ts_lexer_advance(skip=true) only moves token_start_position, not
-		// token_end_position.  MarkEnd() is the sole way to advance endPos.
-		// This matters for scanners (e.g. YAML) that mark the end before
-		// skipping whitespace and then return a zero-width token: the parser
-		// must re-position at the mark, not past the skipped bytes.
 	}
 }
 
@@ -74,6 +70,7 @@ func (l *ExternalLexer) Advance(skip bool) {
 func (l *ExternalLexer) MarkEnd() {
 	l.endPos = l.pos
 	l.endPoint = l.point
+	l.endMarked = true
 }
 
 // SetResultSymbol sets the token symbol to emit when Scan returns true.
@@ -98,27 +95,36 @@ func (l *ExternalLexer) token() (Token, bool) {
 	if !l.hasResult {
 		return Token{}, false
 	}
+
+	endPos := l.endPos
+	endPoint := l.endPoint
+	if !l.endMarked {
+		// Match C tree-sitter: if mark_end was never called, finishing a scan
+		// uses the current scanner cursor as the token end.
+		endPos = l.pos
+		endPoint = l.point
+	}
 	// When endPos < startPos the scanner marked a position before skip
 	// advanced startPos past it.  This yields a zero-width token at the
 	// mark position — the parser will re-position the lexer there so the
 	// skipped bytes are re-encountered on the next scan, matching C
 	// tree-sitter semantics.
-	if l.endPos < l.startPos {
+	if endPos < l.startPos {
 		return Token{
 			Symbol:     l.resultSymbol,
-			StartByte:  uint32(l.endPos),
-			EndByte:    uint32(l.endPos),
-			StartPoint: l.endPoint,
-			EndPoint:   l.endPoint,
+			StartByte:  uint32(endPos),
+			EndByte:    uint32(endPos),
+			StartPoint: endPoint,
+			EndPoint:   endPoint,
 		}, true
 	}
 
 	return Token{
 		Symbol:     l.resultSymbol,
-		Text:       bytesToStringNoCopy(l.source[l.startPos:l.endPos]),
+		Text:       bytesToStringNoCopy(l.source[l.startPos:endPos]),
 		StartByte:  uint32(l.startPos),
-		EndByte:    uint32(l.endPos),
+		EndByte:    uint32(endPos),
 		StartPoint: l.startPoint,
-		EndPoint:   l.endPoint,
+		EndPoint:   endPoint,
 	}, true
 }
