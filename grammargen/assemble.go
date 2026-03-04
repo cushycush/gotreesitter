@@ -159,6 +159,7 @@ func buildParseTables(
 				pa.ChildCount = uint8(len(prod.RHS))
 				pa.DynamicPrecedence = int16(prod.DynPrec)
 				pa.ProductionID = uint16(prod.ProductionID)
+				pa.Extra = prod.IsExtra
 			case lrAccept:
 				pa.Type = gotreesitter.ParseActionAccept
 			}
@@ -197,8 +198,12 @@ func buildParseTables(
 			}
 		}
 
-		// Extra symbols: shiftable in every state.
+		// Extra symbols: shiftable in every state (terminal extras only).
+		// Nonterminal extras are handled via LR reduce with Extra=true.
 		for _, extraSym := range ng.ExtraSymbols {
+			if extraSym >= tokenCount {
+				continue // nonterminal extra — handled by LR items/reduce
+			}
 			if row[extraSym] == 0 {
 				row[extraSym] = extraShiftIdx
 			}

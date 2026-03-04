@@ -46,6 +46,7 @@ type Production struct {
 	ProductionID int
 	Fields       []FieldAssign // per-RHS-position field assignments
 	Aliases      []AliasInfo   // per-RHS-position alias info
+	IsExtra      bool          // true if this production belongs to a nonterminal extra
 }
 
 // FieldAssign maps a child position in a production to a field name.
@@ -418,6 +419,21 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 	for _, name := range g.Supertypes {
 		if id, ok := st.lookupNonterm(name); ok {
 			supertypes = append(supertypes, id)
+		}
+	}
+
+	// Mark productions belonging to nonterminal extras.
+	extraNTSet := make(map[int]bool)
+	for _, e := range extraSymbols {
+		if e >= tokenCount {
+			extraNTSet[e] = true
+		}
+	}
+	if len(extraNTSet) > 0 {
+		for i := range productions {
+			if extraNTSet[productions[i].LHS] {
+				productions[i].IsExtra = true
+			}
 		}
 	}
 

@@ -235,6 +235,11 @@ func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, anyReduc
 	if gotoState != 0 {
 		targetState = gotoState
 	}
+	// Nonterminal extras: mark the reduced node as extra and stay in same state.
+	if act.Extra {
+		parent.isExtra = true
+		targetState = topState
+	}
 	parent.preGotoState = topState
 	parent.parseState = targetState
 	p.pushStackNode(s, targetState, parent, entryScratch, gssScratch)
@@ -571,6 +576,11 @@ func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, anyReduced *boo
 	targetState := window.topState
 	if gotoState != 0 {
 		targetState = gotoState
+	}
+	// Nonterminal extras: mark the reduced node as extra and stay in same state.
+	if act.Extra {
+		parent.isExtra = true
+		targetState = window.topState
 	}
 	parent.preGotoState = window.topState
 	parent.parseState = targetState
