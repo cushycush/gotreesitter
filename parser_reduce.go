@@ -278,7 +278,11 @@ func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, tok Toke
 	if gotoState != 0 {
 		targetState = gotoState
 	}
-	if tok.NoLookahead && targetState == topState {
+	// Nonterminal extras: mark the reduced node as extra and stay in same state.
+	if act.Extra {
+		parent.isExtra = true
+		targetState = topState
+	} else if tok.NoLookahead && targetState == topState {
 		parent.isExtra = true
 	}
 	parent.preGotoState = topState
@@ -797,7 +801,11 @@ func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, tok Token, anyR
 	if gotoState != 0 {
 		targetState = gotoState
 	}
-	if tok.NoLookahead && targetState == window.topState {
+	// Nonterminal extras: mark the reduced node as extra and stay in same state.
+	if act.Extra {
+		parent.isExtra = true
+		targetState = window.topState
+	} else if tok.NoLookahead && targetState == window.topState {
 		parent.isExtra = true
 	}
 	parent.preGotoState = window.topState

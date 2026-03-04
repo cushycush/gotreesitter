@@ -28,6 +28,7 @@ type lrAction struct {
 	assoc    Assoc // for shift: associativity of the item's production
 	lhsSym   int   // LHS nonterminal of the production (for conflict detection)
 	lhsSyms  []int // additional LHS symbols (when shifts from multiple rules merge)
+	isExtra  bool  // true if this action comes from a nonterminal extra production
 }
 
 type lrActionKind int
@@ -62,6 +63,19 @@ func buildLRTables(ng *NormalizedGrammar) (*LRTables, error) {
 		ctx.prodsByLHS[lhs] = append(ctx.prodsByLHS[lhs], i)
 	}
 
+	// Identify nonterminal extra productions and all terminals for injection.
+	tokenCount := ng.TokenCount()
+	for i := range ng.Productions {
+		if ng.Productions[i].IsExtra {
+			ctx.extraProdIndices = append(ctx.extraProdIndices, i)
+		}
+	}
+	if len(ctx.extraProdIndices) > 0 {
+		for i := 0; i < tokenCount; i++ {
+			ctx.allTerminals = append(ctx.allTerminals, i)
+		}
+	}
+
 	// Compute FIRST and nullable sets.
 	ctx.computeFirstSets()
 
@@ -74,8 +88,6 @@ func buildLRTables(ng *NormalizedGrammar) (*LRTables, error) {
 		GotoTable:   make(map[int]map[int]int),
 		StateCount:  len(itemSets),
 	}
-
-	tokenCount := ng.TokenCount()
 
 	for stateIdx, itemSet := range itemSets {
 		tables.ActionTable[stateIdx] = make(map[int][]lrAction)
@@ -98,11 +110,12 @@ func buildLRTables(ng *NormalizedGrammar) (*LRTables, error) {
 				if nextSym < tokenCount {
 					// Terminal → shift action
 					tables.addAction(stateIdx, nextSym, lrAction{
-						kind:   lrShift,
-						state:  targetState,
-						prec:   prod.Prec,
-						assoc:  prod.Assoc,
-						lhsSym: prod.LHS,
+						kind:    lrShift,
+						state:   targetState,
+						prec:    prod.Prec,
+						assoc:   prod.Assoc,
+						lhsSym:  prod.LHS,
+						isExtra: prod.IsExtra,
 					})
 				} else {
 					// Nonterminal → goto
@@ -119,6 +132,7 @@ func buildLRTables(ng *NormalizedGrammar) (*LRTables, error) {
 						kind:    lrReduce,
 						prodIdx: item.prodIdx,
 						lhsSym:  prod.LHS,
+						isExtra: prod.IsExtra,
 					})
 				}
 			}
@@ -137,6 +151,13 @@ func (t *LRTables) addAction(state, sym int, action lrAction) {
 				// For shifts to the same target, keep the higher prec.
 				// This matters when multiple items contribute shifts on
 				// the same terminal (e.g. items from different productions).
+				// Non-extra shifts take priority over extra shifts.
+				if !a.isExtra && action.isExtra {
+					return // existing non-extra wins
+				}
+				if a.isExtra && !action.isExtra {
+					existing[i].isExtra = false
+				}
 				if action.prec > a.prec {
 					existing[i].prec = action.prec
 					existing[i].assoc = action.assoc
@@ -184,6 +205,129 @@ type lrContext struct {
 	// Transition cache: transitions[state][symbol] → target state
 	// Populated during buildItemSets, used during table construction.
 	transitions map[int]map[int]int
+
+	// Nonterminal extra support: production indices for extras that need
+	// to be injected into every state's kernel.
+	extraProdIndices []int
+	allTerminals     []int // all terminal symbol IDs (for extra item lookaheads)
+}
+
+// addNonterminalExtraChains creates dedicated parse state chains for nonterminal
+// extra productions and adds shift actions from every main state. This handles
+// extras like `comment → [;#] [^\r\n]* \r?\n` without modifying the LR kernel.
+//
+// For each nonterminal extra production with RHS = [t1, t2, ..., tn]:
+//   - Creates n new states (chain states) appended to the existing state count
+//   - Chain state 0: result of shifting t1, expects t2
+//   - Chain state n-1: result of shifting tn, reduces the production
+//   - Adds shift(t1 → chain state 0) to every main state that has no action for t1
+func addNonterminalExtraChains(tables *LRTables, ng *NormalizedGrammar) {
+	tokenCount := ng.TokenCount()
+	if len(ng.ExtraSymbols) == 0 {
+		return
+	}
+
+	// Find nonterminal extra productions.
+	var extraProds []int
+	for i := range ng.Productions {
+		if ng.Productions[i].IsExtra && len(ng.Productions[i].RHS) > 0 {
+			extraProds = append(extraProds, i)
+		}
+	}
+	if len(extraProds) == 0 {
+		return
+	}
+
+	mainStateCount := tables.StateCount
+
+	// Compute the set of terminals that have actions in any main state.
+	// The last chain state's reduce actions are restricted to these terminals
+	// so its lex mode only produces tokens valid in main states. This prevents
+	// the DFA from matching a chain-only terminal (like [^\r\n]*) as the
+	// lookahead that gets reused after the extra reduces back to a main state.
+	mainValidTerminals := make(map[int]bool)
+	for state := 0; state < mainStateCount; state++ {
+		for sym := range tables.ActionTable[state] {
+			if sym < tokenCount {
+				mainValidTerminals[sym] = true
+			}
+		}
+	}
+	// Terminal extras are always valid.
+	for _, e := range ng.ExtraSymbols {
+		if e > 0 && e < tokenCount {
+			mainValidTerminals[e] = true
+		}
+	}
+	// EOF is always valid.
+	mainValidTerminals[0] = true
+
+	for _, prodIdx := range extraProds {
+		prod := &ng.Productions[prodIdx]
+		rhsLen := len(prod.RHS)
+
+		// Create chain states for this production.
+		// State i (0-indexed) is the state after shifting RHS[i].
+		chainStart := tables.StateCount
+		for i := 0; i < rhsLen; i++ {
+			stateIdx := chainStart + i
+			tables.ActionTable[stateIdx] = make(map[int][]lrAction)
+			tables.GotoTable[stateIdx] = make(map[int]int)
+
+			if i < rhsLen-1 {
+				// Not the last position: shift next terminal → next chain state.
+				nextSym := prod.RHS[i+1]
+				if nextSym < tokenCount {
+					tables.ActionTable[stateIdx][nextSym] = []lrAction{{
+						kind:    lrShift,
+						state:   stateIdx + 1,
+						isExtra: true,
+					}}
+				}
+			} else {
+				// Last position: reduce action for main-valid terminals only.
+				// This restricts the lex mode so the DFA doesn't produce
+				// chain-only terminals as the lookahead token.
+				for t := range mainValidTerminals {
+					tables.ActionTable[stateIdx][t] = []lrAction{{
+						kind:    lrReduce,
+						prodIdx: prodIdx,
+						lhsSym:  prod.LHS,
+						isExtra: true,
+					}}
+				}
+			}
+
+			// Also add terminal extra shift-extra in chain states.
+			for _, extraSym := range ng.ExtraSymbols {
+				if extraSym < tokenCount {
+					if _, ok := tables.ActionTable[stateIdx][extraSym]; !ok {
+						tables.ActionTable[stateIdx][extraSym] = []lrAction{{
+							kind:    lrShift,
+							state:   stateIdx, // stay in same state (consume extra)
+							isExtra: true,
+						}}
+					}
+				}
+			}
+		}
+		tables.StateCount += rhsLen
+
+		// Add shift actions from every main state for the first terminal.
+		firstSym := prod.RHS[0]
+		if firstSym >= tokenCount {
+			continue // first symbol is nonterminal — skip (would need closure)
+		}
+		for state := 0; state < mainStateCount; state++ {
+			if _, ok := tables.ActionTable[state][firstSym]; !ok {
+				tables.ActionTable[state][firstSym] = []lrAction{{
+					kind:    lrShift,
+					state:   chainStart,
+					isExtra: true,
+				}}
+			}
+		}
+	}
 }
 
 // computeFirstSets computes FIRST sets for all symbols.
@@ -783,6 +927,29 @@ func resolveConflicts(tables *LRTables, ng *NormalizedGrammar) error {
 func resolveActionConflict(actions []lrAction, ng *NormalizedGrammar) ([]lrAction, error) {
 	if len(actions) <= 1 {
 		return actions, nil
+	}
+
+	// Priority: non-extra actions always win over extra actions.
+	// If we have a mix, keep only the non-extra ones.
+	hasExtra, hasNonExtra := false, false
+	for _, a := range actions {
+		if a.isExtra {
+			hasExtra = true
+		} else {
+			hasNonExtra = true
+		}
+	}
+	if hasExtra && hasNonExtra {
+		var nonExtra []lrAction
+		for _, a := range actions {
+			if !a.isExtra {
+				nonExtra = append(nonExtra, a)
+			}
+		}
+		if len(nonExtra) <= 1 {
+			return nonExtra, nil
+		}
+		actions = nonExtra
 	}
 
 	// Separate shifts and reduces.

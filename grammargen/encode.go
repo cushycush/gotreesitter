@@ -29,6 +29,9 @@ func Generate(g *Grammar) ([]byte, error) {
 		return nil, fmt.Errorf("resolve conflicts: %w", err)
 	}
 
+	// Phase 3b: Add nonterminal extra parse chains.
+	addNonterminalExtraChains(tables, ng)
+
 	// Phase 4: Compute lex modes based on parse table.
 	tokenCount := ng.TokenCount()
 	immediateTokens := make(map[int]bool)
@@ -120,6 +123,8 @@ func GenerateLanguage(g *Grammar) (*gotreesitter.Language, error) {
 	if err := resolveConflicts(tables, ng); err != nil {
 		return nil, fmt.Errorf("resolve conflicts: %w", err)
 	}
+
+	addNonterminalExtraChains(tables, ng)
 
 	tokenCount := ng.TokenCount()
 	immediateTokens := make(map[int]bool)
