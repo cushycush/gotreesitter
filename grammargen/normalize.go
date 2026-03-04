@@ -1122,6 +1122,30 @@ func flattenRule2(r *Rule, lhsID int, st *symbolTable, prodIDCounter *int) []Pro
 			}
 			prods = append(prods, altProds...)
 		}
+		// Propagate prec from non-epsilon siblings to epsilon productions.
+		// In tree-sitter, all alternatives of a choice share the same
+		// precedence context; epsilon (blank) alternatives should inherit
+		// the prec from their non-epsilon siblings. This matters for repeat
+		// helpers where the epsilon reduce must compete with shift actions
+		// from inner nonterminals (e.g., array's comma vs sequence_expression).
+		var maxPrec int
+		var maxAssoc Assoc
+		for _, p := range prods {
+			if p.Prec > maxPrec {
+				maxPrec = p.Prec
+				maxAssoc = p.Assoc
+			}
+		}
+		if maxPrec > 0 {
+			for i := range prods {
+				if prods[i].Prec == 0 && len(prods[i].RHS) == 0 {
+					prods[i].Prec = maxPrec
+					if prods[i].Assoc == AssocNone {
+						prods[i].Assoc = maxAssoc
+					}
+				}
+			}
+		}
 		return prods
 
 	case RuleBlank:
@@ -1136,6 +1160,13 @@ func flattenRule2(r *Rule, lhsID int, st *symbolTable, prodIDCounter *int) []Pro
 		return []Production{prod}
 
 	default:
+		// If no top-level prec was found, scan the rule tree for inner
+		// prec wrappers (e.g., prec.left(16, $.expr) inside a seq element).
+		// These should propagate to the production.
+		if prec == 0 && assoc == AssocNone && dynPrec == 0 {
+			prec, assoc, dynPrec = scanInnerPrec(inner)
+		}
+
 		// Enumerate all alternatives from Choice-within-Seq by expanding
 		// the rule into a list of "flat" RHS sequences.
 		alternatives := enumerateAlternatives(inner)
@@ -1453,6 +1484,40 @@ func applyHiddenRenames(r *Rule, renames map[string]string) *Rule {
 		return r
 	}
 	return &out
+}
+
+// scanInnerPrec walks a rule tree looking for prec wrappers inside seq elements.
+// In tree-sitter, prec.left(N, $.symbol) inside a seq propagates the precedence
+// to the containing production. Returns the last (rightmost) prec/assoc/dynPrec found.
+func scanInnerPrec(r *Rule) (prec int, assoc Assoc, dynPrec int) {
+	if r == nil {
+		return 0, AssocNone, 0
+	}
+	switch r.Kind {
+	case RulePrec:
+		prec = r.Prec
+	case RulePrecLeft:
+		prec = r.Prec
+		assoc = AssocLeft
+	case RulePrecRight:
+		prec = r.Prec
+		assoc = AssocRight
+	case RulePrecDynamic:
+		dynPrec = r.Prec
+	}
+	for _, child := range r.Children {
+		cp, ca, cd := scanInnerPrec(child)
+		if cp != 0 {
+			prec = cp
+		}
+		if ca != AssocNone {
+			assoc = ca
+		}
+		if cd != 0 {
+			dynPrec = cd
+		}
+	}
+	return
 }
 
 // unwrapPrec strips precedence/associativity wrappers from a rule.
