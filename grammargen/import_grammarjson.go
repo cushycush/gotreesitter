@@ -18,9 +18,17 @@ func ImportGrammarJSON(data []byte) (*Grammar, error) {
 
 	g := NewGrammar(raw.Name)
 
+	// Build named precedence → numeric value mapping from the precedences array.
+	// Each level is an ordered list from highest to lowest precedence.
+	// STRING entries define named precedence values; SYMBOL entries just declare
+	// ordering but the rule's own numeric prec is what matters.
+	namedPrecs := buildNamedPrecMap(raw.Precedences)
+
+	conv := &jsonConverter{namedPrecs: namedPrecs}
+
 	// Import rules in order.
 	for _, name := range raw.ruleOrder {
-		rule, err := convertJSONRule(raw.Rules[name])
+		rule, err := conv.convertRule(raw.Rules[name])
 		if err != nil {
 			return nil, fmt.Errorf("rule %q: %w", name, err)
 		}
@@ -29,7 +37,7 @@ func ImportGrammarJSON(data []byte) (*Grammar, error) {
 
 	// Import extras.
 	for _, extra := range raw.Extras {
-		rule, err := convertJSONRule(extra)
+		rule, err := conv.convertRule(extra)
 		if err != nil {
 			return nil, fmt.Errorf("extras: %w", err)
 		}
@@ -49,7 +57,7 @@ func ImportGrammarJSON(data []byte) (*Grammar, error) {
 
 	// Import externals.
 	for _, ext := range raw.Externals {
-		rule, err := convertJSONRule(ext)
+		rule, err := conv.convertRule(ext)
 		if err != nil {
 			return nil, fmt.Errorf("externals: %w", err)
 		}
@@ -70,17 +78,49 @@ func ImportGrammarJSON(data []byte) (*Grammar, error) {
 	return g, nil
 }
 
+// buildNamedPrecMap builds a mapping from named precedence strings to numeric
+// values. Each precedence level is an ordered list from highest to lowest.
+// Within a level of N entries, entry at index i gets value N-1-i.
+// If a name appears in multiple levels, the maximum value is used.
+func buildNamedPrecMap(rawLevels []json.RawMessage) map[string]int {
+	m := make(map[string]int)
+	for _, rawLevel := range rawLevels {
+		var entries []jsonPrecEntry
+		if err := json.Unmarshal(rawLevel, &entries); err != nil {
+			continue
+		}
+		n := len(entries)
+		for i, entry := range entries {
+			if entry.Type == "STRING" && entry.Value != "" {
+				val := n - 1 - i
+				if existing, ok := m[entry.Value]; !ok || val > existing {
+					m[entry.Value] = val
+				}
+			}
+		}
+	}
+	return m
+}
+
 // jsonGrammar is the top-level structure of a grammar.json file.
 type jsonGrammar struct {
-	Name       string                       `json:"name"`
-	Rules      map[string]json.RawMessage   `json:"rules"`
-	Extras     []json.RawMessage            `json:"extras"`
-	Conflicts  [][]string                   `json:"conflicts"`
-	Externals  []json.RawMessage            `json:"externals"`
-	Inline     []string                     `json:"inline"`
-	Supertypes []string                     `json:"supertypes"`
-	Word       string                       `json:"word"`
-	ruleOrder  []string                     // populated during UnmarshalJSON
+	Name        string                       `json:"name"`
+	Rules       map[string]json.RawMessage   `json:"rules"`
+	Extras      []json.RawMessage            `json:"extras"`
+	Conflicts   [][]string                   `json:"conflicts"`
+	Externals   []json.RawMessage            `json:"externals"`
+	Inline      []string                     `json:"inline"`
+	Supertypes  []string                     `json:"supertypes"`
+	Word        string                       `json:"word"`
+	Precedences []json.RawMessage            `json:"precedences"`
+	ruleOrder   []string                     // populated during UnmarshalJSON
+}
+
+// jsonPrecEntry is an entry in the precedences array.
+type jsonPrecEntry struct {
+	Type  string `json:"type"`
+	Value string `json:"value"` // for STRING entries
+	Name  string `json:"name"`  // for SYMBOL entries
 }
 
 // UnmarshalJSON implements custom unmarshaling to preserve rule order.
@@ -163,8 +203,13 @@ type jsonRuleNode struct {
 	Flags   string            `json:"flags"`   // for PATTERN: "i" = case-insensitive
 }
 
-// convertJSONRule converts a grammar.json rule node to a Grammar Rule.
-func convertJSONRule(data json.RawMessage) (*Rule, error) {
+// jsonConverter holds context for converting grammar.json rules.
+type jsonConverter struct {
+	namedPrecs map[string]int // named precedence → numeric value
+}
+
+// convertRule converts a grammar.json rule node to a Grammar Rule.
+func (c *jsonConverter) convertRule(data json.RawMessage) (*Rule, error) {
 	var node jsonRuleNode
 	if err := json.Unmarshal(data, &node); err != nil {
 		return nil, fmt.Errorf("unmarshal rule: %w", err)
@@ -195,76 +240,76 @@ func convertJSONRule(data json.RawMessage) (*Rule, error) {
 		return Blank(), nil
 
 	case "SEQ":
-		children, err := convertJSONRuleList(node.Members)
+		children, err := c.convertRuleList(node.Members)
 		if err != nil {
 			return nil, fmt.Errorf("SEQ: %w", err)
 		}
 		return Seq(children...), nil
 
 	case "CHOICE":
-		children, err := convertJSONRuleList(node.Members)
+		children, err := c.convertRuleList(node.Members)
 		if err != nil {
 			return nil, fmt.Errorf("CHOICE: %w", err)
 		}
 		return Choice(children...), nil
 
 	case "REPEAT":
-		child, err := convertJSONRule(node.Content)
+		child, err := c.convertRule(node.Content)
 		if err != nil {
 			return nil, fmt.Errorf("REPEAT: %w", err)
 		}
 		return Repeat(child), nil
 
 	case "REPEAT1":
-		child, err := convertJSONRule(node.Content)
+		child, err := c.convertRule(node.Content)
 		if err != nil {
 			return nil, fmt.Errorf("REPEAT1: %w", err)
 		}
 		return Repeat1(child), nil
 
 	case "TOKEN":
-		child, err := convertJSONRule(node.Content)
+		child, err := c.convertRule(node.Content)
 		if err != nil {
 			return nil, fmt.Errorf("TOKEN: %w", err)
 		}
 		return Token(child), nil
 
 	case "IMMEDIATE_TOKEN":
-		child, err := convertJSONRule(node.Content)
+		child, err := c.convertRule(node.Content)
 		if err != nil {
 			return nil, fmt.Errorf("IMMEDIATE_TOKEN: %w", err)
 		}
 		return ImmToken(child), nil
 
 	case "PREC":
-		return convertJSONPrecRule(node, func(n int, r *Rule) *Rule {
+		return c.convertPrecRule(node, func(n int, r *Rule) *Rule {
 			return Prec(n, r)
 		})
 
 	case "PREC_LEFT":
-		return convertJSONPrecRule(node, func(n int, r *Rule) *Rule {
+		return c.convertPrecRule(node, func(n int, r *Rule) *Rule {
 			return PrecLeft(n, r)
 		})
 
 	case "PREC_RIGHT":
-		return convertJSONPrecRule(node, func(n int, r *Rule) *Rule {
+		return c.convertPrecRule(node, func(n int, r *Rule) *Rule {
 			return PrecRight(n, r)
 		})
 
 	case "PREC_DYNAMIC":
-		return convertJSONPrecRule(node, func(n int, r *Rule) *Rule {
+		return c.convertPrecRule(node, func(n int, r *Rule) *Rule {
 			return PrecDynamic(n, r)
 		})
 
 	case "FIELD":
-		child, err := convertJSONRule(node.Content)
+		child, err := c.convertRule(node.Content)
 		if err != nil {
 			return nil, fmt.Errorf("FIELD: %w", err)
 		}
 		return Field(node.Name, child), nil
 
 	case "ALIAS":
-		child, err := convertJSONRule(node.Content)
+		child, err := c.convertRule(node.Content)
 		if err != nil {
 			return nil, fmt.Errorf("ALIAS: %w", err)
 		}
@@ -279,28 +324,33 @@ func convertJSONRule(data json.RawMessage) (*Rule, error) {
 	}
 }
 
-// convertJSONPrecRule handles PREC/PREC_LEFT/PREC_RIGHT/PREC_DYNAMIC nodes.
-func convertJSONPrecRule(node jsonRuleNode, make_ func(int, *Rule) *Rule) (*Rule, error) {
+// convertPrecRule handles PREC/PREC_LEFT/PREC_RIGHT/PREC_DYNAMIC nodes.
+// Resolves named precedence strings to numeric values via the namedPrecs map.
+func (c *jsonConverter) convertPrecRule(node jsonRuleNode, make_ func(int, *Rule) *Rule) (*Rule, error) {
 	prec := 0
 	switch v := node.Value.(type) {
 	case float64:
 		prec = int(v)
 	case int:
 		prec = v
+	case string:
+		if val, ok := c.namedPrecs[v]; ok {
+			prec = val
+		}
 	}
 
-	child, err := convertJSONRule(node.Content)
+	child, err := c.convertRule(node.Content)
 	if err != nil {
 		return nil, err
 	}
 	return make_(prec, child), nil
 }
 
-// convertJSONRuleList converts a list of JSON rule nodes to Rules.
-func convertJSONRuleList(members []json.RawMessage) ([]*Rule, error) {
+// convertRuleList converts a list of JSON rule nodes to Rules.
+func (c *jsonConverter) convertRuleList(members []json.RawMessage) ([]*Rule, error) {
 	rules := make([]*Rule, len(members))
 	for i, m := range members {
-		r, err := convertJSONRule(m)
+		r, err := c.convertRule(m)
 		if err != nil {
 			return nil, fmt.Errorf("[%d]: %w", i, err)
 		}
