@@ -781,12 +781,12 @@ func TestParityJSONBlobRoundTrip(t *testing.T) {
 
 // importParityGrammar describes a real-world grammar to test against.
 type importParityGrammar struct {
-	name     string
-	path     string                            // path to grammar.js (ImportGrammarJS)
-	jsonPath string                            // path to grammar.json (ImportGrammarJSON) — preferred over path
-	blobFunc func() *gotreesitter.Language      // reference blob loader
-	samples  []string                           // representative parse inputs
-	genTimeout time.Duration                   // per-grammar generation timeout (0 = default 30s)
+	name       string
+	path       string                        // path to grammar.js (ImportGrammarJS)
+	jsonPath   string                        // path to grammar.json (ImportGrammarJSON) — preferred over path
+	blobFunc   func() *gotreesitter.Language // reference blob loader
+	samples    []string                      // representative parse inputs
+	genTimeout time.Duration                 // per-grammar generation timeout (0 = default 30s)
 	// Expected pass counts at each stage (regression floor — can only increase).
 	expectImport   bool // import should succeed
 	expectGenerate bool // generate should succeed
@@ -856,7 +856,7 @@ var importParityGrammars = []importParityGrammar{
 	},
 	{
 		name: "css", path: "/tmp/grammar_parity/css/grammar.js", jsonPath: "/tmp/grammar_parity/css/src/grammar.json",
-		blobFunc: grammars.CssLanguage,
+		blobFunc:   grammars.CssLanguage,
 		genTimeout: 90 * time.Second,
 		samples: []string{
 			"body { color: red; }",
@@ -875,7 +875,7 @@ var importParityGrammars = []importParityGrammar{
 			"<p>hello</p>",
 		},
 		// Imports and generates, but parsing requires external scanner (9 externals).
-		expectImport: true, expectGenerate: true, expectNoErrors: 0, expectParity: 0,
+		expectImport: true, expectGenerate: true, expectNoErrors: 0, expectParity: 2,
 	},
 	{
 		name: "scala", path: "/tmp/grammar_parity/scala/grammar.js",
@@ -884,7 +884,7 @@ var importParityGrammars = []importParityGrammar{
 			"val x = 1",
 			"object Main { def main(args: Array[String]): Unit = {} }",
 		},
-		genTimeout: 45 * time.Second,
+		genTimeout:   45 * time.Second,
 		expectImport: true, expectGenerate: true, expectNoErrors: 0, expectParity: 0,
 	},
 	// ── grammar.json imports (canonical resolved form) ──
@@ -952,7 +952,7 @@ var importParityGrammars = []importParityGrammar{
 			"feat: add new feature\n",
 			"# comment only\n",
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 4, expectParity: 3,
+		expectImport: true, expectGenerate: true, expectNoErrors: 4, expectParity: 4,
 	},
 	{
 		name: "graphql", jsonPath: "/tmp/grammar_parity/graphql/src/grammar.json",
@@ -1130,11 +1130,11 @@ var importParityGrammars = []importParityGrammar{
 			`a.b.c`,
 			`a // b`,
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 15, expectParity: 13,
+		expectImport: true, expectGenerate: true, expectNoErrors: 15, expectParity: 15,
 	},
 	{
 		name: "jq", jsonPath: "/tmp/grammar_parity/jq/src/grammar.json",
-		blobFunc: grammars.JqLanguage,
+		blobFunc:   grammars.JqLanguage,
 		genTimeout: 60 * time.Second,
 		samples: []string{
 			`.`, `.foo`, `.foo.bar`, `.[] | .name`, `[.[] | .+1]`,
@@ -1146,7 +1146,7 @@ var importParityGrammars = []importParityGrammar{
 	},
 	{
 		name: "hcl", jsonPath: "/tmp/grammar_parity/hcl/src/grammar.json",
-		blobFunc: grammars.HclLanguage,
+		blobFunc:   grammars.HclLanguage,
 		genTimeout: 60 * time.Second,
 		samples: []string{
 			`x = 1`, `x = "hello"`, `x = true`,
@@ -1156,11 +1156,11 @@ var importParityGrammars = []importParityGrammar{
 			`output "result" { value = var.name }`,
 			`x = [1, 2, 3]`, `x = { a = 1 }`, `locals { x = 1 }`,
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 10, expectParity: 5,
+		expectImport: true, expectGenerate: true, expectNoErrors: 10, expectParity: 9,
 	},
 	{
 		name: "regex", jsonPath: "/tmp/grammar_parity/regex/src/grammar.json",
-		blobFunc: grammars.RegexLanguage,
+		blobFunc:   grammars.RegexLanguage,
 		genTimeout: 90 * time.Second,
 		samples: []string{
 			`a`, `abc`, `a|b`, `a*`, `a+`, `a?`,
@@ -1316,7 +1316,7 @@ var importParityGrammars = []importParityGrammar{
 	},
 	{
 		name: "promql", jsonPath: "/tmp/grammar_parity/promql/src/grammar.json",
-		blobFunc: grammars.PromqlLanguage,
+		blobFunc:   grammars.PromqlLanguage,
 		genTimeout: 60 * time.Second,
 		samples: []string{
 			`up`,
@@ -1488,6 +1488,11 @@ func TestMultiGrammarImportPipeline(t *testing.T) {
 
 			// Stage 3 + 4: Parse and compare
 			refLang := g.blobFunc()
+			if shouldAdaptExternalScanner(g.name) {
+				if scanner, ok := gotreesitter.AdaptExternalScannerByExternalOrder(refLang, genLang); ok {
+					genLang.ExternalScanner = scanner
+				}
+			}
 			genParser := gotreesitter.NewParser(genLang)
 			refParser := gotreesitter.NewParser(refLang)
 
@@ -1532,6 +1537,15 @@ func TestMultiGrammarImportPipeline(t *testing.T) {
 	t.Logf("PIPELINE SUMMARY: %d/%d import, %d/%d generate, %d/%d no-error, %d/%d parity",
 		importOK, totalGrammars, generateOK, totalGrammars,
 		noErrorSamples, totalSamples, paritySamples, totalSamples)
+}
+
+func shouldAdaptExternalScanner(grammarName string) bool {
+	switch grammarName {
+	case "gitcommit", "hcl", "html", "nix":
+		return true
+	default:
+		return false
+	}
 }
 
 // ── Parity: Validate + Generate coherence ───────────────────────────────────
