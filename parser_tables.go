@@ -172,3 +172,88 @@ func (p *Parser) lookupGoto(state StateID, sym Symbol) StateID {
 	}
 	return 0
 }
+
+func actionTableStateCount(lang *Language) int {
+	if lang == nil {
+		return 0
+	}
+	stateCount := len(lang.ParseTable)
+	if smallCount := int(lang.LargeStateCount) + len(lang.SmallParseTableMap); smallCount > stateCount {
+		stateCount = smallCount
+	}
+	return stateCount
+}
+
+func sameDefaultReduceAction(a, b ParseAction) bool {
+	return a.Type == b.Type &&
+		a.Symbol == b.Symbol &&
+		a.ChildCount == b.ChildCount &&
+		a.DynamicPrecedence == b.DynamicPrecedence &&
+		a.ProductionID == b.ProductionID &&
+		a.Extra == b.Extra
+}
+
+// buildDefaultReduceActions precomputes states that can safely reduce without
+// first lexing lookahead. A state qualifies when all of its terminal actions
+// are a single identical reduce action.
+func (p *Parser) buildDefaultReduceActions() ([]ParseAction, []bool) {
+	if p == nil || p.language == nil || p.language.TokenCount == 0 {
+		return nil, nil
+	}
+
+	stateCount := actionTableStateCount(p.language)
+	if stateCount == 0 {
+		return nil, nil
+	}
+
+	actions := make([]ParseAction, stateCount)
+	has := make([]bool, stateCount)
+	tokenCount := int(p.language.TokenCount)
+
+	for state := 0; state < stateCount; state++ {
+		var candidate ParseAction
+		found := false
+		valid := true
+
+		for sym := 0; sym < tokenCount; sym++ {
+			idx := p.lookupActionIndex(StateID(state), Symbol(sym))
+			if idx == 0 || int(idx) >= len(p.language.ParseActions) {
+				continue
+			}
+
+			entry := p.language.ParseActions[idx]
+			if len(entry.Actions) != 1 {
+				valid = false
+				break
+			}
+			act := entry.Actions[0]
+			if act.Type == ParseActionShift && act.Extra {
+				// Extra tokens (whitespace/comments) can be shifted in almost all
+				// states without changing grammatical structure; they do not block
+				// default reductions.
+				continue
+			}
+			if act.Type != ParseActionReduce {
+				valid = false
+				break
+			}
+
+			if !found {
+				candidate = act
+				found = true
+				continue
+			}
+			if !sameDefaultReduceAction(candidate, act) {
+				valid = false
+				break
+			}
+		}
+
+		if valid && found {
+			actions[state] = candidate
+			has[state] = true
+		}
+	}
+
+	return actions, has
+}

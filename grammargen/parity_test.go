@@ -1407,7 +1407,7 @@ var importParityGrammars = []importParityGrammar{
 		expectImport:   true,
 		expectGenerate: true,
 		expectNoErrors: 4,
-		expectParity:   2,
+		expectParity:   4,
 	},
 }
 
