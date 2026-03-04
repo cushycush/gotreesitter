@@ -7,34 +7,34 @@ import (
 
 // lrItem is an LR(1) item: [A → α . β, a]
 type lrItem struct {
-	prodIdx   int    // index into productions
-	dot       int    // position of dot in RHS
-	lookahead int    // terminal symbol ID
+	prodIdx   int // index into productions
+	dot       int // position of dot in RHS
+	lookahead int // terminal symbol ID
 }
 
 // lrItemSet is a set of LR(1) items (one parser state).
 type lrItemSet struct {
 	items []lrItem
-	key   string // canonical key for dedup
+	key   string                  // canonical key for dedup
 	seen  map[closureItemKey]bool // persistent membership set for fast merge
 }
 
 // lrAction is a parse table action.
 type lrAction struct {
-	kind     lrActionKind
-	state    int   // shift target / goto target
-	prodIdx  int   // reduce production index
-	prec     int   // for shift: precedence of the item's production
-	assoc    Assoc // for shift: associativity of the item's production
-	lhsSym   int   // LHS nonterminal of the production (for conflict detection)
-	lhsSyms  []int // additional LHS symbols (when shifts from multiple rules merge)
-	isExtra  bool  // true if this action comes from a nonterminal extra production
+	kind    lrActionKind
+	state   int   // shift target / goto target
+	prodIdx int   // reduce production index
+	prec    int   // for shift: precedence of the item's production
+	assoc   Assoc // for shift: associativity of the item's production
+	lhsSym  int   // LHS nonterminal of the production (for conflict detection)
+	lhsSyms []int // additional LHS symbols (when shifts from multiple rules merge)
+	isExtra bool  // true if this action comes from a nonterminal extra production
 }
 
 type lrActionKind int
 
 const (
-	lrShift  lrActionKind = iota
+	lrShift lrActionKind = iota
 	lrReduce
 	lrAccept
 )
@@ -1017,35 +1017,57 @@ func resolveActionConflict(actions []lrAction, ng *NormalizedGrammar) ([]lrActio
 
 	// Reduce/reduce conflict.
 	if len(reduces) > 1 {
-		// Check if all reduces are part of the same declared conflict group → GLR.
-		if allInDeclaredConflict(reduces, ng) {
-			return reduces, nil // keep all for GLR
-		}
-
-		// Higher precedence wins. At equal precedence, use tie-breaking:
-		// 1. Prefer longer RHS (more specific/contextual production)
-		// 2. Prefer lower production index (earlier in grammar)
-		best := reduces[0]
-		bestProd := &ng.Productions[best.prodIdx]
-		for _, r := range reduces[1:] {
-			rProd := &ng.Productions[r.prodIdx]
-			if rProd.Prec > bestProd.Prec {
-				best = r
-				bestProd = rProd
-			} else if rProd.Prec == bestProd.Prec {
-				if len(rProd.RHS) > len(bestProd.RHS) {
-					best = r
-					bestProd = rProd
-				} else if len(rProd.RHS) == len(bestProd.RHS) && r.prodIdx < best.prodIdx {
-					best = r
-					bestProd = rProd
-				}
+		// Epsilon-vs-non-epsilon RR conflicts are common in list/sequence
+		// helpers. Picking all branches here can bias runtime selection toward
+		// premature empty reductions (truncated lists). Keep legacy heuristic
+		// resolution in those cases.
+		hasEpsilon := false
+		for _, r := range reduces {
+			if len(ng.Productions[r.prodIdx].RHS) == 0 {
+				hasEpsilon = true
+				break
 			}
 		}
-		return []lrAction{best}, nil
+		if hasEpsilon {
+			return resolveReduceReduceLegacy(reduces, ng)
+		}
+
+		// Otherwise, keep RR alternatives for GLR so runtime stack selection
+		// can choose using downstream context instead of compile-time heuristics.
+		// This helps ambiguous declaration/expression boundaries (e.g. scala).
+		return reduces, nil
 	}
 
 	return actions, nil
+}
+
+func resolveReduceReduceLegacy(reduces []lrAction, ng *NormalizedGrammar) ([]lrAction, error) {
+	// Check if all reduces are part of the same declared conflict group → GLR.
+	if allInDeclaredConflict(reduces, ng) {
+		return reduces, nil // keep all for GLR
+	}
+
+	// Higher precedence wins. At equal precedence, use tie-breaking:
+	// 1. Prefer longer RHS (more specific/contextual production)
+	// 2. Prefer lower production index (earlier in grammar)
+	best := reduces[0]
+	bestProd := &ng.Productions[best.prodIdx]
+	for _, r := range reduces[1:] {
+		rProd := &ng.Productions[r.prodIdx]
+		if rProd.Prec > bestProd.Prec {
+			best = r
+			bestProd = rProd
+		} else if rProd.Prec == bestProd.Prec {
+			if len(rProd.RHS) > len(bestProd.RHS) {
+				best = r
+				bestProd = rProd
+			} else if len(rProd.RHS) == len(bestProd.RHS) && r.prodIdx < best.prodIdx {
+				best = r
+				bestProd = rProd
+			}
+		}
+	}
+	return []lrAction{best}, nil
 }
 
 // shiftMatchesConflictGroup checks if a shift action involves a nonterminal

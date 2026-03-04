@@ -885,7 +885,7 @@ var importParityGrammars = []importParityGrammar{
 			"object Main { def main(args: Array[String]): Unit = {} }",
 		},
 		genTimeout:   45 * time.Second,
-		expectImport: true, expectGenerate: true, expectNoErrors: 0, expectParity: 0,
+		expectImport: true, expectGenerate: true, expectNoErrors: 0, expectParity: 2,
 	},
 	// ── grammar.json imports (canonical resolved form) ──
 	{
