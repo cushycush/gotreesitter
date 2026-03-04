@@ -866,6 +866,11 @@ func extractTerminals(g *Grammar, st *symbolTable, stringLits []string, namedTok
 			return nil, fmt.Errorf("expand inline token %q: %w", entry.name, err)
 		}
 		adjustedPriority := priority - prec*1000
+		if entry.immediate {
+			// Immediate inline tokens must outrank overlapping non-immediate
+			// patterns in the same lex mode (e.g. dockerfile env_pair "=" value).
+			adjustedPriority -= 10000
+		}
 		patterns = append(patterns, TerminalPattern{
 			SymbolID:  id,
 			Rule:      expanded,

@@ -8,14 +8,14 @@ import "unicode/utf8"
 type ExternalLexer struct {
 	source []byte
 
-	startPos int
-	pos      int
-	endPos   int
+	startPos  int
+	pos       int
+	endPos    int
+	endMarked bool
 
 	startPoint Point
 	point      Point
 	endPoint   Point
-	endMarked  bool
 
 	// advancedContent is set when Advance(false) is called at least once.
 	// This distinguishes skip-only scans (where endPos should stay at the
@@ -34,6 +34,7 @@ func newExternalLexer(source []byte, pos int, row, col uint32) *ExternalLexer {
 		startPos:   pos,
 		pos:        pos,
 		endPos:     pos,
+		endMarked:  false,
 		startPoint: pt,
 		point:      pt,
 		endPoint:   pt,
