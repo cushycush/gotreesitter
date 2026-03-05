@@ -1,5 +1,7 @@
 package gotreesitter
 
+import "strings"
+
 // buildResultFromGLR picks the best stack and constructs the final tree.
 // Prefers accepted stacks, then highest score, then most entries.
 func (p *Parser) buildResultFromGLR(stacks []glrStack, source []byte, arena *nodeArena, oldTree *Tree, reuseState *parseReuseState, linkScratch *[]*Node) *Tree {
@@ -164,6 +166,16 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 			realRoot = n
 		}
 	}
+	if realRoot == nil {
+		// Some grammars can leave detached trivia/comment nodes alongside the
+		// real root at EOF. Recover by selecting a single expected/root-like
+		// node and folding the detached trivia around it.
+		if recoveredRoot, recoveredExtras, recoveredAllExtras, ok := p.recoverDetachedRootCandidate(nodes, hasExpectedRoot, expectedRootSymbol, source); ok {
+			realRoot = recoveredRoot
+			extras = recoveredExtras
+			allExtras = recoveredAllExtras
+		}
+	}
 	if realRoot != nil {
 		if reuseState != nil && reuseState.reusedAny {
 			realRoot = cloneNodeInArena(arena, realRoot)
@@ -247,6 +259,93 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 		wireParentLinksWithScratch(root, linkScratch)
 	}
 	return newTreeWithArenas(root, source, p.language, arena, getBorrowed())
+}
+
+func (p *Parser) recoverDetachedRootCandidate(nodes []*Node, hasExpectedRoot bool, expectedRootSymbol Symbol, source []byte) (*Node, []*Node, []*Node, bool) {
+	if p == nil || p.language == nil || len(nodes) == 0 {
+		return nil, nil, nil, false
+	}
+
+	var candidate *Node
+	for _, n := range nodes {
+		if n == nil || n.isExtra {
+			continue
+		}
+		if hasExpectedRoot {
+			if n.symbol != expectedRootSymbol {
+				continue
+			}
+		} else {
+			if int(n.symbol) >= len(p.language.SymbolNames) || !isRootLikeName(p.language.SymbolNames[n.symbol]) {
+				continue
+			}
+		}
+		if candidate != nil {
+			// Ambiguous candidate set.
+			return nil, nil, nil, false
+		}
+		candidate = n
+	}
+	if candidate == nil {
+		return nil, nil, nil, false
+	}
+
+	var visibleExtras []*Node
+	var allExtras []*Node
+	for _, n := range nodes {
+		if n == nil || n == candidate {
+			continue
+		}
+		if n.isExtra {
+			allExtras = append(allExtras, n)
+			if int(n.symbol) < len(p.language.SymbolMetadata) && p.language.SymbolMetadata[n.symbol].Visible {
+				visibleExtras = append(visibleExtras, n)
+			}
+			continue
+		}
+		if n.startByte == n.endByte && int(n.symbol) < len(p.language.SymbolMetadata) && !p.language.SymbolMetadata[n.symbol].Visible {
+			// Ignore zero-width invisible artifacts.
+			continue
+		}
+		if !isDetachedTriviaNode(n, candidate, source, p.language) {
+			return nil, nil, nil, false
+		}
+		allExtras = append(allExtras, n)
+		if int(n.symbol) < len(p.language.SymbolMetadata) && p.language.SymbolMetadata[n.symbol].Visible {
+			visibleExtras = append(visibleExtras, n)
+		}
+	}
+
+	return candidate, visibleExtras, allExtras, true
+}
+
+func isDetachedTriviaNode(n, root *Node, source []byte, lang *Language) bool {
+	if n == nil || root == nil || lang == nil {
+		return false
+	}
+	// Must be clearly outside the root span.
+	if !(n.endByte <= root.startByte || n.startByte >= root.endByte) {
+		return false
+	}
+	if int(n.symbol) < len(lang.SymbolNames) {
+		name := lang.SymbolNames[n.symbol]
+		if strings.Contains(name, "comment") {
+			return true
+		}
+	}
+	if int(n.endByte) <= len(source) && int(n.startByte) <= int(n.endByte) {
+		return bytesAreTrivia(source[n.startByte:n.endByte])
+	}
+	return false
+}
+
+func isRootLikeName(name string) bool {
+	switch name {
+	case "source_file", "program", "module", "document", "file":
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *Parser) normalizeRootSourceStart(root *Node, source []byte) {

@@ -819,7 +819,7 @@ var importParityGrammars = []importParityGrammar{
 			"[main]\nhost=localhost\nport=8080\n",
 			"; comment\n[section]\n",
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 4, expectParity: 3,
+		expectImport: true, expectGenerate: true, expectNoErrors: 4, expectParity: 4,
 	},
 	{
 		name: "properties", path: "/tmp/grammar_parity/properties/grammar.js", jsonPath: "/tmp/grammar_parity/properties/src/grammar.json",
