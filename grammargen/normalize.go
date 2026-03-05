@@ -4,13 +4,14 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // Assoc is the associativity of a production.
 type Assoc int
 
 const (
-	AssocNone  Assoc = iota
+	AssocNone Assoc = iota
 	AssocLeft
 	AssocRight
 )
@@ -27,18 +28,18 @@ const (
 
 // SymbolInfo describes a grammar symbol.
 type SymbolInfo struct {
-	Name       string
-	Visible    bool
-	Named      bool
-	Supertype  bool
-	Kind       SymbolKind
-	IsExtra    bool
-	Immediate  bool // token.immediate — no preceding whitespace skip
+	Name      string
+	Visible   bool
+	Named     bool
+	Supertype bool
+	Kind      SymbolKind
+	IsExtra   bool
+	Immediate bool // token.immediate — no preceding whitespace skip
 }
 
 // Production is a single LHS → RHS production with metadata.
 type Production struct {
-	LHS          int // symbol index
+	LHS          int   // symbol index
 	RHS          []int // symbol indices
 	Prec         int
 	Assoc        Assoc
@@ -65,9 +66,9 @@ type AliasInfo struct {
 // TerminalPattern describes a terminal symbol's match pattern for DFA generation.
 type TerminalPattern struct {
 	SymbolID  int
-	Rule      *Rule  // the flattened rule tree for NFA construction
-	Priority  int    // higher = preferred on tie
-	Immediate bool   // token.immediate
+	Rule      *Rule // the flattened rule tree for NFA construction
+	Priority  int   // higher = preferred on tie
+	Immediate bool  // token.immediate
 }
 
 // NormalizedGrammar is the output of the normalize step.
@@ -83,8 +84,8 @@ type NormalizedGrammar struct {
 	AugmentProdID int // production index for S' → S
 
 	// Keyword support (populated when Grammar.Word is set).
-	KeywordSymbols []int // symbol IDs that are keywords
-	WordSymbolID   int   // word token symbol ID (e.g., identifier)
+	KeywordSymbols []int             // symbol IDs that are keywords
+	WordSymbolID   int               // word token symbol ID (e.g., identifier)
 	KeywordEntries []TerminalPattern // keyword patterns for keyword DFA
 
 	// External scanner support (populated when Grammar.Externals is set).
@@ -105,8 +106,8 @@ func newSymbolTable() *symbolTable {
 	st := &symbolTable{
 		byName:        make(map[string]int),
 		nontermByName: make(map[string]int),
-		fieldMap:       make(map[string]int),
-		fields:         []string{""}, // index 0 is always ""
+		fieldMap:      make(map[string]int),
+		fields:        []string{""}, // index 0 is always ""
 	}
 	// Symbol 0 = "end" (EOF)
 	st.addSymbol("end", SymbolInfo{
@@ -937,7 +938,10 @@ func identifyKeywords(g *Grammar, st *symbolTable, stringLits []string) (map[int
 		if !ok {
 			continue
 		}
-		if matchesDFA(dfa, s) {
+		// Treat only identifier-like literals as keyword candidates.
+		// Some grammars have broad `word` tokens that also match punctuation
+		// literals (e.g. //, $$), which should remain regular terminals.
+		if matchesDFA(dfa, s) && isIdentifierLikeKeywordLiteral(s) {
 			keywordSet[id] = true
 			keywordSyms = append(keywordSyms, id)
 			keywordEntries = append(keywordEntries, TerminalPattern{
@@ -950,6 +954,34 @@ func identifyKeywords(g *Grammar, st *symbolTable, stringLits []string) (map[int
 	}
 
 	return keywordSet, keywordSyms, keywordEntries
+}
+
+func isIdentifierLikeKeywordLiteral(s string) bool {
+	if s == "" {
+		return false
+	}
+	hasLetter := false
+	for i, r := range s {
+		if i == 0 {
+			if r == '_' {
+				continue
+			}
+			if unicode.IsLetter(r) {
+				hasLetter = true
+				continue
+			}
+			return false
+		}
+		if r == '_' || unicode.IsDigit(r) {
+			continue
+		}
+		if unicode.IsLetter(r) {
+			hasLetter = true
+			continue
+		}
+		return false
+	}
+	return hasLetter
 }
 
 // matchesDFA tests if a string is fully accepted by a DFA.

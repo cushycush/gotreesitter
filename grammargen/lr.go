@@ -3,6 +3,7 @@ package grammargen
 import (
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // lrItem is an LR(1) item: [A → α . β, a]
@@ -1009,6 +1010,27 @@ func resolveActionConflict(actions []lrAction, ng *NormalizedGrammar) ([]lrActio
 		// named symbols to find conflict group membership.
 		if isTransitiveConflict(shift, reduce, ng) {
 			return actions, nil // keep both for GLR
+		}
+
+		// Targeted eex ambiguity: partial_expression vs expression share a
+		// `_code` prefix. Keep the epsilon/shift fork so GLR can defer the
+		// decision until it sees `do` / `->` / `%>`.
+		if len(prod.RHS) == 0 && len(ng.Symbols) > prod.LHS {
+			reduceName := ng.Symbols[prod.LHS].Name
+			if strings.HasPrefix(reduceName, "_partial_expression_repeat") {
+				for _, s := range shifts {
+					if s.lhsSym > 0 && s.lhsSym < len(ng.Symbols) &&
+						strings.HasPrefix(ng.Symbols[s.lhsSym].Name, "_expression_repeat1_") {
+						return actions, nil
+					}
+					for _, lhs := range s.lhsSyms {
+						if lhs > 0 && lhs < len(ng.Symbols) &&
+							strings.HasPrefix(ng.Symbols[lhs].Name, "_expression_repeat1_") {
+							return actions, nil
+						}
+					}
+				}
+			}
 		}
 
 		// Default: prefer shift (like yacc/bison).

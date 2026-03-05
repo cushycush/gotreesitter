@@ -1191,7 +1191,7 @@ var importParityGrammars = []importParityGrammar{
 			"plain text only",
 			"<%= foo %> and <%= bar %>",
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 5, expectParity: 4,
+		expectImport: true, expectGenerate: true, expectNoErrors: 5, expectParity: 5,
 	},
 	{
 		name: "todotxt", jsonPath: "/tmp/grammar_parity/todotxt/src/grammar.json",
@@ -1339,7 +1339,7 @@ var importParityGrammars = []importParityGrammar{
 			"clean:\n\trm -f *.o\n",
 			".PHONY: all clean\n",
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 5, expectParity: 1,
+		expectImport: true, expectGenerate: true, expectNoErrors: 5, expectParity: 4,
 	},
 	// ── Batch 4: medium-to-large grammars ──
 	{

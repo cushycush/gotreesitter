@@ -288,13 +288,21 @@ func mergeAdjacentRanges(ranges []runeRange, n *nfa, states []int) []runeRange {
 	for i := 1; i < len(ranges); i++ {
 		next := ranges[i]
 		nextTarget := moveTargets(n, states, next.lo, next.hi)
-		if next.lo == cur.hi+1 && sameIntSlice(curTarget, nextTarget) {
-			cur.hi = next.hi
-		} else {
-			merged = append(merged, cur)
-			cur = next
-			curTarget = nextTarget
+		canMerge := next.lo == cur.hi+1 && sameIntSlice(curTarget, nextTarget)
+		if canMerge {
+			// Merge only when one or more direct NFA transitions cover the
+			// entire combined range. Otherwise subsetConstruction(moveAndClose)
+			// can later drop the merged range as unreachable.
+			combinedTarget := moveTargets(n, states, cur.lo, next.hi)
+			canMerge = sameIntSlice(curTarget, combinedTarget)
 		}
+		if canMerge {
+			cur.hi = next.hi
+			continue
+		}
+		merged = append(merged, cur)
+		cur = next
+		curTarget = nextTarget
 	}
 	merged = append(merged, cur)
 	return merged
@@ -619,4 +627,3 @@ func buildModeKey(syms map[int]bool, skip bool) string {
 	}
 	return string(buf)
 }
-
