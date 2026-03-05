@@ -166,7 +166,7 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 			realRoot = n
 		}
 	}
-	if realRoot == nil {
+	if realRoot == nil && p != nil && p.language != nil && p.language.Name == "ini" {
 		// Some grammars can leave detached trivia/comment nodes alongside the
 		// real root at EOF. Recover by selecting a single expected/root-like
 		// node and folding the detached trivia around it.

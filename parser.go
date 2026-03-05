@@ -239,8 +239,6 @@ func (p *Parser) canFinalizeNoActionEOF(s *glrStack) bool {
 	if top.node == nil {
 		return true
 	}
-	// When we can infer the grammar root symbol, finalization can still
-	// produce a valid root wrapper even if this stack top is a terminal.
 	if p != nil && p.hasRootSymbol {
 		return true
 	}
@@ -498,6 +496,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 	// Per-primary-stack infinite-reduce detection.
 	var lastReduceState StateID
 	var consecutiveReduces int
+	lastReduceDepth := -1
 
 	for iter := 0; iter < maxIter; iter++ {
 		if p.timeoutMicros > 0 {
@@ -870,10 +869,12 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 			// Infinite-reduce detection (for the primary stack).
 			if len(stacks) > 0 && !stacks[0].dead {
 				topState := stacks[0].top().state
-				if topState == lastReduceState {
+				topDepth := stacks[0].depth()
+				if topState == lastReduceState && topDepth == lastReduceDepth {
 					consecutiveReduces++
 				} else {
 					lastReduceState = topState
+					lastReduceDepth = topDepth
 					consecutiveReduces = 1
 				}
 				if consecutiveReduces > maxConsecutivePrimaryReduces {
