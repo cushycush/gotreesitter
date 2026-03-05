@@ -52,7 +52,7 @@ func Generate(g *Grammar) ([]byte, error) {
 		tokenCount,
 		func(state, sym int) bool {
 			if acts, ok := tables.ActionTable[state]; ok {
-				if _, ok := acts[sym]; ok {
+				if entry, ok := acts[sym]; ok && len(entry) > 0 {
 					return true
 				}
 			}
@@ -145,7 +145,7 @@ func GenerateLanguage(g *Grammar) (*gotreesitter.Language, error) {
 		tokenCount,
 		func(state, sym int) bool {
 			if acts, ok := tables.ActionTable[state]; ok {
-				if _, ok := acts[sym]; ok {
+				if entry, ok := acts[sym]; ok && len(entry) > 0 {
 					return true
 				}
 			}

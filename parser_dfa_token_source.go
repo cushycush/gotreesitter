@@ -37,6 +37,15 @@ type dfaTokenSource struct {
 	zeroWidthCount int
 }
 
+type eexLexCandidate struct {
+	tok      Token
+	pos      int
+	row      uint32
+	col      uint32
+	lexState uint16
+	wsCode   bool
+}
+
 const maxConsecutiveZeroWidthTokens = 4
 const maxConsecutiveZeroWidthTokensExternal = 128
 const maxConsecutiveZeroWidthTokensRepeatableExternal = 4096
@@ -163,6 +172,12 @@ func (d *dfaTokenSource) Next() Token {
 			tok = d.eofTokenAtLexerPos()
 		}
 
+		// eex: whitespace-only _code should behave like extras and be skipped.
+		// This keeps `<% end %>` on the partial-expression path instead of
+		// consuming leading spaces as code tokens.
+		if d.language != nil && d.language.Name == "eex" && d.isEEXWhitespaceCode(tok) {
+			continue
+		}
 		if tok.Symbol != 0 && tok.EndByte <= tok.StartByte {
 			if d.zeroWidthPos == d.lexer.pos {
 				d.zeroWidthCount++
@@ -199,6 +214,8 @@ func (d *dfaTokenSource) Next() Token {
 			d.zeroWidthCount = 0
 		}
 
+		tok = d.rewriteMakeWhitespaceToken(tok)
+
 		if perfCountersEnabled {
 			consumed := d.lexer.pos - startPos
 			if consumed < 0 {
@@ -219,6 +236,231 @@ func (d *dfaTokenSource) Next() Token {
 		}
 		return tok
 	}
+}
+
+func (d *dfaTokenSource) rewriteMakeWhitespaceToken(tok Token) Token {
+	if d == nil || d.language == nil || d.lexer == nil {
+		return tok
+	}
+	if d.language.Name != "make" || tok.Symbol == 0 {
+		return tok
+	}
+	if int(tok.Symbol) >= len(d.language.SymbolNames) {
+		return tok
+	}
+	if d.language.SymbolNames[tok.Symbol] != "__ordinary_rule_token2" {
+		return tok
+	}
+	if d.lexer.pos >= len(d.lexer.source) || d.lexer.source[d.lexer.pos] != '\t' {
+		return tok
+	}
+	recipeSym := Symbol(0)
+	for i, name := range d.language.SymbolNames {
+		if name == "_recipe_token2" {
+			recipeSym = Symbol(i)
+			break
+		}
+	}
+	if recipeSym == 0 || !d.hasAnyActionForSymbol(recipeSym) {
+		return tok
+	}
+	tok.Symbol = recipeSym
+	return tok
+}
+
+func (d *dfaTokenSource) nextTokenFromEEXGLRStates(startPos int, startRow, startCol uint32, primaryLexState uint16) (Token, bool) {
+	if d == nil || d.lexer == nil || d.language == nil || d.lookupActionIndex == nil {
+		return Token{}, false
+	}
+	if d.language.Name != "eex" || len(d.glrStates) <= 1 {
+		return Token{}, false
+	}
+
+	unique := make(map[uint16]bool, len(d.glrStates)+1)
+	lexStates := make([]uint16, 0, len(d.glrStates)+1)
+	lexStates = append(lexStates, primaryLexState)
+	unique[primaryLexState] = true
+	for _, st := range d.glrStates {
+		if int(st) >= len(d.language.LexModes) {
+			continue
+		}
+		ls := d.language.LexModes[st].LexState
+		if unique[ls] {
+			continue
+		}
+		unique[ls] = true
+		lexStates = append(lexStates, ls)
+	}
+	if len(lexStates) <= 1 {
+		return Token{}, false
+	}
+
+	var best eexLexCandidate
+	bestFound := false
+	for _, ls := range lexStates {
+		d.lexer.pos, d.lexer.row, d.lexer.col = startPos, startRow, startCol
+		tok := d.lexer.Next(ls)
+		endPos := d.lexer.pos
+		endRow := d.lexer.row
+		endCol := d.lexer.col
+
+		if d.actionCoverage(tok.Symbol) == 0 {
+			continue
+		}
+		// Ignore alternate-mode recovery candidates that skipped
+		// non-whitespace before producing a token.
+		if int(tok.StartByte) > startPos && !isAllSimpleWhitespace(d.lexer.source[startPos:int(tok.StartByte)]) {
+			continue
+		}
+
+		cand := eexLexCandidate{
+			tok:      tok,
+			pos:      endPos,
+			row:      endRow,
+			col:      endCol,
+			lexState: ls,
+			wsCode:   d.isEEXWhitespaceCode(tok),
+		}
+		if !bestFound || betterEEXLexCandidate(cand, best, primaryLexState) {
+			best = cand
+			bestFound = true
+		}
+	}
+	d.lexer.pos, d.lexer.row, d.lexer.col = startPos, startRow, startCol
+	if !bestFound {
+		return Token{}, false
+	}
+	d.lexer.pos, d.lexer.row, d.lexer.col = best.pos, best.row, best.col
+	return best.tok, true
+}
+
+func betterEEXLexCandidate(a, b eexLexCandidate, primaryLexState uint16) bool {
+	if a.wsCode != b.wsCode {
+		return !a.wsCode
+	}
+	if a.tok.StartByte != b.tok.StartByte {
+		return a.tok.StartByte < b.tok.StartByte
+	}
+	aLen := int(a.tok.EndByte - a.tok.StartByte)
+	bLen := int(b.tok.EndByte - b.tok.StartByte)
+	if aLen != bLen {
+		return aLen > bLen
+	}
+	if a.tok.Symbol != b.tok.Symbol {
+		return a.tok.Symbol < b.tok.Symbol
+	}
+	if a.lexState == primaryLexState && b.lexState != primaryLexState {
+		return true
+	}
+	return false
+}
+
+func (d *dfaTokenSource) isEEXWhitespaceCode(tok Token) bool {
+	if d == nil || d.language == nil {
+		return false
+	}
+	if tok.Symbol == 0 || int(tok.Symbol) >= len(d.language.SymbolNames) {
+		return false
+	}
+	if d.language.SymbolNames[tok.Symbol] != "_code" {
+		return false
+	}
+	for i := 0; i < len(tok.Text); i++ {
+		switch tok.Text[i] {
+		case ' ', '\t', '\n', '\r', '\f':
+		default:
+			return false
+		}
+	}
+	return len(tok.Text) > 0
+}
+
+func (d *dfaTokenSource) probeEEXWhitespaceCodeToken(startPos int, startRow, startCol uint32, primaryLexState uint16, current Token) (Token, bool) {
+	if d == nil || d.lexer == nil || d.language == nil || d.language.Name != "eex" {
+		return Token{}, false
+	}
+
+	best := eexLexCandidate{
+		tok:      current,
+		pos:      d.lexer.pos,
+		row:      d.lexer.row,
+		col:      d.lexer.col,
+		lexState: primaryLexState,
+		wsCode:   true,
+	}
+	bestFound := true
+
+	for _, ls := range d.fallbackLexStates {
+		if ls == primaryLexState {
+			continue
+		}
+		d.lexer.pos, d.lexer.row, d.lexer.col = startPos, startRow, startCol
+		tok := d.lexer.Next(ls)
+		endPos := d.lexer.pos
+		endRow := d.lexer.row
+		endCol := d.lexer.col
+
+		if d.actionCoverage(tok.Symbol) == 0 {
+			continue
+		}
+		if int(tok.StartByte) > startPos && !isAllSimpleWhitespace(d.lexer.source[startPos:int(tok.StartByte)]) {
+			continue
+		}
+
+		cand := eexLexCandidate{
+			tok:      tok,
+			pos:      endPos,
+			row:      endRow,
+			col:      endCol,
+			lexState: ls,
+			wsCode:   d.isEEXWhitespaceCode(tok),
+		}
+		if !bestFound || betterEEXLexCandidate(cand, best, primaryLexState) {
+			best = cand
+			bestFound = true
+		}
+	}
+
+	d.lexer.pos, d.lexer.row, d.lexer.col = startPos, startRow, startCol
+	if !bestFound {
+		return Token{}, false
+	}
+	if best.lexState == primaryLexState && best.tok.Symbol == current.Symbol && best.tok.StartByte == current.StartByte && best.tok.EndByte == current.EndByte {
+		d.lexer.pos, d.lexer.row, d.lexer.col = best.pos, best.row, best.col
+		return Token{}, false
+	}
+	d.lexer.pos, d.lexer.row, d.lexer.col = best.pos, best.row, best.col
+	return best.tok, true
+}
+
+func isAllSimpleWhitespace(b []byte) bool {
+	for _, c := range b {
+		switch c {
+		case ' ', '\t', '\n', '\r', '\f':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func (d *dfaTokenSource) actionCoverage(sym Symbol) int {
+	if d == nil || d.lookupActionIndex == nil {
+		return 0
+	}
+	if len(d.glrStates) == 0 {
+		if d.lookupActionIndex(d.state, sym) != 0 {
+			return 1
+		}
+		return 0
+	}
+	n := 0
+	for _, st := range d.glrStates {
+		if d.lookupActionIndex(st, sym) != 0 {
+			n++
+		}
+	}
+	return n
 }
 
 func (d *dfaTokenSource) probeAlternativeLexToken(startPos int, startRow, startCol uint32, skipState uint16) (Token, bool) {
@@ -276,7 +518,20 @@ func (d *dfaTokenSource) nextDFAToken() Token {
 	if int(d.state) < len(d.language.LexModes) {
 		lexState = d.language.LexModes[d.state].LexState
 	}
-	tok := d.lexer.Next(lexState)
+	var tok Token
+	if altTok, ok := d.nextTokenFromEEXGLRStates(startPos, startRow, startCol, lexState); ok {
+		tok = altTok
+	} else {
+		tok = d.lexer.Next(lexState)
+	}
+	// eex-only: if we consumed a whitespace-only _code token, probe other
+	// lex states to see if a more specific token should win after skipping
+	// that whitespace.
+	if d.language.Name == "eex" && d.isEEXWhitespaceCode(tok) {
+		if altTok, ok := d.probeEEXWhitespaceCodeToken(startPos, startRow, startCol, lexState, tok); ok {
+			tok = altTok
+		}
+	}
 	// If this lex mode failed to produce any token at a non-EOF
 	// position, probe other known lex start states before falling back
 	// to rune-skipping error recovery.
