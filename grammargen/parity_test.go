@@ -1339,7 +1339,7 @@ var importParityGrammars = []importParityGrammar{
 			"clean:\n\trm -f *.o\n",
 			".PHONY: all clean\n",
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 5, expectParity: 4,
+		expectImport: true, expectGenerate: true, expectNoErrors: 5, expectParity: 5,
 	},
 	// ── Batch 4: medium-to-large grammars ──
 	{

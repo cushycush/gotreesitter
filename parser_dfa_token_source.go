@@ -241,6 +241,7 @@ func (d *dfaTokenSource) Next() Token {
 		}
 
 		tok = d.rewriteMakeWhitespaceToken(tok)
+		tok = d.rewriteMakeLineTextToken(tok)
 
 		if perfCountersEnabled {
 			consumed := d.lexer.pos - startPos
@@ -291,6 +292,39 @@ func (d *dfaTokenSource) rewriteMakeWhitespaceToken(tok Token) Token {
 		return tok
 	}
 	tok.Symbol = recipeSym
+	return tok
+}
+
+func (d *dfaTokenSource) rewriteMakeLineTextToken(tok Token) Token {
+	if d == nil || d.language == nil || d.lexer == nil {
+		return tok
+	}
+	if d.language.Name != "make" || tok.Symbol == 0 {
+		return tok
+	}
+	if int(tok.Symbol) >= len(d.language.SymbolNames) {
+		return tok
+	}
+	if d.language.SymbolNames[tok.Symbol] != "__line_text_token3" {
+		return tok
+	}
+	// In make recipe lines, after a variable reference like $(CC), prefer the
+	// alternate line-text token when it is actionable so reductions stay on the
+	// recipe path through trailing newline.
+	if int(tok.StartByte) <= 0 || int(tok.StartByte)-1 >= len(d.lexer.source) || d.lexer.source[tok.StartByte-1] != ')' {
+		return tok
+	}
+	altSym := Symbol(0)
+	for i, name := range d.language.SymbolNames {
+		if name == "__line_text_token4" {
+			altSym = Symbol(i)
+			break
+		}
+	}
+	if altSym == 0 || !d.hasAnyActionForSymbol(altSym) {
+		return tok
+	}
+	tok.Symbol = altSym
 	return tok
 }
 
