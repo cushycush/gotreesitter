@@ -3,6 +3,7 @@ package grammargen
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/odvcencio/gotreesitter"
 )
@@ -18,13 +20,19 @@ import (
 const (
 	realCorpusEnableEnv         = "GTS_GRAMMARGEN_REAL_CORPUS_ENABLE"
 	realCorpusRootEnv           = "GTS_GRAMMARGEN_REAL_CORPUS_ROOT"
+	realCorpusProfileEnv        = "GTS_GRAMMARGEN_REAL_CORPUS_PROFILE"
 	realCorpusMaxCasesEnv       = "GTS_GRAMMARGEN_REAL_CORPUS_MAX_CASES"
+	realCorpusMaxSampleBytesEnv = "GTS_GRAMMARGEN_REAL_CORPUS_MAX_SAMPLE_BYTES"
+	realCorpusCandidateMultEnv  = "GTS_GRAMMARGEN_REAL_CORPUS_CANDIDATE_MULTIPLIER"
+	realCorpusMaxSecsPerGramEnv = "GTS_GRAMMARGEN_REAL_CORPUS_MAX_SECONDS_PER_GRAMMAR"
 	realCorpusMaxGrammarsEnv    = "GTS_GRAMMARGEN_REAL_CORPUS_MAX_GRAMMARS"
 	realCorpusRequireParityEnv  = "GTS_GRAMMARGEN_REAL_CORPUS_REQUIRE_PARITY"
 	realCorpusRatchetUpdateEnv  = "GTS_GRAMMARGEN_REAL_CORPUS_RATCHET_UPDATE"
+	realCorpusRatchetRebaseEnv  = "GTS_GRAMMARGEN_REAL_CORPUS_RATCHET_REBASE"
 	realCorpusFloorsPathEnv     = "GTS_GRAMMARGEN_REAL_CORPUS_FLOORS_PATH"
 	realCorpusAllowPartialEnv   = "GTS_GRAMMARGEN_REAL_CORPUS_ALLOW_PARTIAL"
-	realCorpusFloorsFileVersion = 1
+	realCorpusFloorsFileVersion = 2
+	maxRealCorpusWalkFiles      = 6000
 )
 
 type realCorpusMetrics struct {
@@ -38,8 +46,41 @@ type realCorpusFloorFile struct {
 	Version     int                          `json:"version"`
 	GeneratedAt string                       `json:"generated_at"`
 	CorpusRoot  string                       `json:"corpus_root"`
+	Profile     string                       `json:"profile"`
 	MaxCases    int                          `json:"max_cases"`
+	MaxSampleB  int                          `json:"max_sample_bytes"`
 	Metrics     map[string]realCorpusMetrics `json:"metrics"`
+}
+
+type realCorpusProfile string
+
+const (
+	realCorpusProfileSmoke      realCorpusProfile = "smoke"
+	realCorpusProfileBalanced   realCorpusProfile = "balanced"
+	realCorpusProfileAggressive realCorpusProfile = "aggressive"
+)
+
+type realCorpusSampleSource string
+
+const (
+	realCorpusSourceCorpusBlock realCorpusSampleSource = "corpus_block"
+	realCorpusSourceCorpusRaw   realCorpusSampleSource = "corpus_raw"
+	realCorpusSourceRepoRaw     realCorpusSampleSource = "repo_raw"
+)
+
+type realCorpusSampleCandidate struct {
+	Text   string
+	Trim   string
+	Size   int
+	Source realCorpusSampleSource
+	Path   string
+}
+
+type realCorpusCollectConfig struct {
+	TargetEligible      int
+	MaxSampleBytes      int
+	CandidateMultiplier int
+	Profile             realCorpusProfile
 }
 
 func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
@@ -55,11 +96,22 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 		t.Skipf("real corpus root unavailable: %s (%v)", root, err)
 	}
 
-	maxCases := getenvInt(realCorpusMaxCasesEnv, 8)
+	profile := parseRealCorpusProfile(os.Getenv(realCorpusProfileEnv))
+	maxCases := getenvInt(realCorpusMaxCasesEnv, defaultMaxCasesForProfile(profile))
+	maxSampleBytes := getenvInt(realCorpusMaxSampleBytesEnv, defaultMaxSampleBytesForProfile(profile))
+	candidateMult := getenvInt(realCorpusCandidateMultEnv, defaultCandidateMultiplierForProfile(profile))
+	maxSecsPerGrammar := getenvInt(realCorpusMaxSecsPerGramEnv, defaultMaxSecondsPerGrammar(profile))
 	maxGrammars := getenvInt(realCorpusMaxGrammarsEnv, 0)
 	requireParity := getenvBool(realCorpusRequireParityEnv)
 	updateRatchet := getenvBool(realCorpusRatchetUpdateEnv)
+	rebaseRatchet := getenvBool(realCorpusRatchetRebaseEnv)
 	allowPartial := getenvBool(realCorpusAllowPartialEnv)
+	collectCfg := realCorpusCollectConfig{
+		TargetEligible:      maxCases,
+		MaxSampleBytes:      maxSampleBytes,
+		CandidateMultiplier: candidateMult,
+		Profile:             profile,
+	}
 
 	floorsPath := strings.TrimSpace(os.Getenv(realCorpusFloorsPathEnv))
 	if floorsPath == "" {
@@ -72,8 +124,18 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 	if floorFile.Metrics == nil {
 		floorFile.Metrics = map[string]realCorpusMetrics{}
 	}
-	if !updateRatchet && foundFloors && floorFile.MaxCases > 0 && maxCases < floorFile.MaxCases {
-		t.Fatalf("max cases %d is below ratchet floor file max_cases=%d; increase %s or regenerate floors", maxCases, floorFile.MaxCases, realCorpusMaxCasesEnv)
+	if !updateRatchet && foundFloors {
+		if floorFile.MaxCases > 0 && maxCases < floorFile.MaxCases {
+			t.Fatalf("max cases %d is below ratchet floor file max_cases=%d; increase %s or regenerate floors", maxCases, floorFile.MaxCases, realCorpusMaxCasesEnv)
+		}
+		if floorFile.MaxSampleB > 0 && maxSampleBytes < floorFile.MaxSampleB {
+			t.Fatalf("max sample bytes %d is below ratchet floor file max_sample_bytes=%d; increase %s or regenerate floors", maxSampleBytes, floorFile.MaxSampleB, realCorpusMaxSampleBytesEnv)
+		}
+		floorProfile := floorProfileOrSmoke(floorFile.Profile)
+		if profileStrength(profile) < profileStrength(floorProfile) {
+			t.Fatalf("profile %q is weaker than ratchet floor profile %q; set %s=%s (or stronger) or regenerate floors",
+				profile, floorProfile, realCorpusProfileEnv, floorProfile)
+		}
 	}
 
 	testedGrammars := 0
@@ -92,8 +154,8 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 		if repoRoot == "" {
 			continue
 		}
-		samples := collectTreeSitterCorpusSamples(t, repoRoot, maxCases)
-		if len(samples) == 0 {
+		candidates := collectGrammarCorpusCandidates(t, repoRoot, collectCfg)
+		if len(candidates) == 0 {
 			continue
 		}
 
@@ -125,10 +187,20 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 
 			metrics := realCorpusMetrics{}
 			mismatchLogs := 0
+			seen := 0
+			grammarDeadline := time.Time{}
+			if maxSecsPerGrammar > 0 {
+				grammarDeadline = time.Now().Add(time.Duration(maxSecsPerGrammar) * time.Second)
+			}
 
-			for i, sample := range samples {
-				genTree, _ := genParser.Parse([]byte(sample))
-				refTree, _ := refParser.Parse([]byte(sample))
+			for i, cand := range candidates {
+				if maxSecsPerGrammar > 0 && time.Now().After(grammarDeadline) && metrics.Eligible > 0 {
+					t.Logf("real-corpus: stopping early at sample %d due grammar time budget (%ds)", i, maxSecsPerGrammar)
+					break
+				}
+				seen++
+				genTree, _ := genParser.Parse([]byte(cand.Text))
+				refTree, _ := refParser.Parse([]byte(cand.Text))
 
 				genRoot := genTree.RootNode()
 				refRoot := refTree.RootNode()
@@ -154,10 +226,14 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 				if len(divs) == 0 {
 					metrics.DeepParity++
 				} else if requireParity {
-					t.Fatalf("sample %d deep parity mismatch: %s\nGEN: %s\nREF: %s", i, divs[0].String(), genSexp, refSexp)
+					t.Fatalf("sample %d (%s:%s) deep parity mismatch: %s\nGEN: %s\nREF: %s",
+						i, cand.Source, cand.Path, divs[0].String(), genSexp, refSexp)
 				} else if mismatchLogs < 3 {
 					mismatchLogs++
-					t.Logf("sample %d deep mismatch: %s", i, divs[0].String())
+					t.Logf("sample %d (%s:%s) deep mismatch: %s", i, cand.Source, cand.Path, divs[0].String())
+				}
+				if metrics.Eligible >= maxCases {
+					break
 				}
 			}
 
@@ -180,11 +256,12 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 			totalSExprParity += metrics.SExprParity
 			totalDeepParity += metrics.DeepParity
 
-			t.Logf("real-corpus: no-error %d/%d, sexpr parity %d/%d, deep parity %d/%d (requireParity=%v)",
+			t.Logf("real-corpus[%s]: no-error %d/%d, sexpr parity %d/%d, deep parity %d/%d (requireParity=%v, seen=%d/%d)",
+				profile,
 				metrics.NoError, metrics.Eligible,
 				metrics.SExprParity, metrics.Eligible,
 				metrics.DeepParity, metrics.Eligible,
-				requireParity)
+				requireParity, seen, len(candidates))
 		})
 	}
 
@@ -201,29 +278,56 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 	}
 
 	if updateRatchet {
-		for grammarName, cur := range observed {
-			if prev, ok := floorFile.Metrics[grammarName]; ok {
-				if cur.Eligible < prev.Eligible ||
-					cur.NoError < prev.NoError ||
-					cur.SExprParity < prev.SExprParity ||
-					cur.DeepParity < prev.DeepParity {
-					t.Fatalf("ratchet update would decrease floor for %s: prev=%+v new=%+v", grammarName, prev, cur)
+		if rebaseRatchet {
+			hasStaleFloors := false
+			for grammarName := range floorFile.Metrics {
+				if _, ok := observed[grammarName]; !ok {
+					hasStaleFloors = true
+					break
 				}
 			}
-			floorFile.Metrics[grammarName] = cur
+			if len(floorFile.Metrics) > 0 &&
+				!hasStaleFloors &&
+				profileStrength(profile) <= profileStrength(floorProfileOrSmoke(floorFile.Profile)) &&
+				maxCases <= floorFile.MaxCases &&
+				(maxSampleBytes <= floorFile.MaxSampleB || floorFile.MaxSampleB == 0) {
+				t.Fatalf("ratchet rebase requested but run is not stronger than existing floor config and has no stale floor entries to prune; increase profile/maxCases/maxSampleBytes")
+			}
+			rebased := make(map[string]realCorpusMetrics, len(observed))
+			for grammarName, cur := range observed {
+				rebased[grammarName] = cur
+			}
+			floorFile.Metrics = rebased
+		} else {
+			for grammarName, cur := range observed {
+				if prev, ok := floorFile.Metrics[grammarName]; ok {
+					if cur.Eligible < prev.Eligible {
+						t.Fatalf("ratchet update would decrease eligible floor for %s: prev=%+v new=%+v", grammarName, prev, cur)
+					}
+					if cur.NoError*prev.Eligible < prev.NoError*cur.Eligible ||
+						cur.SExprParity*prev.Eligible < prev.SExprParity*cur.Eligible ||
+						cur.DeepParity*prev.Eligible < prev.DeepParity*cur.Eligible {
+						t.Fatalf("ratchet update would regress ratios for %s: prev=%+v new=%+v", grammarName, prev, cur)
+					}
+				}
+				floorFile.Metrics[grammarName] = cur
+			}
 		}
 		floorFile.Version = realCorpusFloorsFileVersion
 		floorFile.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
 		floorFile.CorpusRoot = root
+		floorFile.Profile = string(profile)
 		floorFile.MaxCases = maxCases
+		floorFile.MaxSampleB = maxSampleBytes
 		if err := writeRealCorpusFloorFile(floorsPath, floorFile); err != nil {
 			t.Fatalf("write floor file %s: %v", floorsPath, err)
 		}
 		t.Logf("updated ratchet floor file: %s", floorsPath)
 	}
 
-	t.Logf("REAL CORPUS SUMMARY: grammars=%d eligible=%d no-error=%d sexpr_parity=%d deep_parity=%d requireParity=%v ratchetUpdate=%v",
-		testedGrammars, totalEligible, totalNoError, totalSExprParity, totalDeepParity, requireParity, updateRatchet)
+	t.Logf("REAL CORPUS SUMMARY: profile=%s grammars=%d eligible=%d no-error=%d sexpr_parity=%d deep_parity=%d requireParity=%v ratchetUpdate=%v ratchetRebase=%v maxCases=%d maxSampleBytes=%d",
+		profile, testedGrammars, totalEligible, totalNoError, totalSExprParity, totalDeepParity,
+		requireParity, updateRatchet, rebaseRatchet, maxCases, maxSampleBytes)
 }
 
 func enforceRealCorpusRatchet(t *testing.T, floor, cur realCorpusMetrics) {
@@ -251,6 +355,78 @@ func enforceRealCorpusRatchet(t *testing.T, floor, cur realCorpusMetrics) {
 			t.Errorf("ratchet regression deep parity ratio: %d/%d < floor %d/%d", cur.DeepParity, cur.Eligible, floor.DeepParity, floor.Eligible)
 		}
 	}
+}
+
+func parseRealCorpusProfile(raw string) realCorpusProfile {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", string(realCorpusProfileAggressive):
+		return realCorpusProfileAggressive
+	case string(realCorpusProfileSmoke):
+		return realCorpusProfileSmoke
+	case string(realCorpusProfileBalanced):
+		return realCorpusProfileBalanced
+	default:
+		return realCorpusProfileAggressive
+	}
+}
+
+func floorProfileOrSmoke(raw string) realCorpusProfile {
+	if strings.TrimSpace(raw) == "" {
+		return realCorpusProfileSmoke
+	}
+	return parseRealCorpusProfile(raw)
+}
+
+func profileStrength(p realCorpusProfile) int {
+	switch p {
+	case realCorpusProfileSmoke:
+		return 1
+	case realCorpusProfileBalanced:
+		return 2
+	default:
+		return 3
+	}
+}
+
+func defaultMaxCasesForProfile(p realCorpusProfile) int {
+	switch p {
+	case realCorpusProfileSmoke:
+		return 8
+	case realCorpusProfileBalanced:
+		return 16
+	default:
+		return 24
+	}
+}
+
+func defaultMaxSampleBytesForProfile(p realCorpusProfile) int {
+	switch p {
+	case realCorpusProfileSmoke:
+		return 64 * 1024
+	case realCorpusProfileBalanced:
+		return 256 * 1024
+	default:
+		return 512 * 1024
+	}
+}
+
+func defaultCandidateMultiplierForProfile(p realCorpusProfile) int {
+	switch p {
+	case realCorpusProfileSmoke:
+		return 6
+	case realCorpusProfileBalanced:
+		return 10
+	default:
+		return 14
+	}
+}
+
+func defaultMaxSecondsPerGrammar(p realCorpusProfile) int {
+	// Unlimited by default for deterministic ratchet behavior. Set
+	// GTS_GRAMMARGEN_REAL_CORPUS_MAX_SECONDS_PER_GRAMMAR to cap runtime in
+	// exploratory runs.
+	_ = p
+	return 0
 }
 
 func defaultRealCorpusFloorsPath() string {
@@ -336,88 +512,219 @@ func importParityGrammarSource(g importParityGrammar) (*Grammar, error) {
 	return ImportGrammarJS(source)
 }
 
-func collectTreeSitterCorpusSamples(t *testing.T, repoRoot string, maxCases int) []string {
+func collectGrammarCorpusCandidates(t *testing.T, repoRoot string, cfg realCorpusCollectConfig) []realCorpusSampleCandidate {
 	t.Helper()
-	if maxCases <= 0 {
-		maxCases = 8
+	if cfg.TargetEligible <= 0 {
+		cfg.TargetEligible = defaultMaxCasesForProfile(cfg.Profile)
 	}
-	dirs := []string{
+	if cfg.MaxSampleBytes <= 0 {
+		cfg.MaxSampleBytes = defaultMaxSampleBytesForProfile(cfg.Profile)
+	}
+	if cfg.CandidateMultiplier <= 0 {
+		cfg.CandidateMultiplier = defaultCandidateMultiplierForProfile(cfg.Profile)
+	}
+
+	corpusDirs := existingCorpusDirs(repoRoot)
+	rawDirs := existingGrammarSampleDirs(repoRoot, corpusDirs)
+
+	corpusFiles := walkSampleFiles(corpusDirs)
+	rawFiles := walkSampleFiles(rawDirs)
+
+	seen := map[string]struct{}{}
+	cands := make([]realCorpusSampleCandidate, 0, cfg.TargetEligible*cfg.CandidateMultiplier)
+	for _, path := range corpusFiles {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		extracted := extractTreeSitterCorpusInputs(data)
+		for _, sample := range extracted {
+			if c, ok := newCandidate(sample, path, realCorpusSourceCorpusBlock, cfg.MaxSampleBytes, seen); ok {
+				cands = append(cands, c)
+			}
+		}
+		// Only treat corpus file as raw input when no corpus block could be extracted.
+		if len(extracted) == 0 {
+			if c, ok := newCandidate(string(data), path, realCorpusSourceCorpusRaw, cfg.MaxSampleBytes, seen); ok {
+				cands = append(cands, c)
+			}
+		}
+	}
+	for _, path := range rawFiles {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if c, ok := newCandidate(string(data), path, realCorpusSourceRepoRaw, cfg.MaxSampleBytes, seen); ok {
+			cands = append(cands, c)
+		}
+	}
+	if len(cands) == 0 {
+		return nil
+	}
+
+	limit := cfg.TargetEligible * cfg.CandidateMultiplier
+	sortRealCorpusCandidates(cands, cfg.Profile)
+	if len(cands) > limit {
+		cands = cands[:limit]
+	}
+	return cands
+}
+
+func existingCorpusDirs(repoRoot string) []string {
+	return existingDirs([]string{
 		filepath.Join(repoRoot, "test", "corpus"),
 		filepath.Join(repoRoot, "tests", "corpus"),
 		filepath.Join(repoRoot, "corpus"),
-	}
+	})
+}
 
-	var files []string
+func existingGrammarSampleDirs(repoRoot string, corpusDirs []string) []string {
+	candidates := []string{
+		filepath.Join(repoRoot, "examples"),
+		filepath.Join(repoRoot, "example"),
+		filepath.Join(repoRoot, "samples"),
+		filepath.Join(repoRoot, "sample"),
+		filepath.Join(repoRoot, "fixtures"),
+		filepath.Join(repoRoot, "test", "highlight"),
+		filepath.Join(repoRoot, "tests", "highlight"),
+		filepath.Join(repoRoot, "test", "highlights"),
+		filepath.Join(repoRoot, "tests", "highlights"),
+		filepath.Join(repoRoot, "test", "fixtures"),
+		filepath.Join(repoRoot, "tests", "fixtures"),
+	}
+	return existingDirs(candidates)
+}
+
+func existingDirs(dirs []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(dirs))
 	for _, dir := range dirs {
+		if _, ok := seen[dir]; ok {
+			continue
+		}
+		seen[dir] = struct{}{}
 		info, err := os.Stat(dir)
 		if err != nil || !info.IsDir() {
 			continue
 		}
-		walkErr := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		out = append(out, dir)
+	}
+	return out
+}
+
+func walkSampleFiles(dirs []string) []string {
+	out := make([]string, 0, 256)
+	for _, dir := range dirs {
+		scanned := 0
+		_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
 				return nil
 			}
 			if d.IsDir() {
 				name := d.Name()
-				if name == ".git" || name == "node_modules" {
+				if name == ".git" || name == "node_modules" || name == "target" || name == "vendor" {
 					return filepath.SkipDir
 				}
 				return nil
 			}
-			files = append(files, path)
+			scanned++
+			if scanned > maxRealCorpusWalkFiles {
+				return fs.SkipAll
+			}
+			out = append(out, path)
 			return nil
 		})
-		if walkErr != nil {
-			t.Logf("walk corpus dir %s: %v", dir, walkErr)
-		}
 	}
-	if len(files) == 0 {
-		return nil
-	}
-	sort.Strings(files)
-
-	type sampleEntry struct {
-		text string
-		size int
-	}
-	entries := make([]sampleEntry, 0, maxCases*2)
-	seen := map[string]struct{}{}
-	for _, path := range files {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		for _, sample := range extractTreeSitterCorpusInputs(data) {
-			trimmed := strings.TrimSpace(sample)
-			if trimmed == "" || len(trimmed) > 64*1024 {
-				continue
-			}
-			if _, ok := seen[trimmed]; ok {
-				continue
-			}
-			seen[trimmed] = struct{}{}
-			entries = append(entries, sampleEntry{text: sample, size: len(trimmed)})
-		}
-	}
-	if len(entries) == 0 {
-		return nil
-	}
-	// Prefer smaller samples for stable runtime while preserving deterministic
-	// selection for parity ratcheting.
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].size != entries[j].size {
-			return entries[i].size < entries[j].size
-		}
-		return entries[i].text < entries[j].text
-	})
-	if len(entries) > maxCases {
-		entries = entries[:maxCases]
-	}
-	out := make([]string, 0, len(entries))
-	for _, e := range entries {
-		out = append(out, e.text)
-	}
+	sort.Strings(out)
 	return out
+}
+
+func newCandidate(text, path string, source realCorpusSampleSource, maxSampleBytes int, seen map[string]struct{}) (realCorpusSampleCandidate, bool) {
+	// Some vendored fixture bundles flatten nested paths into '%' encoded names
+	// and can produce pathological parse costs with little additional signal.
+	if source == realCorpusSourceRepoRaw && strings.Contains(path, "%") {
+		return realCorpusSampleCandidate{}, false
+	}
+	normalized := strings.ReplaceAll(text, "\r\n", "\n")
+	trimmed := strings.TrimSpace(normalized)
+	if trimmed == "" || len(trimmed) > maxSampleBytes || !utf8.ValidString(normalized) || strings.ContainsRune(normalized, '\x00') {
+		return realCorpusSampleCandidate{}, false
+	}
+	if _, ok := seen[trimmed]; ok {
+		return realCorpusSampleCandidate{}, false
+	}
+	seen[trimmed] = struct{}{}
+	return realCorpusSampleCandidate{
+		Text:   normalized,
+		Trim:   trimmed,
+		Size:   len(trimmed),
+		Source: source,
+		Path:   path,
+	}, true
+}
+
+func sortRealCorpusCandidates(cands []realCorpusSampleCandidate, profile realCorpusProfile) {
+	sort.Slice(cands, func(i, j int) bool {
+		a, b := cands[i], cands[j]
+		as := sourceRank(profile, a.Source)
+		bs := sourceRank(profile, b.Source)
+		if as != bs {
+			return as < bs
+		}
+		switch profile {
+		case realCorpusProfileSmoke:
+			if a.Size != b.Size {
+				return a.Size < b.Size
+			}
+		case realCorpusProfileBalanced:
+			// Balanced: prioritize corpus block tests first, then larger files.
+			if a.Size != b.Size {
+				return a.Size > b.Size
+			}
+		default:
+			// Aggressive: maximize stress by preferring larger inputs.
+			if a.Size != b.Size {
+				return a.Size > b.Size
+			}
+		}
+		if a.Path != b.Path {
+			return a.Path < b.Path
+		}
+		return a.Trim < b.Trim
+	})
+}
+
+func sourceRank(profile realCorpusProfile, source realCorpusSampleSource) int {
+	switch profile {
+	case realCorpusProfileSmoke:
+		switch source {
+		case realCorpusSourceCorpusBlock:
+			return 0
+		case realCorpusSourceCorpusRaw:
+			return 1
+		default:
+			return 2
+		}
+	case realCorpusProfileBalanced:
+		switch source {
+		case realCorpusSourceCorpusBlock:
+			return 0
+		case realCorpusSourceRepoRaw:
+			return 1
+		default:
+			return 2
+		}
+	default:
+		switch source {
+		case realCorpusSourceRepoRaw:
+			return 0
+		case realCorpusSourceCorpusRaw:
+			return 1
+		default:
+			return 2
+		}
+	}
 }
 
 func extractTreeSitterCorpusInputs(data []byte) []string {
