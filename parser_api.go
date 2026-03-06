@@ -24,17 +24,31 @@ const (
 // ParserLogger receives parser debug logs when configured via SetLogger.
 type ParserLogger func(kind ParserLogType, message string)
 
-const fullParseRetryMaxGLRStacks = 8
+const (
+	// Retry no-stacks-alive full parses with a wider GLR cap. Large real-world
+	// files (for example this repo's parser.go) can legitimately need >8 stacks
+	// at peak even when parse tables report narrower local conflict widths.
+	fullParseRetryMaxGLRStacks = 32
+	// Keep retry widening bounded to avoid runaway memory growth on very large
+	// malformed inputs. Callers can still override via GOT_GLR_MAX_STACKS.
+	fullParseRetryMaxSourceBytes = 1 << 20 // 1 MiB
+)
 
 type resettableTokenSource interface {
 	Reset(source []byte)
 }
 
-func shouldRetryFullParse(tree *Tree) bool {
+func shouldRetryFullParse(tree *Tree, sourceLen int) bool {
 	if tree == nil {
 		return false
 	}
-	return tree.ParseStopReason() == ParseStopNoStacksAlive
+	if tree.ParseStopReason() != ParseStopNoStacksAlive {
+		return false
+	}
+	if sourceLen <= 0 {
+		return false
+	}
+	return sourceLen <= fullParseRetryMaxSourceBytes
 }
 
 // ParseOption configures ParseWith behavior.
@@ -233,12 +247,12 @@ func (p *Parser) Parse(source []byte) (*Tree, error) {
 		p.language.ExternalScanner != nil &&
 		(p.language.Name == "yaml" || p.language.Name == "scala")
 	tree := p.parseInternal(source, p.wrapIncludedRanges(ts), nil, nil, arenaClassFull, nil, 0, deterministicExternalConflicts)
-	if parseMaxGLRStacksValue() < fullParseRetryMaxGLRStacks && shouldRetryFullParse(tree) {
+	if parseMaxGLRStacksValue() < fullParseRetryMaxGLRStacks && shouldRetryFullParse(tree, len(source)) {
 		retryLexer := NewLexer(p.language.LexStates, source)
 		retryTS := acquireDFATokenSource(retryLexer, p.language, p.lookupActionIndex, p.hasKeywordState)
 		tree = p.parseInternal(source, p.wrapIncludedRanges(retryTS), nil, nil, arenaClassFull, nil, fullParseRetryMaxGLRStacks, deterministicExternalConflicts)
 	}
-	if p.language.ExternalScanner != nil && shouldRetryFullParse(tree) {
+	if p.language.ExternalScanner != nil && shouldRetryFullParse(tree, len(source)) {
 		retryLexer := NewLexer(p.language.LexStates, source)
 		retryTS := acquireDFATokenSource(retryLexer, p.language, p.lookupActionIndex, p.hasKeywordState)
 		tree = p.parseInternal(source, p.wrapIncludedRanges(retryTS), nil, nil, arenaClassFull, nil, fullParseRetryMaxGLRStacks, deterministicExternalConflicts)
@@ -257,13 +271,13 @@ func (p *Parser) ParseWithTokenSource(source []byte, ts TokenSource) (*Tree, err
 		p.language.ExternalScanner != nil &&
 		(p.language.Name == "yaml" || p.language.Name == "scala")
 	tree := p.parseInternal(source, p.wrapIncludedRanges(ts), nil, nil, arenaClassFull, nil, 0, deterministicExternalConflicts)
-	if parseMaxGLRStacksValue() < fullParseRetryMaxGLRStacks && shouldRetryFullParse(tree) {
+	if parseMaxGLRStacksValue() < fullParseRetryMaxGLRStacks && shouldRetryFullParse(tree, len(source)) {
 		if resettable, ok := ts.(resettableTokenSource); ok {
 			resettable.Reset(source)
 			tree = p.parseInternal(source, p.wrapIncludedRanges(ts), nil, nil, arenaClassFull, nil, fullParseRetryMaxGLRStacks, deterministicExternalConflicts)
 		}
 	}
-	if p.language.ExternalScanner != nil && shouldRetryFullParse(tree) {
+	if p.language.ExternalScanner != nil && shouldRetryFullParse(tree, len(source)) {
 		if resettable, ok := ts.(resettableTokenSource); ok {
 			resettable.Reset(source)
 			tree = p.parseInternal(source, p.wrapIncludedRanges(ts), nil, nil, arenaClassFull, nil, fullParseRetryMaxGLRStacks, deterministicExternalConflicts)

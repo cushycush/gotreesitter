@@ -1,6 +1,9 @@
 package gotreesitter
 
-import "sort"
+import (
+	"fmt"
+	"sort"
+)
 
 // HighlightRange represents a styled range of source code, mapping a byte span
 // to a capture name from a highlight query. The editor maps capture names
@@ -19,6 +22,9 @@ type Highlighter struct {
 	query              *Query
 	lang               *Language
 	tokenSourceFactory func(source []byte) TokenSource
+	injectionQuery     *Query
+	injectionResolver  HighlighterInjectionResolver
+	childQueries       map[string]*Query
 }
 
 // HighlighterOption configures a Highlighter.
@@ -52,6 +58,17 @@ func NewHighlighter(lang *Language, highlightQuery string, opts ...HighlighterOp
 	for _, opt := range opts {
 		opt(h)
 	}
+	if lang != nil {
+		if spec, ok := lookupHighlighterInjection(lang.Name); ok {
+			injQ, injErr := NewQuery(spec.Query, lang)
+			if injErr != nil {
+				return nil, fmt.Errorf("highlighter injection query for %q: %w", lang.Name, injErr)
+			}
+			h.injectionQuery = injQ
+			h.injectionResolver = spec.ResolveLanguage
+			h.childQueries = make(map[string]*Query)
+		}
+	}
 	return h, nil
 }
 
@@ -69,7 +86,7 @@ func (h *Highlighter) HighlightIncremental(source []byte, oldTree *Tree) ([]High
 		return nil, tree
 	}
 
-	return h.highlightTree(tree), tree
+	return h.highlightTree(tree, source), tree
 }
 
 // Highlight parses the source code and executes the highlight query, returning
@@ -89,16 +106,16 @@ func (h *Highlighter) Highlight(source []byte) []HighlightRange {
 	}
 	defer tree.Release()
 
-	return h.highlightTree(tree)
+	return h.highlightTree(tree, source)
 }
 
 func (h *Highlighter) parse(source []byte, oldTree *Tree) *Tree {
 	return dispatchParse(h.parser, source, oldTree, h.tokenSourceFactory, h.lang)
 }
 
-func (h *Highlighter) highlightTree(tree *Tree) []HighlightRange {
+func (h *Highlighter) highlightTree(tree *Tree, source []byte) []HighlightRange {
 	matches := h.query.Execute(tree)
-	if len(matches) == 0 {
+	if len(matches) == 0 && h.injectionQuery == nil {
 		return nil
 	}
 
@@ -117,6 +134,8 @@ func (h *Highlighter) highlightTree(tree *Tree) []HighlightRange {
 		}
 	}
 
+	ranges = h.appendInjectedRanges(tree, source, ranges)
+
 	if len(ranges) == 0 {
 		return nil
 	}
@@ -132,6 +151,7 @@ func (h *Highlighter) highlightTree(tree *Tree) []HighlightRange {
 //  1. Sort ranges by start asc, width desc.
 //  2. Sweep boundaries with a stack of active nested ranges.
 //     The top of the stack is the currently active innermost capture.
+//
 // This avoids the previous second O(n log n) event sort.
 func resolveOverlaps(ranges []HighlightRange) []HighlightRange {
 	if len(ranges) == 0 {
