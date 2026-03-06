@@ -1504,6 +1504,62 @@ func init() {
 		{name: "enforce", blobFunc: grammars.EnforceLanguage},
 		{name: "mermaid", blobFunc: grammars.MermaidLanguage},
 		{name: "vimdoc", blobFunc: grammars.VimdocLanguage},
+
+		// ── Batch 5: external-scanner grammars (adapted via adaptExternalScanner) ──
+		// These have hand-written Go scanners that get adapted at test time.
+
+		// Popular scanner languages
+		{name: "bash", blobFunc: grammars.BashLanguage, timeout: 90 * time.Second},
+		{name: "python", blobFunc: grammars.PythonLanguage, timeout: 90 * time.Second},
+		{name: "ruby", blobFunc: grammars.RubyLanguage, timeout: 90 * time.Second},
+		{name: "rust", blobFunc: grammars.RustLanguage, timeout: 90 * time.Second},
+		{name: "cpp", blobFunc: grammars.CppLanguage, timeout: 120 * time.Second},
+		{name: "javascript", blobFunc: grammars.JavascriptLanguage, timeout: 90 * time.Second},
+		{name: "typescript", blobFunc: grammars.TypescriptLanguage, timeout: 90 * time.Second,
+			jsonPath: "/tmp/grammar_parity/typescript/typescript/src/grammar.json"},
+		{name: "tsx", blobFunc: grammars.TsxLanguage, timeout: 90 * time.Second,
+			jsonPath: "/tmp/grammar_parity/typescript/tsx/src/grammar.json"},
+		{name: "kotlin", blobFunc: grammars.KotlinLanguage, timeout: 90 * time.Second},
+		{name: "dart", blobFunc: grammars.DartLanguage, timeout: 90 * time.Second},
+		{name: "php", blobFunc: grammars.PhpLanguage, timeout: 90 * time.Second,
+			jsonPath: "/tmp/grammar_parity/php/php/src/grammar.json"},
+		{name: "elixir", blobFunc: grammars.ElixirLanguage, timeout: 90 * time.Second},
+		{name: "c_sharp", blobFunc: grammars.CSharpLanguage, timeout: 90 * time.Second},
+		{name: "ocaml", blobFunc: grammars.OcamlLanguage, timeout: 90 * time.Second,
+			jsonPath: "/tmp/grammar_parity/ocaml/grammars/ocaml/src/grammar.json"},
+
+		// Config/markup scanner languages
+		{name: "yaml", blobFunc: grammars.YamlLanguage, timeout: 90 * time.Second},
+		{name: "markdown", blobFunc: grammars.MarkdownLanguage, timeout: 90 * time.Second,
+			jsonPath: "/tmp/grammar_parity/markdown/tree-sitter-markdown/src/grammar.json"},
+		{name: "xml", blobFunc: grammars.XmlLanguage, timeout: 60 * time.Second,
+			jsonPath: "/tmp/grammar_parity/xml/xml/src/grammar.json"},
+		{name: "scss", blobFunc: grammars.ScssLanguage, timeout: 60 * time.Second},
+		{name: "caddy", blobFunc: grammars.CaddyLanguage},
+
+		// Systems/tools scanner languages
+		{name: "cmake", blobFunc: grammars.CmakeLanguage},
+		{name: "erlang", blobFunc: grammars.ErlangLanguage, timeout: 90 * time.Second},
+		{name: "haskell", blobFunc: grammars.HaskellLanguage, timeout: 90 * time.Second},
+		{name: "nim", blobFunc: grammars.NimLanguage, timeout: 90 * time.Second},
+		{name: "julia", blobFunc: grammars.JuliaLanguage, timeout: 90 * time.Second},
+		{name: "gleam", blobFunc: grammars.GleamLanguage},
+		{name: "elm", blobFunc: grammars.ElmLanguage, timeout: 60 * time.Second},
+		{name: "d", blobFunc: grammars.DLanguage, timeout: 60 * time.Second},
+
+		// Niche scanner languages
+		{name: "fish", blobFunc: grammars.FishLanguage},
+		{name: "powershell", blobFunc: grammars.PowershellLanguage, timeout: 60 * time.Second},
+		{name: "racket", blobFunc: grammars.RacketLanguage},
+		{name: "jsonnet", blobFunc: grammars.JsonnetLanguage},
+		{name: "starlark", blobFunc: grammars.StarlarkLanguage},
+		{name: "nickel", blobFunc: grammars.NickelLanguage},
+		{name: "dhall", blobFunc: grammars.DhallLanguage},
+		{name: "fennel", blobFunc: grammars.FennelLanguage},
+		{name: "teal", blobFunc: grammars.TealLanguage},
+		{name: "cobol", blobFunc: grammars.CobolLanguage, timeout: 60 * time.Second},
+		{name: "crystal", blobFunc: grammars.CrystalLanguage, timeout: 90 * time.Second},
+		{name: "perl", blobFunc: grammars.PerlLanguage, timeout: 90 * time.Second},
 	}
 
 	for _, spec := range batch4 {
