@@ -338,8 +338,8 @@ func kotlinScanMultilineComment(lexer *gotreesitter.ExternalLexer) bool {
 // ---------------------------------------------------------------------------
 
 func kotlinScanAutoSemicolon(lexer *gotreesitter.ExternalLexer, validSymbols []bool) bool {
-	lexer.SetResultSymbol(kotlinSymAutoSemicolon)
 	lexer.MarkEnd()
+	lexer.SetResultSymbol(kotlinSymAutoSemicolon)
 
 	// Check for explicit semicolons and newlines.
 	sameLine := true

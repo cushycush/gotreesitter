@@ -27,16 +27,25 @@ func (YuckExternalScanner) Deserialize(payload any, buf []byte)   {}
 
 func (YuckExternalScanner) Scan(payload any, lexer *gotreesitter.ExternalLexer, validSymbols []bool) bool {
 	if yuckValid(validSymbols, yuckTokUnescapedDoubleQuote) {
-		lexer.SetResultSymbol(yuckSymUnescapedDoubleQuote)
-		return yuckScanStringFragment(lexer, '"')
+		if yuckScanStringFragment(lexer, '"') {
+			lexer.SetResultSymbol(yuckSymUnescapedDoubleQuote)
+			return true
+		}
+		return false
 	}
 	if yuckValid(validSymbols, yuckTokUnescapedSingleQuote) {
-		lexer.SetResultSymbol(yuckSymUnescapedSingleQuote)
-		return yuckScanStringFragment(lexer, '\'')
+		if yuckScanStringFragment(lexer, '\'') {
+			lexer.SetResultSymbol(yuckSymUnescapedSingleQuote)
+			return true
+		}
+		return false
 	}
 	if yuckValid(validSymbols, yuckTokUnescapedBacktick) {
-		lexer.SetResultSymbol(yuckSymUnescapedBacktick)
-		return yuckScanStringFragment(lexer, '`')
+		if yuckScanStringFragment(lexer, '`') {
+			lexer.SetResultSymbol(yuckSymUnescapedBacktick)
+			return true
+		}
+		return false
 	}
 	return false
 }

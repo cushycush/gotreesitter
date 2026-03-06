@@ -130,7 +130,6 @@ func scanElixir(lexer *gotreesitter.ExternalLexer, validSymbols []bool) bool {
 		}
 	case 'n':
 		if isElixirValid(validSymbols, elixirTokNotIn) {
-			lexer.SetResultSymbol(elixirSymNotIn)
 			lexer.Advance(false)
 			if lexer.Lookahead() == 'o' {
 				lexer.Advance(false)
@@ -143,7 +142,11 @@ func scanElixir(lexer *gotreesitter.ExternalLexer, validSymbols []bool) bool {
 						lexer.Advance(false)
 						if lexer.Lookahead() == 'n' {
 							lexer.Advance(false)
-							return isElixirTokenEnd(lexer.Lookahead())
+							if isElixirTokenEnd(lexer.Lookahead()) {
+								lexer.MarkEnd()
+								lexer.SetResultSymbol(elixirSymNotIn)
+								return true
+							}
 						}
 					}
 				}

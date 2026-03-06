@@ -341,8 +341,8 @@ func bshScanBareDollar(lexer *gotreesitter.ExternalLexer) bool {
 
 	if lexer.Lookahead() == '$' {
 		bshAdvance(lexer)
-		lexer.SetResultSymbol(bshSymBareDollar)
 		lexer.MarkEnd()
+		lexer.SetResultSymbol(bshSymBareDollar)
 		return bshIsSpace(lexer.Lookahead()) || lexer.Lookahead() == 0 || lexer.Lookahead() == '"'
 	}
 
@@ -354,7 +354,6 @@ func bshScanHeredocStart(heredoc *bshHeredoc, lexer *gotreesitter.ExternalLexer)
 		bshSkip(lexer)
 	}
 
-	lexer.SetResultSymbol(bshSymHeredocStart)
 	heredoc.isRaw = lexer.Lookahead() == '\'' || lexer.Lookahead() == '"' || lexer.Lookahead() == '\\'
 
 	unquoted, found := bshAdvanceWord(lexer)
@@ -363,6 +362,8 @@ func bshScanHeredocStart(heredoc *bshHeredoc, lexer *gotreesitter.ExternalLexer)
 		return false
 	}
 	heredoc.delimiter = unquoted
+	lexer.MarkEnd()
+	lexer.SetResultSymbol(bshSymHeredocStart)
 	return true
 }
 

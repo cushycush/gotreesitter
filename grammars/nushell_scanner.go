@@ -81,6 +81,7 @@ func (NushellExternalScanner) Scan(payload any, lexer *gotreesitter.ExternalLexe
 		if lexer.Lookahead() == '\'' {
 			lexer.Advance(false)
 			s.level = level
+			lexer.MarkEnd()
 			lexer.SetResultSymbol(nushellSymRawStringBegin)
 			return true
 		}
@@ -115,6 +116,7 @@ func (NushellExternalScanner) Scan(payload any, lexer *gotreesitter.ExternalLexe
 			remaining--
 		}
 		s.level = 0
+		lexer.MarkEnd()
 		lexer.SetResultSymbol(nushellSymRawStringEnd)
 		return true
 	}
