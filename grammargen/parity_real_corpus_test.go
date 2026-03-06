@@ -183,11 +183,7 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 				t.Fatalf("generate failed: %v", err)
 			}
 			refLang := g.blobFunc()
-			if shouldAdaptExternalScanner(g.name) {
-				if scanner, ok := gotreesitter.AdaptExternalScannerByExternalOrder(refLang, genLang); ok {
-					genLang.ExternalScanner = scanner
-				}
-			}
+			adaptExternalScanner(refLang, genLang)
 
 			genParser := gotreesitter.NewParser(genLang)
 			refParser := gotreesitter.NewParser(refLang)
