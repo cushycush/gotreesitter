@@ -1453,7 +1453,7 @@ func init() {
 		{name: "asm", blobFunc: grammars.AsmLanguage, expectNoErrors: 1, expectParity: 1},
 		{name: "glsl", blobFunc: grammars.GlslLanguage, timeout: 90 * time.Second, expectNoErrors: 1},
 		{name: "llvm", blobFunc: grammars.LlvmLanguage, expectNoErrors: 1, expectParity: 1},
-		{name: "wat", blobFunc: grammars.WatLanguage, expectGenerate: boolPtr(false),
+		{name: "wat", blobFunc: grammars.WatLanguage, timeout: 60 * time.Second, expectNoErrors: 1,
 			jsonPath: "/tmp/grammar_parity/wat/wat/src/grammar.json"},
 		{name: "linkerscript", blobFunc: grammars.LinkerscriptLanguage, expectNoErrors: 1, expectParity: 1},
 
@@ -1545,7 +1545,7 @@ func init() {
 		// Systems/tools scanner languages
 		{name: "cmake", blobFunc: grammars.CmakeLanguage, expectNoErrors: 1, expectParity: 1},
 		{name: "erlang", blobFunc: grammars.ErlangLanguage, timeout: 90 * time.Second, expectNoErrors: 1, expectParity: 1},
-		{name: "haskell", blobFunc: grammars.HaskellLanguage, timeout: 90 * time.Second, expectGenerate: boolPtr(false)},
+		{name: "haskell", blobFunc: grammars.HaskellLanguage, timeout: 90 * time.Second, expectNoErrors: 1},
 		{name: "nim", blobFunc: grammars.NimLanguage, timeout: 120 * time.Second, expectNoErrors: 1},
 		{name: "julia", blobFunc: grammars.JuliaLanguage, timeout: 90 * time.Second, expectNoErrors: 1},
 		{name: "gleam", blobFunc: grammars.GleamLanguage, expectNoErrors: 1, expectParity: 1},
@@ -1564,7 +1564,7 @@ func init() {
 		{name: "teal", blobFunc: grammars.TealLanguage, expectNoErrors: 1, expectParity: 1},
 		{name: "cobol", blobFunc: grammars.CobolLanguage, timeout: 60 * time.Second, expectNoErrors: 1, expectParity: 1},
 		{name: "crystal", blobFunc: grammars.CrystalLanguage, timeout: 90 * time.Second, expectNoErrors: 1, expectParity: 1},
-		{name: "perl", blobFunc: grammars.PerlLanguage, timeout: 90 * time.Second, expectGenerate: boolPtr(false)},
+		{name: "perl", blobFunc: grammars.PerlLanguage, timeout: 90 * time.Second, expectNoErrors: 1},
 
 		// ── Batch 6: remaining grammars (all have external scanners) ──
 		{name: "agda", blobFunc: grammars.AgdaLanguage, timeout: 60 * time.Second, expectNoErrors: 1},
@@ -1601,7 +1601,7 @@ func init() {
 		{name: "janet", blobFunc: grammars.JanetLanguage, expectNoErrors: 1, expectParity: 1},
 		{name: "just", blobFunc: grammars.JustLanguage, expectNoErrors: 1},
 		{name: "kconfig", blobFunc: grammars.KconfigLanguage, expectNoErrors: 1, expectParity: 1},
-		{name: "kdl", blobFunc: grammars.KdlLanguage, expectGenerate: boolPtr(false)},
+		{name: "kdl", blobFunc: grammars.KdlLanguage, expectNoErrors: 1},
 		{name: "less", blobFunc: grammars.LessLanguage, expectNoErrors: 1},
 		{name: "liquid", blobFunc: grammars.LiquidLanguage, expectNoErrors: 1, expectParity: 1},
 		{name: "luau", blobFunc: grammars.LuauLanguage, timeout: 60 * time.Second, expectNoErrors: 1},

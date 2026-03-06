@@ -141,9 +141,12 @@ func (p *regexParser) parseQuantified() (*regexNode, error) {
 		p.advance()
 		return &regexNode{kind: regexQuestion, children: []*regexNode{atom}}, nil
 	case '{':
+		saved := p.pos
 		min, max, err := p.parseCount()
 		if err != nil {
-			return nil, err
+			// Not a valid count (e.g. u{hex} in regex) — backtrack so { is parsed as literal
+			p.pos = saved
+			return atom, nil
 		}
 		return &regexNode{kind: regexCount, children: []*regexNode{atom}, count: min, countMax: max}, nil
 	}
@@ -419,12 +422,20 @@ func (p *regexParser) parseEscapeChar() (rune, error) {
 	}
 }
 
-// parseUnicodeProperty parses \p{PropertyName} or \P{PropertyName}.
+// parseUnicodeProperty parses \p{PropertyName}, \P{PropertyName}, or single-letter \pL.
 // Expects the 'p'/'P' to have already been consumed.
 func (p *regexParser) parseUnicodeProperty() ([]runeRange, error) {
 	r, ok := p.peek()
-	if !ok || r != '{' {
-		return nil, fmt.Errorf("expected '{' after \\p")
+	if !ok {
+		return nil, fmt.Errorf("expected property name after \\p")
+	}
+	// Single-letter shorthand: \pL, \pN, etc.
+	if r != '{' {
+		if unicode.IsLetter(r) {
+			p.advance()
+			return unicodePropertyRanges(string(r))
+		}
+		return nil, fmt.Errorf("expected '{' or letter after \\p, got %q", r)
 	}
 	p.advance() // consume '{'
 
@@ -517,10 +528,66 @@ func unicodePropertyRanges(name string) ([]runeRange, error) {
 		ranges = append(ranges, rangeTableToRuneRanges(unicode.Pc)...)
 		return ranges, nil
 	default:
+		// Check Go's unicode property/category/script tables
+		if t, ok := unicode.Properties[name]; ok {
+			return rangeTableToRuneRanges(t), nil
+		}
+		if t, ok := unicode.Categories[name]; ok {
+			return rangeTableToRuneRanges(t), nil
+		}
+		if t, ok := unicode.Scripts[name]; ok {
+			return rangeTableToRuneRanges(t), nil
+		}
+		// Manual approximations for properties not in Go's unicode package
+		switch name {
+		case "Emoji":
+			return emojiRanges(), nil
+		}
 		return nil, fmt.Errorf("unsupported Unicode property %q", name)
 	}
 
 	return rangeTableToRuneRanges(table), nil
+}
+
+// emojiRanges returns an approximate set of Unicode Emoji code point ranges.
+func emojiRanges() []runeRange {
+	return []runeRange{
+		{0x23, 0x23},       // #
+		{0x2A, 0x2A},       // *
+		{0x30, 0x39},       // 0-9
+		{0xA9, 0xA9},       // ©
+		{0xAE, 0xAE},       // ®
+		{0x200D, 0x200D},   // ZWJ
+		{0x203C, 0x203C},   // ‼
+		{0x2049, 0x2049},   // ⁉
+		{0x20E3, 0x20E3},   // combining enclosing keycap
+		{0x2122, 0x2122},   // ™
+		{0x2139, 0x2139},   // ℹ
+		{0x2194, 0x2199},   // ↔-↙
+		{0x21A9, 0x21AA},   // ↩↪
+		{0x231A, 0x231B},   // ⌚⌛
+		{0x2328, 0x2328},   // ⌨
+		{0x23CF, 0x23CF},   // ⏏
+		{0x23E9, 0x23F3},   // ⏩-⏳
+		{0x23F8, 0x23FA},   // ⏸-⏺
+		{0x24C2, 0x24C2},   // Ⓜ
+		{0x25AA, 0x25AB},   // ▪▫
+		{0x25B6, 0x25B6},   // ▶
+		{0x25C0, 0x25C0},   // ◀
+		{0x25FB, 0x25FE},   // ◻-◾
+		{0x2600, 0x27BF},   // misc symbols + dingbats
+		{0x2934, 0x2935},   // ⤴⤵
+		{0x2B05, 0x2B07},   // ⬅-⬇
+		{0x2B1B, 0x2B1C},   // ⬛⬜
+		{0x2B50, 0x2B50},   // ⭐
+		{0x2B55, 0x2B55},   // ⭕
+		{0x3030, 0x3030},   // 〰
+		{0x303D, 0x303D},   // 〽
+		{0x3297, 0x3297},   // ㊗
+		{0x3299, 0x3299},   // ㊙
+		{0xFE0F, 0xFE0F},   // variation selector-16
+		{0x1F000, 0x1FAFF}, // all major emoji blocks
+	}
 }
 
 // rangeTableToRuneRanges converts a unicode.RangeTable to runeRange slices.

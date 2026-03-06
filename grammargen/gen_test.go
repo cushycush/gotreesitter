@@ -1211,6 +1211,11 @@ func TestRegexParser(t *testing.T) {
 		{`[0-9a-fA-F]`, false},
 		{`[\"\\\/bfnrt]`, false},
 		{`\s`, false},
+		// Patterns that previously failed (regex feature gaps)
+		{`u{[0-9a-fA-F]+}`, false},                                  // wat: u{hex} literal braces
+		{`[\pL\p{Mn}\pN_']*`, false},                                // haskell: \pL shorthand
+		{`\p{White_Space}|\\\\\\r?\n`, false},                       // perl: White_Space property
+		{`[\p{L}\p{M}\p{N}\p{Emoji}]`, false},                      // kdl: Emoji property
 	}
 
 	for _, tt := range tests {
