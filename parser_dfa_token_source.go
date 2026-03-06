@@ -211,11 +211,35 @@ func (d *dfaTokenSource) nextDFAToken() Token {
 	return d.promoteKeyword(tok)
 }
 
-func (d *dfaTokenSource) nextScalaGLRDFAUnionToken() (Token, bool) {
+// nextGLRUnionDFAToken tries each unique GLR stack state's lex mode and
+// picks the DFA token that has valid parse actions in the most stacks.
+// This prevents the primary stack's lex mode from producing a token that's
+// wrong for other stacks, which would cause them to be killed prematurely.
+func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 	if d == nil || d.lexer == nil || d.language == nil || d.lookupActionIndex == nil {
 		return Token{}, false
 	}
-	if d.language.Name != "scala" || len(d.glrStates) <= 1 {
+	if len(d.glrStates) <= 1 {
+		return Token{}, false
+	}
+
+	// Check if all GLR states share the same lex mode — if so, no union needed.
+	primaryLexState := uint16(0)
+	if int(d.state) < len(d.language.LexModes) {
+		primaryLexState = d.language.LexModes[d.state].LexState
+	}
+	allSame := true
+	for _, st := range d.glrStates {
+		ls := uint16(0)
+		if int(st) < len(d.language.LexModes) {
+			ls = d.language.LexModes[st].LexState
+		}
+		if ls != primaryLexState {
+			allSame = false
+			break
+		}
+	}
+	if allSame {
 		return Token{}, false
 	}
 
@@ -230,17 +254,17 @@ func (d *dfaTokenSource) nextScalaGLRDFAUnionToken() (Token, bool) {
 	bestEndRow := startRow
 	bestEndCol := startCol
 
-	seen := make(map[StateID]struct{}, len(d.glrStates))
+	// Deduplicate lex states to avoid redundant scans.
+	seen := make(map[uint16]struct{}, len(d.glrStates))
 	for _, st := range d.glrStates {
-		if _, ok := seen[st]; ok {
-			continue
-		}
-		seen[st] = struct{}{}
-
 		lexState := uint16(0)
 		if int(st) < len(d.language.LexModes) {
 			lexState = d.language.LexModes[st].LexState
 		}
+		if _, ok := seen[lexState]; ok {
+			continue
+		}
+		seen[lexState] = struct{}{}
 
 		d.lexer.pos = startPos
 		d.lexer.row = startRow
@@ -833,8 +857,21 @@ func (d *dfaTokenSource) promoteKeyword(tok Token) Token {
 		return tok
 	}
 	if len(d.hasKeywordState) > 0 {
+		anyHasKeyword := false
 		state := int(d.state)
-		if state >= 0 && state < len(d.hasKeywordState) && !d.hasKeywordState[state] {
+		if state >= 0 && state < len(d.hasKeywordState) && d.hasKeywordState[state] {
+			anyHasKeyword = true
+		}
+		if !anyHasKeyword {
+			for _, st := range d.glrStates {
+				si := int(st)
+				if si >= 0 && si < len(d.hasKeywordState) && d.hasKeywordState[si] {
+					anyHasKeyword = true
+					break
+				}
+			}
+		}
+		if !anyHasKeyword {
 			return tok
 		}
 	}
@@ -883,15 +920,34 @@ func (d *dfaTokenSource) promoteKeyword(tok Token) Token {
 		}
 	}
 
-	// Context-aware promotion: only use the keyword symbol if the current
+	// Context-aware promotion: only use the keyword symbol if any active
 	// parser state has a valid action for it. This prevents contextual
 	// keywords like "get"/"set" from being promoted in positions where
 	// they should be treated as identifiers (e.g., obj.get(...)).
+	// When multiple GLR stacks exist, check ALL stack states — different
+	// forks may need different tokenizations, and demoting a keyword based
+	// only on the primary stack's state can kill the correct fork.
 	if d.lookupActionIndex != nil {
 		kwHasAction := d.lookupActionIndex(d.state, kwTok.Symbol) != 0
+		if !kwHasAction && len(d.glrStates) > 0 {
+			for _, st := range d.glrStates {
+				if d.lookupActionIndex(st, kwTok.Symbol) != 0 {
+					kwHasAction = true
+					break
+				}
+			}
+		}
 		idHasAction := d.lookupActionIndex(d.state, tok.Symbol) != 0
+		if !idHasAction && len(d.glrStates) > 0 {
+			for _, st := range d.glrStates {
+				if d.lookupActionIndex(st, tok.Symbol) != 0 {
+					idHasAction = true
+					break
+				}
+			}
+		}
 		if !kwHasAction && idHasAction {
-			return tok // parser expects identifier, not keyword
+			return tok // no active stack needs the keyword
 		}
 	}
 

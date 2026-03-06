@@ -21,13 +21,18 @@ func TestCppNamespaceDiag(t *testing.T) {
 		{"minimal_ns", "namespace foo { int x; }\n"},
 		{"nested_ns", "namespace a { namespace b { int x; } }\n"},
 		{"include_then_ns", "#include \"foo.h\"\nnamespace bar { int y; }\n"},
+		{"ref_return", "namespace a { int &foo(int x) { return x; } }\n"},
+		{"ref_param", "namespace a { void foo(const int &x) {} }\n"},
+		{"user_type_ref", "struct Foo {};\nnamespace a { Foo &bar() { static Foo f; return f; } }\n"},
+		{"scope_ref", "struct Foo { Foo &get(); };\nnamespace a { Foo &Foo::get() { return *this; } }\n"},
+		{"op_eq_ns", "struct R {};\nnamespace a { R &R::operator=(const R &o) { return *this; } }\n"},
 		{"real_file", ""}, // loaded from corpus
 	}
 
-	// Try to load the real file
+	// Try to load the real file (last entry in slice)
 	realPath := "/workspace/harness_out/corpus_real_205_noscala_bounded/cpp/medium__rule.cc"
 	if data, err := os.ReadFile(realPath); err == nil {
-		sources[3].src = string(data)
+		sources[len(sources)-1].src = string(data)
 	} else {
 		t.Logf("real file not available: %v", err)
 	}
@@ -51,7 +56,6 @@ func TestCppNamespaceDiag(t *testing.T) {
 			src := []byte(tc.src)
 
 			// Parse with Go
-
 			parser := gotreesitter.NewParser(goLang)
 
 			goTree, parseErr := parser.Parse(src)
