@@ -87,6 +87,12 @@ func buildLRTables(ng *NormalizedGrammar) (*LRTables, error) {
 		}
 	}
 
+	// Pre-allocate dot-0 index for fast closure lookups.
+	ctx.dot0Index = make([]int, len(ng.Productions))
+	for i := range ctx.dot0Index {
+		ctx.dot0Index[i] = -1
+	}
+
 	// Compute FIRST and nullable sets.
 	ctx.computeFirstSets()
 
@@ -211,6 +217,11 @@ type lrContext struct {
 	// Item set management
 	itemSets    []lrItemSet
 	transitions map[int]map[int]int
+
+	// Fast dot-0 lookup: prodIdx → cores slice index (-1 = absent).
+	// Allocated once, reused across closureToSet calls.
+	dot0Index []int
+	dot0Dirty []int // indices to reset between calls
 
 	// Nonterminal extra support
 	extraProdIndices []int
@@ -388,6 +399,12 @@ func (ctx *lrContext) closureToSet(kernel []coreEntry) lrItemSet {
 	ng := ctx.ng
 	tokenCount := ctx.tokenCount
 
+	// Reset dot0Index from previous call.
+	for _, pi := range ctx.dot0Dirty {
+		ctx.dot0Index[pi] = -1
+	}
+	ctx.dot0Dirty = ctx.dot0Dirty[:0]
+
 	// Build initial core index from kernel.
 	coreIdx := make(map[coreItem]int, len(kernel)*2)
 	cores := make([]coreEntry, 0, len(kernel)*2)
@@ -396,12 +413,18 @@ func (ctx *lrContext) closureToSet(kernel []coreEntry) lrItemSet {
 		if idx, ok := coreIdx[c]; ok {
 			cores[idx].lookaheads.unionWith(&ke.lookaheads)
 		} else {
-			coreIdx[c] = len(cores)
+			idx := len(cores)
+			coreIdx[c] = idx
 			cores = append(cores, coreEntry{
 				prodIdx:    ke.prodIdx,
 				dot:        ke.dot,
 				lookaheads: ke.lookaheads.clone(),
 			})
+			// Populate dot0Index for kernel items at dot=0.
+			if ke.dot == 0 {
+				ctx.dot0Index[ke.prodIdx] = idx
+				ctx.dot0Dirty = append(ctx.dot0Dirty, ke.prodIdx)
+			}
 		}
 	}
 
@@ -434,12 +457,15 @@ func (ctx *lrContext) closureToSet(kernel []coreEntry) lrItemSet {
 		br := ctx.getBetaFirst(ce.prodIdx, ce.dot)
 
 		for _, prodIdx := range ctx.prodsByLHS[nextSym] {
-			target := coreItem{prodIdx, 0}
-			tidx, exists := coreIdx[target]
+			// Fast path: dot=0 lookup via flat array.
+			tidx := ctx.dot0Index[prodIdx]
+			exists := tidx >= 0
 
 			if !exists {
 				tidx = len(cores)
-				coreIdx[target] = tidx
+				ctx.dot0Index[prodIdx] = tidx
+				ctx.dot0Dirty = append(ctx.dot0Dirty, prodIdx)
+				coreIdx[coreItem{prodIdx, 0}] = tidx
 				cores = append(cores, coreEntry{
 					prodIdx:    prodIdx,
 					dot:        0,
