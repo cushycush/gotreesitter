@@ -1437,7 +1437,7 @@ func init() {
 		{name: "zig", blobFunc: grammars.ZigLanguage, timeout: 60 * time.Second, expectNoErrors: 1},
 		{name: "swift", blobFunc: grammars.SwiftLanguage, timeout: 90 * time.Second, expectNoErrors: 1, expectParity: 1},
 		{name: "clojure", blobFunc: grammars.ClojureLanguage, expectNoErrors: 1},
-		{name: "groovy", blobFunc: grammars.GroovyLanguage, timeout: 60 * time.Second, expectGenerate: boolPtr(false)},
+		{name: "groovy", blobFunc: grammars.GroovyLanguage, timeout: 60 * time.Second, expectNoErrors: 1, expectParity: 1},
 		{name: "pascal", blobFunc: grammars.PascalLanguage, timeout: 60 * time.Second, expectNoErrors: 1},
 		{name: "prolog", blobFunc: grammars.PrologLanguage, expectNoErrors: 1, expectParity: 1},
 		{name: "solidity", blobFunc: grammars.SolidityLanguage, timeout: 60 * time.Second, expectNoErrors: 1, expectParity: 1},
@@ -1451,7 +1451,7 @@ func init() {
 
 		// Assembly / GPU / hardware
 		{name: "asm", blobFunc: grammars.AsmLanguage, expectNoErrors: 1, expectParity: 1},
-		{name: "glsl", blobFunc: grammars.GlslLanguage, timeout: 60 * time.Second, expectGenerate: boolPtr(false)},
+		{name: "glsl", blobFunc: grammars.GlslLanguage, timeout: 90 * time.Second, expectNoErrors: 1},
 		{name: "llvm", blobFunc: grammars.LlvmLanguage, expectNoErrors: 1, expectParity: 1},
 		{name: "wat", blobFunc: grammars.WatLanguage, expectImport: boolPtr(false),
 			jsonPath: "/tmp/grammar_parity/wat/wat/src/grammar.json"},
@@ -1516,7 +1516,7 @@ func init() {
 		// Popular scanner languages
 		{name: "bash", blobFunc: grammars.BashLanguage, timeout: 90 * time.Second, expectNoErrors: 1},
 		{name: "python", blobFunc: grammars.PythonLanguage, timeout: 90 * time.Second, expectNoErrors: 1},
-		{name: "ruby", blobFunc: grammars.RubyLanguage, timeout: 90 * time.Second, expectGenerate: boolPtr(false)},
+		{name: "ruby", blobFunc: grammars.RubyLanguage, timeout: 90 * time.Second, expectNoErrors: 1, expectParity: 1},
 		{name: "rust", blobFunc: grammars.RustLanguage, timeout: 90 * time.Second, expectNoErrors: 1, expectParity: 1},
 		{name: "cpp", blobFunc: grammars.CppLanguage, timeout: 120 * time.Second, expectGenerate: boolPtr(false)},
 		{name: "javascript", blobFunc: grammars.JavascriptLanguage, timeout: 90 * time.Second, expectImport: boolPtr(false)},
@@ -1529,7 +1529,7 @@ func init() {
 		{name: "php", blobFunc: grammars.PhpLanguage, timeout: 90 * time.Second, expectImport: boolPtr(false),
 			jsonPath: "/tmp/grammar_parity/php/php/src/grammar.json"},
 		{name: "elixir", blobFunc: grammars.ElixirLanguage, timeout: 90 * time.Second, expectNoErrors: 1, expectParity: 1},
-		{name: "c_sharp", blobFunc: grammars.CSharpLanguage, timeout: 90 * time.Second, expectGenerate: boolPtr(false)},
+		{name: "c_sharp", blobFunc: grammars.CSharpLanguage, timeout: 90 * time.Second, expectNoErrors: 1, expectParity: 1},
 		{name: "ocaml", blobFunc: grammars.OcamlLanguage, timeout: 90 * time.Second, expectImport: boolPtr(false),
 			jsonPath: "/tmp/grammar_parity/ocaml/grammars/ocaml/src/grammar.json"},
 
@@ -1546,8 +1546,8 @@ func init() {
 		{name: "cmake", blobFunc: grammars.CmakeLanguage, expectNoErrors: 1, expectParity: 1},
 		{name: "erlang", blobFunc: grammars.ErlangLanguage, timeout: 90 * time.Second, expectNoErrors: 1, expectParity: 1},
 		{name: "haskell", blobFunc: grammars.HaskellLanguage, timeout: 90 * time.Second, expectImport: boolPtr(false)},
-		{name: "nim", blobFunc: grammars.NimLanguage, timeout: 90 * time.Second, expectGenerate: boolPtr(false)},
-		{name: "julia", blobFunc: grammars.JuliaLanguage, timeout: 90 * time.Second, expectGenerate: boolPtr(false)},
+		{name: "nim", blobFunc: grammars.NimLanguage, timeout: 120 * time.Second, expectNoErrors: 1},
+		{name: "julia", blobFunc: grammars.JuliaLanguage, timeout: 90 * time.Second, expectNoErrors: 1},
 		{name: "gleam", blobFunc: grammars.GleamLanguage, expectNoErrors: 1, expectParity: 1},
 		{name: "elm", blobFunc: grammars.ElmLanguage, timeout: 60 * time.Second, expectNoErrors: 1},
 		{name: "d", blobFunc: grammars.DLanguage, timeout: 60 * time.Second, expectGenerate: boolPtr(false)},
@@ -1563,7 +1563,7 @@ func init() {
 		{name: "fennel", blobFunc: grammars.FennelLanguage, expectNoErrors: 1},
 		{name: "teal", blobFunc: grammars.TealLanguage, expectNoErrors: 1, expectParity: 1},
 		{name: "cobol", blobFunc: grammars.CobolLanguage, timeout: 60 * time.Second, expectNoErrors: 1, expectParity: 1},
-		{name: "crystal", blobFunc: grammars.CrystalLanguage, timeout: 90 * time.Second, expectGenerate: boolPtr(false)},
+		{name: "crystal", blobFunc: grammars.CrystalLanguage, timeout: 90 * time.Second, expectNoErrors: 1, expectParity: 1},
 		{name: "perl", blobFunc: grammars.PerlLanguage, timeout: 90 * time.Second, expectImport: boolPtr(false)},
 
 		// ── Batch 6: remaining grammars (all have external scanners) ──
