@@ -1411,6 +1411,121 @@ var importParityGrammars = []importParityGrammar{
 	},
 }
 
+// ── Batch 4: auto-generated entries for no-external-scanner grammars ──
+//
+// These are programmatically added from a compact spec. Samples come from
+// grammars.ParseSmokeSamples. Expectations start at 0 (conservative) and
+// should be bumped after the first successful run.
+
+func init() {
+	type grammarSpec struct {
+		name     string
+		jsonPath string // override if non-standard (default: /tmp/grammar_parity/{name}/src/grammar.json)
+		blobFunc func() *gotreesitter.Language
+		timeout  time.Duration // 0 = default 30s
+	}
+
+	batch4 := []grammarSpec{
+		// Popular languages
+		{name: "java", blobFunc: grammars.JavaLanguage, timeout: 90 * time.Second},
+		{name: "lua", blobFunc: grammars.LuaLanguage},
+		{name: "zig", blobFunc: grammars.ZigLanguage, timeout: 60 * time.Second},
+		{name: "swift", blobFunc: grammars.SwiftLanguage, timeout: 90 * time.Second},
+		{name: "clojure", blobFunc: grammars.ClojureLanguage},
+		{name: "groovy", blobFunc: grammars.GroovyLanguage, timeout: 60 * time.Second},
+		{name: "pascal", blobFunc: grammars.PascalLanguage, timeout: 60 * time.Second},
+		{name: "prolog", blobFunc: grammars.PrologLanguage},
+		{name: "solidity", blobFunc: grammars.SolidityLanguage, timeout: 60 * time.Second},
+		{name: "objc", blobFunc: grammars.ObjcLanguage, timeout: 60 * time.Second},
+		{name: "verilog", blobFunc: grammars.VerilogLanguage, timeout: 60 * time.Second},
+		{name: "ada", blobFunc: grammars.AdaLanguage, timeout: 60 * time.Second},
+		{name: "apex", blobFunc: grammars.ApexLanguage, timeout: 60 * time.Second,
+			jsonPath: "/tmp/grammar_parity/apex/apex/src/grammar.json"},
+		{name: "v", blobFunc: grammars.VLanguage, timeout: 60 * time.Second,
+			jsonPath: "/tmp/grammar_parity/v/tree_sitter_v/src/grammar.json"},
+
+		// Assembly / GPU / hardware
+		{name: "asm", blobFunc: grammars.AsmLanguage},
+		{name: "glsl", blobFunc: grammars.GlslLanguage, timeout: 60 * time.Second},
+		{name: "llvm", blobFunc: grammars.LlvmLanguage},
+		{name: "wat", blobFunc: grammars.WatLanguage,
+			jsonPath: "/tmp/grammar_parity/wat/wat/src/grammar.json"},
+		{name: "linkerscript", blobFunc: grammars.LinkerscriptLanguage},
+
+		// Functional / scripting
+		{name: "commonlisp", blobFunc: grammars.CommonlispLanguage},
+		{name: "elisp", blobFunc: grammars.ElispLanguage},
+		{name: "bass", blobFunc: grammars.BassLanguage},
+
+		// Web / templating
+		{name: "embedded_template", blobFunc: grammars.EmbeddedTemplateLanguage},
+		{name: "heex", blobFunc: grammars.HeexLanguage},
+		{name: "jinja2", blobFunc: grammars.Jinja2Language},
+		{name: "twig", blobFunc: grammars.TwigLanguage},
+
+		// Config / data formats
+		{name: "authzed", blobFunc: grammars.AuthzedLanguage},
+		{name: "bibtex", blobFunc: grammars.BibtexLanguage},
+		{name: "capnp", blobFunc: grammars.CapnpLanguage},
+		{name: "desktop", blobFunc: grammars.DesktopLanguage},
+		{name: "devicetree", blobFunc: grammars.DevicetreeLanguage},
+		{name: "ebnf", blobFunc: grammars.EbnfLanguage,
+			jsonPath: "/tmp/grammar_parity/ebnf/crates/tree-sitter-ebnf/src/grammar.json"},
+		{name: "facility", blobFunc: grammars.FacilityLanguage},
+		{name: "faust", blobFunc: grammars.FaustLanguage},
+		{name: "fidl", blobFunc: grammars.FidlLanguage},
+		{name: "http", blobFunc: grammars.HttpLanguage},
+		{name: "hurl", blobFunc: grammars.HurlLanguage},
+		{name: "hyprlang", blobFunc: grammars.HyprlangLanguage},
+		{name: "ledger", blobFunc: grammars.LedgerLanguage},
+		{name: "meson", blobFunc: grammars.MesonLanguage},
+		{name: "move", blobFunc: grammars.MoveLanguage},
+		{name: "ninja", blobFunc: grammars.NinjaLanguage},
+		{name: "prisma", blobFunc: grammars.PrismaLanguage},
+		{name: "puppet", blobFunc: grammars.PuppetLanguage},
+		{name: "ql", blobFunc: grammars.QlLanguage, timeout: 60 * time.Second},
+		{name: "rego", blobFunc: grammars.RegoLanguage},
+		{name: "robot", blobFunc: grammars.RobotLanguage},
+		{name: "smithy", blobFunc: grammars.SmithyLanguage},
+		{name: "sparql", blobFunc: grammars.SparqlLanguage},
+		{name: "thrift", blobFunc: grammars.ThriftLanguage},
+		{name: "tmux", blobFunc: grammars.TmuxLanguage},
+		{name: "turtle", blobFunc: grammars.TurtleLanguage},
+
+		// Niche / edge
+		{name: "brightscript", blobFunc: grammars.BrightscriptLanguage},
+		{name: "circom", blobFunc: grammars.CircomLanguage},
+		{name: "cylc", blobFunc: grammars.CylcLanguage},
+		{name: "hare", blobFunc: grammars.HareLanguage},
+
+		// Degraded grammars (lower expectations, still tracked)
+		{name: "chatito", blobFunc: grammars.ChatitoLanguage},
+		{name: "elsa", blobFunc: grammars.ElsaLanguage},
+		{name: "enforce", blobFunc: grammars.EnforceLanguage},
+		{name: "mermaid", blobFunc: grammars.MermaidLanguage},
+		{name: "vimdoc", blobFunc: grammars.VimdocLanguage},
+	}
+
+	for _, spec := range batch4 {
+		jsonPath := spec.jsonPath
+		if jsonPath == "" {
+			jsonPath = "/tmp/grammar_parity/" + spec.name + "/src/grammar.json"
+		}
+		sample := grammars.ParseSmokeSample(spec.name)
+		importParityGrammars = append(importParityGrammars, importParityGrammar{
+			name:           spec.name,
+			jsonPath:       jsonPath,
+			blobFunc:       spec.blobFunc,
+			samples:        []string{sample},
+			genTimeout:     spec.timeout,
+			expectImport:   true,
+			expectGenerate: true,
+			expectNoErrors: 0,
+			expectParity:   0,
+		})
+	}
+}
+
 // generateWithTimeout runs GenerateLanguage with a deadline. Returns nil, err
 // if the generation exceeds the timeout (e.g., LR table construction hangs).
 func generateWithTimeout(gram *Grammar, timeout time.Duration) (*gotreesitter.Language, error) {
