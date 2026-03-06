@@ -1544,6 +1544,62 @@ func adaptExternalScanner(refLang, genLang *gotreesitter.Language) {
 	}
 }
 
+// TestAdaptScannerForLanguageEndToEnd validates the single-function
+// grammars.AdaptScannerForLanguage API: import CSS grammar.json, generate a
+// Language, attach the existing CSS scanner via AdaptScannerForLanguage, and
+// parse real CSS code.
+func TestAdaptScannerForLanguageEndToEnd(t *testing.T) {
+	jsonPath := "/tmp/grammar_parity/css/src/grammar.json"
+	source, err := os.ReadFile(jsonPath)
+	if err != nil {
+		t.Skipf("CSS grammar.json not available (run TestMultiGrammarImportPipeline first): %v", err)
+	}
+
+	gram, err := ImportGrammarJSON(source)
+	if err != nil {
+		t.Fatalf("import CSS grammar.json: %v", err)
+	}
+	if len(gram.Externals) == 0 {
+		t.Fatal("CSS grammar should have external tokens")
+	}
+
+	genLang, err := generateWithTimeout(gram, 90*time.Second)
+	if err != nil {
+		t.Fatalf("generate CSS language: %v", err)
+	}
+	if len(genLang.ExternalSymbols) == 0 {
+		t.Fatal("generated CSS language should have ExternalSymbols")
+	}
+
+	// Use the single-function API to attach the scanner.
+	if !grammars.AdaptScannerForLanguage("css", genLang) {
+		t.Fatal("AdaptScannerForLanguage(css) returned false")
+	}
+	if genLang.ExternalScanner == nil {
+		t.Fatal("ExternalScanner should be set after AdaptScannerForLanguage")
+	}
+
+	// Parse CSS code and verify no errors.
+	samples := []string{
+		"body { color: red; }",
+		".class > p { margin: 0 10px; }",
+		"#id:hover { display: none; }",
+	}
+	parser := gotreesitter.NewParser(genLang)
+	for _, sample := range samples {
+		tree, _ := parser.Parse([]byte(sample))
+		if tree == nil {
+			t.Errorf("parse returned nil for %q", sample)
+			continue
+		}
+		root := tree.RootNode()
+		sexpr := root.SExpr(genLang)
+		if strings.Contains(sexpr, "ERROR") {
+			t.Errorf("parse has ERROR for %q: %s", sample, sexpr)
+		}
+	}
+}
+
 // ── Parity: Validate + Generate coherence ───────────────────────────────────
 
 func TestParityValidateBeforeGenerate(t *testing.T) {
