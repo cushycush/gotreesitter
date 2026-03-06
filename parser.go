@@ -178,6 +178,9 @@ func buildReduceFieldPresence(lang *Language) []bool {
 // minimum GLR stack cap needed to keep all fork paths alive.
 func computeMaxConflictWidth(lang *Language) int {
 	maxWidth := 1
+	if lang == nil {
+		return maxWidth
+	}
 	for i := range lang.ParseActions {
 		if n := len(lang.ParseActions[i].Actions); n > maxWidth {
 			maxWidth = n
@@ -792,7 +795,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		if stateful, ok := ts.(parserStateTokenSource); ok {
 			stateful.SetParserState(stacks[0].top().state)
 			if len(stacks) > 1 {
-				if p.language != nil && p.language.Name == "yaml" && p.language.ExternalScanner != nil {
+				if p.language != nil && (p.language.Name == "yaml" || p.language.Name == "scala") && p.language.ExternalScanner != nil {
 					// External scanners are stateful. Until scanner state is
 					// tracked per GLR stack, drive tokenization from the primary
 					// stack state only to avoid over-admitting tokens from state unions.
@@ -986,7 +989,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				// scanner state can diverge from C runtime behavior. Until
 				// per-stack scanner state is modeled, keep external-scanner
 				// parses deterministic at conflicts.
-				if deterministicExternalConflicts && p.language != nil && p.language.Name == "yaml" && p.language.ExternalScanner != nil {
+				if deterministicExternalConflicts && p.language != nil && (p.language.Name == "yaml" || p.language.Name == "scala") && p.language.ExternalScanner != nil {
 					chosen := actions[0]
 					for ai := 1; ai < len(actions); ai++ {
 						cand := actions[ai]

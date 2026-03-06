@@ -178,6 +178,9 @@ func (d *dfaTokenSource) Next() Token {
 		if d.language != nil && d.language.Name == "eex" && d.isEEXWhitespaceCode(tok) {
 			continue
 		}
+		if d.skipScalaCommentToken(tok) {
+			continue
+		}
 		if tok.Symbol != 0 && tok.EndByte <= tok.StartByte {
 			if d.zeroWidthPos == d.lexer.pos {
 				d.zeroWidthCount++
@@ -236,6 +239,69 @@ func (d *dfaTokenSource) Next() Token {
 			fmt.Printf("  %s tok %d %s %d %d %s state=%d\n", prefix, tok.Symbol, name, tok.StartByte, tok.EndByte, tok.Text, d.state)
 		}
 		return tok
+	}
+}
+
+func (d *dfaTokenSource) skipScalaCommentToken(tok Token) bool {
+	if d == nil || d.lexer == nil || d.language == nil || d.language.Name != "scala" || tok.Symbol == 0 {
+		return false
+	}
+	if int(tok.Symbol) < 0 || int(tok.Symbol) >= len(d.language.SymbolNames) {
+		return false
+	}
+	switch d.language.SymbolNames[tok.Symbol] {
+	case "_comment_token1":
+		d.consumeScalaLineCommentBody()
+		return true
+	case "_block_comment_token1":
+		d.consumeScalaBlockCommentBody()
+		return true
+	default:
+		return false
+	}
+}
+
+func (d *dfaTokenSource) consumeScalaLineCommentBody() {
+	if d == nil || d.lexer == nil {
+		return
+	}
+	source := d.lexer.source
+	for d.lexer.pos < len(source) {
+		b := source[d.lexer.pos]
+		if b == '\n' || b == '\r' {
+			return
+		}
+		d.lexer.skipOneRune()
+	}
+}
+
+func (d *dfaTokenSource) consumeScalaBlockCommentBody() {
+	if d == nil || d.lexer == nil {
+		return
+	}
+	source := d.lexer.source
+	depth := 1
+	for d.lexer.pos < len(source) {
+		if d.lexer.pos+1 < len(source) {
+			a := source[d.lexer.pos]
+			b := source[d.lexer.pos+1]
+			if a == '/' && b == '*' {
+				d.lexer.pos += 2
+				d.lexer.col += 2
+				depth++
+				continue
+			}
+			if a == '*' && b == '/' {
+				d.lexer.pos += 2
+				d.lexer.col += 2
+				depth--
+				if depth <= 0 {
+					return
+				}
+				continue
+			}
+		}
+		d.lexer.skipOneRune()
 	}
 }
 
@@ -1010,6 +1076,12 @@ func (d *dfaTokenSource) syntheticAutomaticSemicolon(sym Symbol) (Token, bool) {
 
 	// EOF insertion is always allowed when the grammar requests it.
 	if startPos >= len(source) {
+		// Scala's external scanner uses richer context than this synthetic
+		// fallback. Blind EOF semicolon insertion can over-produce zero-width
+		// semicolons and strand the parse in no-stack states.
+		if d.language != nil && d.language.Name == "scala" {
+			return Token{}, false
+		}
 		return Token{
 			Symbol:     sym,
 			StartByte:  uint32(startPos),
