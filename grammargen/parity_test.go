@@ -1488,11 +1488,7 @@ func TestMultiGrammarImportPipeline(t *testing.T) {
 
 			// Stage 3 + 4: Parse and compare
 			refLang := g.blobFunc()
-			if shouldAdaptExternalScanner(g.name) {
-				if scanner, ok := gotreesitter.AdaptExternalScannerByExternalOrder(refLang, genLang); ok {
-					genLang.ExternalScanner = scanner
-				}
-			}
+			adaptExternalScanner(refLang, genLang)
 			genParser := gotreesitter.NewParser(genLang)
 			refParser := gotreesitter.NewParser(refLang)
 
@@ -1539,12 +1535,12 @@ func TestMultiGrammarImportPipeline(t *testing.T) {
 		noErrorSamples, totalSamples, paritySamples, totalSamples)
 }
 
-func shouldAdaptExternalScanner(grammarName string) bool {
-	switch grammarName {
-	case "gitcommit", "hcl", "html", "nix":
-		return true
-	default:
-		return false
+func adaptExternalScanner(refLang, genLang *gotreesitter.Language) {
+	if refLang.ExternalScanner == nil || len(genLang.ExternalSymbols) == 0 {
+		return
+	}
+	if scanner, ok := gotreesitter.AdaptExternalScannerByExternalOrder(refLang, genLang); ok {
+		genLang.ExternalScanner = scanner
 	}
 }
 
