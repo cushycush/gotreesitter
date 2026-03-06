@@ -229,16 +229,19 @@ func (p *Parser) Parse(source []byte) (*Tree, error) {
 	}
 	lexer := NewLexer(p.language.LexStates, source)
 	ts := acquireDFATokenSource(lexer, p.language, p.lookupActionIndex, p.hasKeywordState)
-	tree := p.parseInternal(source, p.wrapIncludedRanges(ts), nil, nil, arenaClassFull, nil, 0, false)
+	deterministicExternalConflicts := p.language != nil &&
+		p.language.ExternalScanner != nil &&
+		(p.language.Name == "yaml" || p.language.Name == "scala")
+	tree := p.parseInternal(source, p.wrapIncludedRanges(ts), nil, nil, arenaClassFull, nil, 0, deterministicExternalConflicts)
 	if parseMaxGLRStacksValue() < fullParseRetryMaxGLRStacks && shouldRetryFullParse(tree) {
 		retryLexer := NewLexer(p.language.LexStates, source)
 		retryTS := acquireDFATokenSource(retryLexer, p.language, p.lookupActionIndex, p.hasKeywordState)
-		tree = p.parseInternal(source, p.wrapIncludedRanges(retryTS), nil, nil, arenaClassFull, nil, fullParseRetryMaxGLRStacks, false)
+		tree = p.parseInternal(source, p.wrapIncludedRanges(retryTS), nil, nil, arenaClassFull, nil, fullParseRetryMaxGLRStacks, deterministicExternalConflicts)
 	}
 	if p.language.ExternalScanner != nil && shouldRetryFullParse(tree) {
 		retryLexer := NewLexer(p.language.LexStates, source)
 		retryTS := acquireDFATokenSource(retryLexer, p.language, p.lookupActionIndex, p.hasKeywordState)
-		tree = p.parseInternal(source, p.wrapIncludedRanges(retryTS), nil, nil, arenaClassFull, nil, fullParseRetryMaxGLRStacks, true)
+		tree = p.parseInternal(source, p.wrapIncludedRanges(retryTS), nil, nil, arenaClassFull, nil, fullParseRetryMaxGLRStacks, deterministicExternalConflicts)
 	}
 	return tree, nil
 }
@@ -250,17 +253,20 @@ func (p *Parser) ParseWithTokenSource(source []byte, ts TokenSource) (*Tree, err
 	if err := p.checkLanguageCompatible(); err != nil {
 		return nil, err
 	}
-	tree := p.parseInternal(source, p.wrapIncludedRanges(ts), nil, nil, arenaClassFull, nil, 0, false)
+	deterministicExternalConflicts := p.language != nil &&
+		p.language.ExternalScanner != nil &&
+		(p.language.Name == "yaml" || p.language.Name == "scala")
+	tree := p.parseInternal(source, p.wrapIncludedRanges(ts), nil, nil, arenaClassFull, nil, 0, deterministicExternalConflicts)
 	if parseMaxGLRStacksValue() < fullParseRetryMaxGLRStacks && shouldRetryFullParse(tree) {
 		if resettable, ok := ts.(resettableTokenSource); ok {
 			resettable.Reset(source)
-			tree = p.parseInternal(source, p.wrapIncludedRanges(ts), nil, nil, arenaClassFull, nil, fullParseRetryMaxGLRStacks, false)
+			tree = p.parseInternal(source, p.wrapIncludedRanges(ts), nil, nil, arenaClassFull, nil, fullParseRetryMaxGLRStacks, deterministicExternalConflicts)
 		}
 	}
 	if p.language.ExternalScanner != nil && shouldRetryFullParse(tree) {
 		if resettable, ok := ts.(resettableTokenSource); ok {
 			resettable.Reset(source)
-			tree = p.parseInternal(source, p.wrapIncludedRanges(ts), nil, nil, arenaClassFull, nil, fullParseRetryMaxGLRStacks, true)
+			tree = p.parseInternal(source, p.wrapIncludedRanges(ts), nil, nil, arenaClassFull, nil, fullParseRetryMaxGLRStacks, deterministicExternalConflicts)
 		}
 	}
 	return tree, nil

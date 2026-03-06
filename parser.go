@@ -793,7 +793,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				// scanner state can diverge from C runtime behavior. Until
 				// per-stack scanner state is modeled, keep external-scanner
 				// parses deterministic at conflicts.
-				if deterministicExternalConflicts && p.language != nil && p.language.Name == "yaml" && p.language.ExternalScanner != nil {
+				if deterministicExternalConflicts && p.language != nil && (p.language.Name == "yaml" || p.language.Name == "scala") && p.language.ExternalScanner != nil {
 					chosen := actions[0]
 					for ai := 1; ai < len(actions); ai++ {
 						cand := actions[ai]
