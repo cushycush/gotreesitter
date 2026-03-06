@@ -1428,7 +1428,7 @@ func init() {
 		expectNoErrors int
 		expectParity   int
 	}
-	boolPtr := func(b bool) *bool { return &b }
+
 
 	batch4 := []grammarSpec{
 		// Popular languages
@@ -1441,7 +1441,7 @@ func init() {
 		{name: "pascal", blobFunc: grammars.PascalLanguage, timeout: 60 * time.Second, expectNoErrors: 1},
 		{name: "prolog", blobFunc: grammars.PrologLanguage, expectNoErrors: 1, expectParity: 1},
 		{name: "solidity", blobFunc: grammars.SolidityLanguage, timeout: 60 * time.Second, expectNoErrors: 1, expectParity: 1},
-		{name: "objc", blobFunc: grammars.ObjcLanguage, timeout: 60 * time.Second, expectGenerate: boolPtr(false)},
+		{name: "objc", blobFunc: grammars.ObjcLanguage, timeout: 300 * time.Second, expectNoErrors: 1},
 		{name: "verilog", blobFunc: grammars.VerilogLanguage, timeout: 60 * time.Second, expectNoErrors: 1, expectParity: 1},
 		{name: "ada", blobFunc: grammars.AdaLanguage, timeout: 60 * time.Second, expectNoErrors: 1},
 		{name: "apex", blobFunc: grammars.ApexLanguage, timeout: 60 * time.Second, expectNoErrors: 1,
@@ -1550,7 +1550,7 @@ func init() {
 		{name: "julia", blobFunc: grammars.JuliaLanguage, timeout: 90 * time.Second, expectNoErrors: 1},
 		{name: "gleam", blobFunc: grammars.GleamLanguage, expectNoErrors: 1, expectParity: 1},
 		{name: "elm", blobFunc: grammars.ElmLanguage, timeout: 60 * time.Second, expectNoErrors: 1},
-		{name: "d", blobFunc: grammars.DLanguage, timeout: 60 * time.Second, expectGenerate: boolPtr(false)},
+		{name: "d", blobFunc: grammars.DLanguage, timeout: 300 * time.Second, expectNoErrors: 1},
 
 		// Niche scanner languages
 		{name: "fish", blobFunc: grammars.FishLanguage, expectNoErrors: 1, expectParity: 1},
@@ -1569,7 +1569,7 @@ func init() {
 		// ── Batch 6: remaining grammars (all have external scanners) ──
 		{name: "agda", blobFunc: grammars.AgdaLanguage, timeout: 60 * time.Second, expectNoErrors: 1},
 		{name: "angular", blobFunc: grammars.AngularLanguage, timeout: 60 * time.Second, expectNoErrors: 1, expectParity: 1},
-		{name: "arduino", blobFunc: grammars.ArduinoLanguage, timeout: 60 * time.Second, expectGenerate: boolPtr(false)},
+		{name: "arduino", blobFunc: grammars.ArduinoLanguage, timeout: 300 * time.Second, expectNoErrors: 1},
 		{name: "astro", blobFunc: grammars.AstroLanguage, timeout: 60 * time.Second, expectNoErrors: 1},
 		{name: "awk", blobFunc: grammars.AwkLanguage, timeout: 60 * time.Second, expectNoErrors: 1, expectParity: 1},
 		{name: "beancount", blobFunc: grammars.BeancountLanguage, expectNoErrors: 1, expectParity: 1},
@@ -1578,7 +1578,7 @@ func init() {
 		{name: "blade", blobFunc: grammars.BladeLanguage, timeout: 60 * time.Second, expectNoErrors: 1},
 		{name: "cairo", blobFunc: grammars.CairoLanguage, timeout: 60 * time.Second, expectNoErrors: 1, expectParity: 1},
 		{name: "cooklang", blobFunc: grammars.CooklangLanguage, expectNoErrors: 1, expectParity: 1},
-		{name: "cuda", blobFunc: grammars.CudaLanguage, timeout: 60 * time.Second, expectGenerate: boolPtr(false)},
+		{name: "cuda", blobFunc: grammars.CudaLanguage, timeout: 300 * time.Second, expectNoErrors: 1},
 		{name: "cue", blobFunc: grammars.CueLanguage, expectNoErrors: 1, expectParity: 1},
 		{name: "disassembly", blobFunc: grammars.DisassemblyLanguage, expectNoErrors: 1, expectParity: 1},
 		{name: "djot", blobFunc: grammars.DjotLanguage, expectNoErrors: 1, expectParity: 1},
@@ -1597,7 +1597,7 @@ func init() {
 		{name: "godot_resource", blobFunc: grammars.GodotResourceLanguage, expectNoErrors: 1, expectParity: 1},
 		{name: "hack", blobFunc: grammars.HackLanguage, timeout: 90 * time.Second, expectNoErrors: 1, expectParity: 1},
 		{name: "haxe", blobFunc: grammars.HaxeLanguage, timeout: 60 * time.Second, expectNoErrors: 1},
-		{name: "hlsl", blobFunc: grammars.HlslLanguage, timeout: 60 * time.Second, expectGenerate: boolPtr(false)},
+		{name: "hlsl", blobFunc: grammars.HlslLanguage, timeout: 300 * time.Second, expectNoErrors: 1},
 		{name: "janet", blobFunc: grammars.JanetLanguage, expectNoErrors: 1, expectParity: 1},
 		{name: "just", blobFunc: grammars.JustLanguage, expectNoErrors: 1},
 		{name: "kconfig", blobFunc: grammars.KconfigLanguage, expectNoErrors: 1, expectParity: 1},

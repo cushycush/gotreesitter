@@ -96,8 +96,14 @@ func buildLRTables(ng *NormalizedGrammar) (*LRTables, error) {
 	// Compute FIRST and nullable sets.
 	ctx.computeFirstSets()
 
-	// Build LR(1) item sets (canonical collection).
-	itemSets := ctx.buildItemSets()
+	// Build item sets. Use DeRemer/Pennello LALR for large grammars (>400 productions)
+	// which would otherwise be slow with the iterative LR(1) construction.
+	var itemSets []lrItemSet
+	if len(ng.Productions) > 400 {
+		itemSets = ctx.buildItemSetsLALR()
+	} else {
+		itemSets = ctx.buildItemSets()
+	}
 
 	// Build action and goto tables.
 	tables := &LRTables{
