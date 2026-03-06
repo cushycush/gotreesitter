@@ -319,6 +319,16 @@ func (c *jsonConverter) convertRule(data json.RawMessage) (*Rule, error) {
 		}
 		return Alias(child, val, node.Named), nil
 
+	case "RESERVED":
+		// RESERVED wraps a rule with context-dependent keyword reservation.
+		// We unwrap it — the structural grammar encodes the context, and our
+		// runtime parser handles keyword promotion separately.
+		child, err := c.convertRule(node.Content)
+		if err != nil {
+			return nil, fmt.Errorf("RESERVED: %w", err)
+		}
+		return child, nil
+
 	default:
 		return nil, fmt.Errorf("unsupported rule type %q", node.Type)
 	}
