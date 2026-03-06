@@ -2,7 +2,6 @@ package grammargen
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 )
 
@@ -611,49 +610,31 @@ func (ctx *lrContext) getBetaFirst(prodIdx, dot int) *betaResult {
 	return result
 }
 
+// mixCoreItem hashes a (prodIdx, dot) pair into a well-distributed uint64.
+func mixCoreItem(p, d int) uint64 {
+	x := uint64(p)*0x9e3779b97f4a7c15 + uint64(d)*0x517cc1b727220a95
+	x ^= x >> 33
+	x *= 0xff51afd7ed558ccd
+	x ^= x >> 33
+	return x
+}
+
 // computeHashes computes coreHash, fullHash, and reduceLAHash for the item set.
+// Uses commutative (additive) hashing so order of cores doesn't matter,
+// avoiding the need to sort.
 func (set *lrItemSet) computeHashes(prods []Production) {
-	const prime = uint64(0x100000001b3)
-
-	// Core hash: hash of sorted (prodIdx, dot) pairs.
-	type ci struct{ p, d int }
-	sorted := make([]ci, len(set.cores))
-	for i, c := range set.cores {
-		sorted[i] = ci{c.prodIdx, c.dot}
-	}
-	sort.Slice(sorted, func(i, j int) bool {
-		if sorted[i].p != sorted[j].p {
-			return sorted[i].p < sorted[j].p
-		}
-		return sorted[i].d < sorted[j].d
-	})
-
-	h := uint64(0xcbf29ce484222325)
-	for _, c := range sorted {
-		h ^= uint64(c.p)
-		h *= prime
-		h ^= uint64(c.d)
-		h *= prime
-	}
-	set.coreHash = h
-
-	// Full hash: core hash combined with all lookahead hashes.
-	fh := set.coreHash
+	var ch, fh, rh uint64
 	for _, c := range set.cores {
-		fh ^= c.lookaheads.hash()
-		fh *= prime
-	}
-	set.fullHash = fh
-
-	// Reduce-LA hash: hash of only reduce-item lookaheads.
-	rh := set.coreHash
-	for _, c := range set.cores {
+		m := mixCoreItem(c.prodIdx, c.dot)
+		ch += m
+		fh += m ^ c.lookaheads.hash()
 		if c.dot >= len(prods[c.prodIdx].RHS) {
-			rh ^= c.lookaheads.hash()
-			rh *= prime
+			rh += c.lookaheads.hash()
 		}
 	}
-	set.reduceLAHash = rh
+	set.coreHash = ch
+	set.fullHash = fh
+	set.reduceLAHash = ch + rh
 }
 
 // sameCores returns true if two item sets have identical core items.
