@@ -195,7 +195,7 @@ func deduplicateCaptures(caps []highlightCapture) []highlightCapture {
 
 // runHighlightParity runs highlight capture comparison for a single language.
 // Returns (goOnlyCount, cMissingCount).
-func runHighlightParity(t *testing.T, tc parityCase) (goOnlyCount, cMissingCount int) {
+func runHighlightParityForSource(t *testing.T, tc parityCase, src []byte) (goOnlyCount, cMissingCount int) {
 	t.Helper()
 
 	entry, ok := parityEntriesByName[tc.name]
@@ -206,8 +206,6 @@ func runHighlightParity(t *testing.T, tc parityCase) (goOnlyCount, cMissingCount
 	if queryStr == "" {
 		t.Skipf("no highlight query for %q", tc.name)
 	}
-
-	src := normalizedSource(tc.name, tc.source)
 
 	// --- Go side ---
 	goTree, goLang, err := parseWithGo(tc, src, nil)
@@ -267,10 +265,20 @@ func runHighlightParity(t *testing.T, tc parityCase) (goOnlyCount, cMissingCount
 	return len(onlyGo), len(onlyC)
 }
 
+// runHighlightParity runs highlight capture comparison for a single language's
+// canonical smoke sample source.
+func runHighlightParity(t *testing.T, tc parityCase) (goOnlyCount, cMissingCount int) {
+	t.Helper()
+	return runHighlightParityForSource(t, tc, normalizedSource(tc.name, tc.source))
+}
+
 // TestParityHighlight is the merge-blocking highlight parity test for
 // curated languages. Failures here block CI.
 func TestParityHighlight(t *testing.T) {
 	for _, tc := range parityCases {
+		if parityLanguageExcluded(tc.name) {
+			continue
+		}
 		if !curatedHighlightLanguages[tc.name] {
 			continue
 		}
@@ -321,6 +329,9 @@ func highlightThresholdsForLanguage(name string) (goOnly, cMissing int) {
 // regressions (worse than recorded) fail; improvements are logged.
 func TestParityHighlightAllGrammars(t *testing.T) {
 	for _, tc := range parityCases {
+		if parityLanguageExcluded(tc.name) {
+			continue
+		}
 		if curatedHighlightLanguages[tc.name] {
 			continue // tested by TestParityHighlight
 		}

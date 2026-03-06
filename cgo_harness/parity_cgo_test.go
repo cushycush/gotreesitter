@@ -164,6 +164,33 @@ var parityIgnoreKnownSkips = func() bool {
 	}
 }()
 
+var parityExcludedLanguages = func() map[string]struct{} {
+	raw := strings.TrimSpace(os.Getenv("GTS_PARITY_SKIP_LANGS"))
+	if raw == "" {
+		return nil
+	}
+	out := map[string]struct{}{}
+	for _, part := range strings.Split(raw, ",") {
+		name := strings.TrimSpace(part)
+		if name == "" {
+			continue
+		}
+		out[name] = struct{}{}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}()
+
+func parityLanguageExcluded(name string) bool {
+	if len(parityExcludedLanguages) == 0 {
+		return false
+	}
+	_, ok := parityExcludedLanguages[name]
+	return ok
+}
+
 func paritySkipReason(name string) string {
 	if parityIgnoreKnownSkips {
 		return ""
@@ -635,6 +662,9 @@ func incrementalEditCandidates(src []byte) []incrementalEditCandidate {
 // on the currently CI-gated language set.
 func TestParityFreshParse(t *testing.T) {
 	for _, tc := range parityCases {
+		if parityLanguageExcluded(tc.name) {
+			continue
+		}
 		if !curatedStructuralLanguages[tc.name] {
 			continue
 		}
@@ -652,6 +682,9 @@ func TestParityFreshParse(t *testing.T) {
 // matches a CGo fresh parse on edited source.
 func TestParityIncrementalParse(t *testing.T) {
 	for _, tc := range parityCases {
+		if parityLanguageExcluded(tc.name) {
+			continue
+		}
 		if !curatedStructuralLanguages[tc.name] {
 			continue
 		}
@@ -814,6 +847,9 @@ func TestParityIncrementalParse(t *testing.T) {
 // do not produce error nodes.
 func TestParityHasNoErrors(t *testing.T) {
 	for _, tc := range parityCases {
+		if parityLanguageExcluded(tc.name) {
+			continue
+		}
 		if !curatedStructuralLanguages[tc.name] {
 			continue
 		}
