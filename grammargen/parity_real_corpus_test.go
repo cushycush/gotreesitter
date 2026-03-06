@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -31,7 +32,7 @@ const (
 	realCorpusRatchetRebaseEnv  = "GTS_GRAMMARGEN_REAL_CORPUS_RATCHET_REBASE"
 	realCorpusFloorsPathEnv     = "GTS_GRAMMARGEN_REAL_CORPUS_FLOORS_PATH"
 	realCorpusAllowPartialEnv   = "GTS_GRAMMARGEN_REAL_CORPUS_ALLOW_PARTIAL"
-	realCorpusFloorsFileVersion = 2
+	realCorpusFloorsFileVersion = 3
 	maxRealCorpusWalkFiles      = 6000
 )
 
@@ -43,13 +44,19 @@ type realCorpusMetrics struct {
 }
 
 type realCorpusFloorFile struct {
-	Version     int                          `json:"version"`
-	GeneratedAt string                       `json:"generated_at"`
-	CorpusRoot  string                       `json:"corpus_root"`
-	Profile     string                       `json:"profile"`
-	MaxCases    int                          `json:"max_cases"`
-	MaxSampleB  int                          `json:"max_sample_bytes"`
-	Metrics     map[string]realCorpusMetrics `json:"metrics"`
+	Version       int                          `json:"version"`
+	GeneratedAt   string                       `json:"generated_at"`
+	CommitSHA     string                       `json:"commit_sha,omitempty"`
+	CorpusRoot    string                       `json:"corpus_root"`
+	Profile       string                       `json:"profile"`
+	MaxCases      int                          `json:"max_cases"`
+	MaxSampleB    int                          `json:"max_sample_bytes"`
+	GrammarCount  int                          `json:"grammar_count"`
+	TotalEligible int                          `json:"total_eligible"`
+	TotalNoError  int                          `json:"total_no_error"`
+	TotalSExpr    int                          `json:"total_sexpr_parity"`
+	TotalDeep     int                          `json:"total_deep_parity"`
+	Metrics       map[string]realCorpusMetrics `json:"metrics"`
 }
 
 type realCorpusProfile string
@@ -315,10 +322,16 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 		}
 		floorFile.Version = realCorpusFloorsFileVersion
 		floorFile.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
+		floorFile.CommitSHA = gitHeadShortSHA(12)
 		floorFile.CorpusRoot = root
 		floorFile.Profile = string(profile)
 		floorFile.MaxCases = maxCases
 		floorFile.MaxSampleB = maxSampleBytes
+		floorFile.GrammarCount = testedGrammars
+		floorFile.TotalEligible = totalEligible
+		floorFile.TotalNoError = totalNoError
+		floorFile.TotalSExpr = totalSExprParity
+		floorFile.TotalDeep = totalDeepParity
 		if err := writeRealCorpusFloorFile(floorsPath, floorFile); err != nil {
 			t.Fatalf("write floor file %s: %v", floorsPath, err)
 		}
@@ -470,6 +483,17 @@ func writeRealCorpusFloorFile(path string, f realCorpusFloorFile) error {
 	}
 	data = append(data, '\n')
 	return os.WriteFile(path, data, 0o644)
+}
+
+func gitHeadShortSHA(n int) string {
+	if n <= 0 {
+		n = 12
+	}
+	out, err := exec.Command("git", "rev-parse", "--short="+strconv.Itoa(n), "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func parityGrammarRepoRoot(g importParityGrammar, root string) string {

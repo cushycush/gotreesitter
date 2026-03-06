@@ -240,7 +240,21 @@ func (p *Parser) canFinalizeNoActionEOF(s *glrStack) bool {
 		return true
 	}
 	if p != nil && p.hasRootSymbol {
-		return true
+		// Preserve permissive EOF wrapping for embedded blob grammars, whose
+		// language ABI version is typically unspecified (0). Generated
+		// grammargen languages use a concrete ABI version and benefit from the
+		// stricter checks below.
+		if p.language != nil && (p.language.LanguageVersion == 0 || p.language.Name == "requirements" || p.language.Name == "jsdoc") {
+			return true
+		}
+		if top.node.symbol == p.rootSymbol {
+			return true
+		}
+		// Conservative fallback: allow wrapping a lone nonterminal at EOF.
+		if s.depth() == 1 && p.language != nil && uint32(top.node.symbol) >= p.language.TokenCount {
+			return true
+		}
+		return false
 	}
 	if p != nil && p.language != nil && uint32(top.node.symbol) >= p.language.TokenCount {
 		return true
