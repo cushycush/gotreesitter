@@ -28,11 +28,12 @@ type CTokenSource struct {
 	characterSymbol     gotreesitter.Symbol
 	primitiveTypeSymbol gotreesitter.Symbol
 	systemLibStringSym  gotreesitter.Symbol
+	preprocParamLParen  gotreesitter.Symbol
 	preprocEndSymbol    gotreesitter.Symbol // preproc_include_token2: line terminator for preprocessor directives
 	preprocArgSymbol    gotreesitter.Symbol
 
 	// Preprocessor state tracking
-	preprocState int // 0=normal, 1=afterDirective, 2=afterName (expect arg), 3=afterInclude
+	preprocState int // 0=normal, 1=afterDirective, 2=afterDefine, 3=afterDefineName, 4=afterDefineParams, 5=afterName, 6=afterInclude
 
 	keywordSymbols map[string]gotreesitter.Symbol
 	literalSymbols map[string]gotreesitter.Symbol
@@ -55,6 +56,9 @@ var cLexerTablesCache sync.Map // map[*gotreesitter.Language]*cLexerTables
 const (
 	cPreprocNormal = iota
 	cPreprocAfterDirective
+	cPreprocAfterDefine
+	cPreprocAfterDefineName
+	cPreprocAfterDefineParams
 	cPreprocAfterName
 	cPreprocAfterInclude
 )
@@ -96,6 +100,9 @@ func NewCTokenSource(src []byte, lang *gotreesitter.Language) (*CTokenSource, er
 	ts.systemLibStringSym = tl.optional("system_lib_string")
 	ts.preprocEndSymbol = tl.optional("preproc_include_token2")
 	ts.preprocArgSymbol = tl.optional("preproc_arg")
+	if syms := lang.TokenSymbolsByName("("); len(syms) > 0 {
+		ts.preprocParamLParen = syms[0]
+	}
 
 	if ts.eofSymbol, _ = lang.SymbolByName("end"); ts.eofSymbol == 0 {
 		ts.eofSymbol = 0
@@ -160,6 +167,13 @@ func (ts *CTokenSource) Next() gotreesitter.Token {
 				return tok
 			}
 		}
+		if ts.preprocState == cPreprocAfterDefineName {
+			if !ts.cur.eof() && ts.cur.peekByte() == '(' {
+				ts.preprocState = cPreprocAfterDefineParams
+			} else {
+				ts.preprocState = cPreprocAfterName
+			}
+		}
 
 		// In preprocessor "expect arg" state: scan rest of line as preproc_arg
 		if ts.preprocState == cPreprocAfterName && ts.preprocArgSymbol != 0 {
@@ -184,16 +198,27 @@ func (ts *CTokenSource) Next() gotreesitter.Token {
 		if isCIdentStart(b) {
 			tok := ts.identifierOrKeywordToken()
 			// After directive keyword, next identifier is the macro name
-			if ts.preprocState == cPreprocAfterDirective {
+			switch ts.preprocState {
+			case cPreprocAfterDirective:
 				ts.preprocState = cPreprocAfterName
+			case cPreprocAfterDefine:
+				ts.preprocState = cPreprocAfterDefineName
 			}
 			return tok
 		}
 		if isASCIIDigit(b) {
 			return ts.numberToken()
 		}
+		if ts.preprocState == cPreprocAfterDefineParams && ts.cur.peekByte() == '(' && ts.preprocParamLParen != 0 {
+			start := ts.cur.offset
+			startPt := ts.cur.point()
+			ts.cur.advanceByte()
+			tok := makeToken(ts.preprocParamLParen, ts.src, start, ts.cur.offset, startPt, ts.cur.point())
+			ts.updatePreprocStateForLiteral(tok.Text)
+			return tok
+		}
 		if tok, ok := ts.literalToken(); ok {
-			ts.preprocState = ts.nextPreprocState(tok.Text)
+			ts.updatePreprocStateForLiteral(tok.Text)
 			return tok
 		}
 
@@ -607,6 +632,28 @@ func (ts *CTokenSource) preprocEndToken() gotreesitter.Token {
 // preprocArgToken scans the rest of the line (until \n) as a preproc_arg token.
 func (ts *CTokenSource) preprocArgToken() (gotreesitter.Token, bool) {
 	ts.cur.skipSpacesAndTabs()
+	for !ts.cur.eof() && ts.cur.peekByte() == '\\' {
+		next := ts.cur.offset + 1
+		if next >= len(ts.src) {
+			break
+		}
+		if ts.src[next] == '\r' {
+			if next+1 >= len(ts.src) || ts.src[next+1] != '\n' {
+				break
+			}
+			ts.cur.advanceByte()
+			ts.cur.advanceByte()
+			ts.cur.advanceByte()
+			ts.cur.skipSpacesAndTabs()
+			continue
+		}
+		if ts.src[next] != '\n' {
+			break
+		}
+		ts.cur.advanceByte()
+		ts.cur.advanceByte()
+		ts.cur.skipSpacesAndTabs()
+	}
 	if ts.cur.eof() || ts.cur.peekByte() == '\n' {
 		return gotreesitter.Token{}, false
 	}
@@ -664,14 +711,21 @@ func (ts *CTokenSource) systemLibStringToken() (gotreesitter.Token, bool) {
 // preproc_include_token2. Conditional directives (#ifdef, #ifndef, #if,
 // #elif, #else, #endif) handle newlines through lex mode switching and
 // must NOT receive an explicit \n token.
-func (ts *CTokenSource) nextPreprocState(text string) int {
+func (ts *CTokenSource) updatePreprocStateForLiteral(text string) {
+	if ts.preprocState == cPreprocAfterDefineParams {
+		if text == ")" {
+			ts.preprocState = cPreprocAfterName
+		}
+		return
+	}
+
 	switch text {
 	case "#include":
-		return cPreprocAfterInclude
-	case "#define", "#pragma", "#undef", "#error", "#warning":
-		return cPreprocAfterDirective
-	default:
-		return cPreprocNormal
+		ts.preprocState = cPreprocAfterInclude
+	case "#define":
+		ts.preprocState = cPreprocAfterDefine
+	case "#pragma", "#undef", "#error", "#warning":
+		ts.preprocState = cPreprocAfterDirective
 	}
 }
 
