@@ -269,6 +269,19 @@ if [[ "\$OFFLINE_MODE" != "1" ]]; then
   clone_repo haskell https://github.com/tree-sitter/tree-sitter-haskell.git || true
   clone_repo yaml https://github.com/tree-sitter-grammars/tree-sitter-yaml.git || true
   clone_repo markdown https://github.com/tree-sitter-grammars/tree-sitter-markdown.git || true
+
+  # Batch 4: no-external-scanner grammars with corpus test data
+  clone_repo requirements https://github.com/tree-sitter-grammars/tree-sitter-requirements.git || true
+  clone_repo gitcommit_gbprod https://github.com/gbprod/tree-sitter-gitcommit.git || true
+  clone_repo git_rebase https://github.com/the-mikedavis/tree-sitter-git-rebase.git || true
+  clone_repo gitattributes https://github.com/tree-sitter-grammars/tree-sitter-gitattributes.git || true
+  clone_repo git_config https://github.com/the-mikedavis/tree-sitter-git-config.git || true
+  clone_repo ssh_config https://github.com/tree-sitter-grammars/tree-sitter-ssh-config.git || true
+  clone_repo todotxt https://github.com/arnarg/tree-sitter-todotxt.git || true
+  clone_repo pem https://github.com/ObserverOfTime/tree-sitter-pem.git || true
+  clone_repo gomod https://github.com/camdencheek/tree-sitter-go-mod.git || true
+  clone_repo eex https://github.com/connorlay/tree-sitter-eex.git || true
+  clone_repo cpon https://github.com/amaanq/tree-sitter-cpon.git || true
 fi
 
 if ! find /tmp/grammar_parity -mindepth 1 -maxdepth 1 -type d | grep -q .; then
