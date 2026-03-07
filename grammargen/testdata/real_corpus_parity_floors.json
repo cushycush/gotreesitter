@@ -10,7 +10,7 @@
   "total_eligible": 729,
   "total_no_error": 729,
   "total_sexpr_parity": 391,
-  "total_deep_parity": 386,
+  "total_deep_parity": 388,
   "metrics": {
     "bash": {
       "eligible": 25,
@@ -244,7 +244,7 @@
       "eligible": 3,
       "no_error": 3,
       "sexpr_parity": 3,
-      "deep_parity": 1
+      "deep_parity": 3
     },
     "proto": {
       "eligible": 8,
