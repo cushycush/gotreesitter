@@ -225,6 +225,11 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 
 	// Phase 1b: Collect inline patterns (regex nodes inside non-terminal rules
 	// that are NOT wrapped in token()). These become anonymous terminal symbols.
+	// Unlike string literals (which are Visible=true), inline patterns are
+	// Visible=false to match tree-sitter C behavior: pattern alternatives inside
+	// nonterminal rules (e.g. core: choice(/DUP/i, /DROP/i, ...)) produce
+	// invisible child tokens. The parent nonterminal thus has 0 visible children,
+	// matching the reference parser's child count.
 	inlinePatterns := collectInlinePatterns(g)
 	for _, pat := range inlinePatterns {
 		name := pat // use pattern value as key for lookup
@@ -233,7 +238,7 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 		}
 		st.addSymbol(name, SymbolInfo{
 			Name:    name,
-			Visible: true,
+			Visible: false,
 			Named:   false,
 			Kind:    SymbolTerminal,
 		})
