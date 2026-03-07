@@ -927,7 +927,7 @@ func TestBuildReduceChildrenHiddenChildDoesNotDuplicateExistingField(t *testing.
 	rhs := newLeafNodeInArena(arena, 3, true, 3, 4, Point{Row: 0, Column: 3}, Point{Row: 0, Column: 4})
 	hidden := newParentNodeInArena(arena, 1, false, []*Node{operator, rhs}, []FieldID{1, 0}, 0)
 
-	children, fieldIDs := parser.buildReduceChildren([]stackEntry{{node: hidden}}, 0, 1, 1, 0, arena)
+	children, fieldIDs := parser.buildReduceChildren([]stackEntry{{node: hidden}}, 0, 1, 1, 0, 1, arena)
 	if got, want := len(children), 2; got != want {
 		t.Fatalf("len(children) = %d, want %d", got, want)
 	}
@@ -939,6 +939,110 @@ func TestBuildReduceChildrenHiddenChildDoesNotDuplicateExistingField(t *testing.
 	}
 	if got := fieldIDs[1]; got != 0 {
 		t.Fatalf("fieldIDs[1] = %d, want 0", got)
+	}
+}
+
+func TestBuildReduceChildrenHiddenParentKeepsInheritedFieldOnVisibleChild(t *testing.T) {
+	lang := &Language{
+		SymbolNames: []string{"EOF", "_hidden", "identifier"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF", Visible: false, Named: false},
+			{Name: "_hidden", Visible: false, Named: false},
+			{Name: "identifier", Visible: true, Named: true},
+		},
+		FieldNames: []string{"", "redirect"},
+		FieldMapSlices: [][2]uint16{
+			{0, 1},
+		},
+		FieldMapEntries: []FieldMapEntry{
+			{FieldID: 1, ChildIndex: 0, Inherited: true},
+		},
+	}
+
+	parser := NewParser(lang)
+	arena := newNodeArena(arenaClassFull)
+	child := newLeafNodeInArena(arena, 2, true, 0, 1, Point{Row: 0, Column: 0}, Point{Row: 0, Column: 1})
+
+	children, fieldIDs := parser.buildReduceChildren([]stackEntry{{node: child}}, 0, 1, 1, 0, 1, arena)
+	if got, want := len(children), 1; got != want {
+		t.Fatalf("len(children) = %d, want %d", got, want)
+	}
+	if got, want := len(fieldIDs), 1; got != want {
+		t.Fatalf("len(fieldIDs) = %d, want %d", got, want)
+	}
+	if got, want := fieldIDs[0], FieldID(1); got != want {
+		t.Fatalf("fieldIDs[0] = %d, want %d", got, want)
+	}
+}
+
+func TestBuildReduceChildrenVisibleParentKeepsInheritedFieldOnVisibleChild(t *testing.T) {
+	lang := &Language{
+		SymbolNames: []string{"EOF", "redirected_statement", "file_redirect"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF", Visible: false, Named: false},
+			{Name: "redirected_statement", Visible: true, Named: true},
+			{Name: "file_redirect", Visible: true, Named: true},
+		},
+		FieldNames: []string{"", "redirect"},
+		FieldMapSlices: [][2]uint16{
+			{0, 1},
+		},
+		FieldMapEntries: []FieldMapEntry{
+			{FieldID: 1, ChildIndex: 0, Inherited: true},
+		},
+	}
+
+	parser := NewParser(lang)
+	arena := newNodeArena(arenaClassFull)
+	child := newLeafNodeInArena(arena, 2, true, 0, 1, Point{Row: 0, Column: 0}, Point{Row: 0, Column: 1})
+
+	children, fieldIDs := parser.buildReduceChildren([]stackEntry{{node: child}}, 0, 1, 1, 0, 1, arena)
+	if got, want := len(children), 1; got != want {
+		t.Fatalf("len(children) = %d, want %d", got, want)
+	}
+	if got, want := len(fieldIDs), 1; got != want {
+		t.Fatalf("len(fieldIDs) = %d, want %d", got, want)
+	}
+	if got, want := fieldIDs[0], FieldID(1); got != want {
+		t.Fatalf("fieldIDs[0] = %d, want %d", got, want)
+	}
+}
+
+func TestBuildReduceChildrenHiddenRepeatExtendsInheritedFieldAcrossSameNamedChildren(t *testing.T) {
+	lang := &Language{
+		SymbolNames: []string{"EOF", "_hidden", "file_redirect"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF", Visible: false, Named: false},
+			{Name: "_hidden", Visible: false, Named: false},
+			{Name: "file_redirect", Visible: true, Named: true},
+		},
+		FieldNames: []string{"", "redirect"},
+		FieldMapSlices: [][2]uint16{
+			{0, 1},
+		},
+		FieldMapEntries: []FieldMapEntry{
+			{FieldID: 1, ChildIndex: 0, Inherited: false},
+		},
+	}
+
+	parser := NewParser(lang)
+	arena := newNodeArena(arenaClassFull)
+	first := newLeafNodeInArena(arena, 2, true, 0, 1, Point{Row: 0, Column: 0}, Point{Row: 0, Column: 1})
+	second := newLeafNodeInArena(arena, 2, true, 2, 3, Point{Row: 0, Column: 2}, Point{Row: 0, Column: 3})
+	hidden := newParentNodeInArena(arena, 1, false, []*Node{first, second}, []FieldID{0, 0}, 0)
+
+	children, fieldIDs := parser.buildReduceChildren([]stackEntry{{node: hidden}}, 0, 1, 1, 0, 1, arena)
+	if got, want := len(children), 2; got != want {
+		t.Fatalf("len(children) = %d, want %d", got, want)
+	}
+	if got, want := len(fieldIDs), 2; got != want {
+		t.Fatalf("len(fieldIDs) = %d, want %d", got, want)
+	}
+	if got, want := fieldIDs[0], FieldID(1); got != want {
+		t.Fatalf("fieldIDs[0] = %d, want %d", got, want)
+	}
+	if got, want := fieldIDs[1], FieldID(1); got != want {
+		t.Fatalf("fieldIDs[1] = %d, want %d", got, want)
 	}
 }
 

@@ -252,7 +252,7 @@ func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, tok Toke
 		reducedEnd--
 	}
 
-	children, fieldIDs := p.buildReduceChildren(windowEntries, 0, reducedEnd, childCount, act.ProductionID, arena)
+	children, fieldIDs := p.buildReduceChildren(windowEntries, 0, reducedEnd, childCount, act.ProductionID, act.Symbol, arena)
 
 	targetDepth := s.depth() - actualEnd
 	if targetDepth < 0 || !s.truncate(targetDepth) {
@@ -506,7 +506,7 @@ func isNonSpanExtendingInvisibleSymbol(sym Symbol, symbolNames []string) bool {
 	}
 }
 
-func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCount int, productionID uint16, arena *nodeArena) ([]*Node, []FieldID) {
+func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCount int, productionID uint16, _ Symbol, arena *nodeArena) ([]*Node, []FieldID) {
 	lang := p.language
 	symbolMeta := lang.SymbolMetadata
 
@@ -580,9 +580,7 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 		if visible {
 			children[out] = n
 			if fieldIDs != nil {
-				if !inherited {
-					fieldIDs[out] = fid
-				}
+				fieldIDs[out] = fid
 			}
 			out++
 			continue
@@ -611,24 +609,97 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 				}
 			}
 			// Apply the parent's inherited field assignment to the
-			// first named inlined child that has no field yet, but
-			// only if inlining did not already surface that same
-			// field on one of the copied children.
+			// inlined named children when appropriate. Hidden repeat
+			// nodes like Bash redirected_statement tails can surface
+			// multiple visible children that all inherit the same
+			// field, but mixed hidden nodes (for example operator +
+			// rhs) should not spray that field onto unrelated children.
 			if fid != 0 {
-				alreadyAssigned := false
+				assignedToUnnamed := false
+				var assignedNamedSymbol Symbol
+				assignedNamedCount := 0
+				namedCount := 0
+				lastNamedIndex := -1
+				hadDirectFieldedChild := false
 				for j := out; j < fieldEnd; j++ {
-					if fieldIDs[j] == fid {
-						alreadyAssigned = true
+					child := children[j]
+					if child != nil && child.isNamed {
+						namedCount++
+						lastNamedIndex = j
+					}
+					if fieldIDs[j] != fid || children[j] == nil {
+						continue
+					}
+					hadDirectFieldedChild = true
+					if !children[j].isNamed {
+						assignedToUnnamed = true
 						break
 					}
+					if assignedNamedCount == 0 {
+						assignedNamedSymbol = children[j].symbol
+					}
+					assignedNamedCount++
 				}
-				for j := out; !alreadyAssigned && j < fieldEnd; j++ {
-					if fieldIDs[j] == 0 && children[j] != nil && children[j].isNamed {
-						if inherited && nodeHasDirectFieldID(children[j], fid) {
+				if !assignedToUnnamed {
+					hasUnnamedBetweenNamed := false
+					if lastNamedIndex >= out {
+						for j := out; j < lastNamedIndex; j++ {
+							child := children[j]
+							if child != nil && !child.isNamed {
+								hasUnnamedBetweenNamed = true
+								break
+							}
+						}
+					}
+					assignAllNamed := assignedNamedCount == 0 && namedCount > 1 && !hasUnnamedBetweenNamed &&
+						inheritedFieldAllowsMixedNamedRepeat(lang, fid)
+					extendTrailingAfterSingleNamed := assignedNamedCount == 0 && namedCount == 1 && !hasUnnamedBetweenNamed
+					allowSingleNamedLift := inheritedFieldAllowsSingleNamedLift(lang, fid)
+					for j := out; j < fieldEnd; j++ {
+						child := children[j]
+						if fieldIDs[j] != 0 || child == nil || !child.isNamed {
+							continue
+						}
+						if assignedNamedCount == 0 && !assignAllNamed && !allowSingleNamedLift {
+							break
+						}
+						if inherited && nodeHasDirectFieldID(child, fid) {
+							continue
+						}
+						if assignedNamedCount > 0 && child.symbol != assignedNamedSymbol {
 							continue
 						}
 						fieldIDs[j] = fid
-						break
+						if assignedNamedCount == 0 && !assignAllNamed {
+							break
+						}
+					}
+					if hadDirectFieldedChild || extendTrailingAfterSingleNamed {
+						lastFielded := -1
+						for j := out; j < fieldEnd; j++ {
+							if fieldIDs[j] == fid {
+								lastFielded = j
+							}
+						}
+						if lastFielded >= out {
+							hasNamedAfter := false
+							for j := lastFielded + 1; j < fieldEnd; j++ {
+								child := children[j]
+								if child != nil && child.isNamed {
+									hasNamedAfter = true
+									break
+								}
+							}
+							if !hasNamedAfter {
+								for j := lastFielded + 1; j < fieldEnd; j++ {
+									child := children[j]
+									if child == nil || child.isNamed || fieldIDs[j] != 0 {
+										break
+									}
+									fieldIDs[j] = fid
+								}
+							}
+						}
 					}
 				}
 			}
@@ -642,6 +713,38 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 		}
 	}
 	return children, fieldIDs
+}
+
+func inheritedFieldAllowsMixedNamedRepeat(lang *Language, fid FieldID) bool {
+	if lang == nil {
+		return false
+	}
+	idx := int(fid)
+	if idx < 0 || idx >= len(lang.FieldNames) {
+		return false
+	}
+	switch lang.FieldNames[idx] {
+	case "redirect", "value":
+		return true
+	default:
+		return false
+	}
+}
+
+func inheritedFieldAllowsSingleNamedLift(lang *Language, fid FieldID) bool {
+	if lang == nil {
+		return true
+	}
+	idx := int(fid)
+	if idx < 0 || idx >= len(lang.FieldNames) {
+		return true
+	}
+	switch lang.FieldNames[idx] {
+	case "operator":
+		return false
+	default:
+		return true
+	}
 }
 
 func nodeHasDirectFieldID(n *Node, fid FieldID) bool {
@@ -665,7 +768,7 @@ func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, tok Token, anyR
 		return
 	}
 
-	children, fieldIDs := p.buildReduceChildren(entries, window.start, window.reducedEnd, childCount, act.ProductionID, arena)
+	children, fieldIDs := p.buildReduceChildren(entries, window.start, window.reducedEnd, childCount, act.ProductionID, act.Symbol, arena)
 
 	trailingStart := window.reducedEnd
 	trailingEnd := window.actualEnd

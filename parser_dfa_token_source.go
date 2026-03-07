@@ -38,6 +38,7 @@ type dfaTokenSource struct {
 
 const maxConsecutiveZeroWidthTokens = 4
 const maxConsecutiveZeroWidthTokensExternal = 128
+const externalScannerStateBufSize = 4096
 
 var dfaTokenSourcePool = sync.Pool{
 	New: func() any {
@@ -118,7 +119,7 @@ func (d *dfaTokenSource) Next() Token {
 		if extTok, ok := d.nextExternalToken(); ok {
 			tok = extTok
 			tokenFromExternal = true
-		} else if d.language != nil && d.language.Name == "cpp" {
+		} else if d.language != nil && (d.language.Name == "cpp" || d.language.Name == "bash") {
 			if unionTok, ok := d.nextGLRUnionDFAToken(); ok {
 				tok = unionTok
 			} else {
@@ -317,6 +318,9 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 			candTok.StartByte < bestTok.StartByte ||
 			(candTok.StartByte == bestTok.StartByte && originActionCount > bestOriginActions) ||
 			(candTok.StartByte == bestTok.StartByte && originActionCount == bestOriginActions && score > bestScore) ||
+			(candTok.StartByte == bestTok.StartByte && originActionCount == bestOriginActions && score == bestScore &&
+				d.language != nil && d.language.Name == "bash" &&
+				dfaTokenSpecificity(d.language, candTok.Symbol) > dfaTokenSpecificity(d.language, bestTok.Symbol)) ||
 			(candTok.StartByte == bestTok.StartByte && originActionCount == bestOriginActions && score == bestScore && candTok.EndByte > bestTok.EndByte) ||
 			(candTok.StartByte == bestTok.StartByte && originActionCount == bestOriginActions && score == bestScore && candTok.EndByte == bestTok.EndByte && candEndPos > bestEndPos)
 		if better {
@@ -341,6 +345,24 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 	d.lexer.row = bestEndRow
 	d.lexer.col = bestEndCol
 	return bestTok, true
+}
+
+func dfaTokenSpecificity(lang *Language, sym Symbol) int {
+	if lang == nil || int(sym) < 0 || int(sym) >= len(lang.SymbolNames) {
+		return 0
+	}
+	name := lang.SymbolNames[sym]
+	switch name {
+	case "", "word", "identifier", "_special_character", "string_content":
+		return 0
+	}
+	if name[0] == '_' {
+		return 1
+	}
+	if len(name) == 1 {
+		return 3
+	}
+	return 2
 }
 
 func (d *dfaTokenSource) hasAnyActionForSymbol(sym Symbol) bool {
@@ -433,6 +455,9 @@ func (d *dfaTokenSource) nextExternalToken() (Token, bool) {
 	if len(states) == 0 {
 		states = []StateID{d.state}
 	}
+	if tok, ok := d.nextGLRScoredExternalToken(states); ok {
+		return tok, true
+	}
 
 	if len(d.language.ExternalLexStates) > 0 {
 		// Use the precise external lex states table (matches C tree-sitter's
@@ -524,6 +549,165 @@ func (d *dfaTokenSource) nextExternalToken() (Token, bool) {
 	d.lexer.row = tok.EndPoint.Row
 	d.lexer.col = tok.EndPoint.Column
 	return tok, true
+}
+
+func (d *dfaTokenSource) nextGLRScoredExternalToken(states []StateID) (Token, bool) {
+	if d == nil || d.language == nil || d.language.ExternalScanner == nil || d.lookupActionIndex == nil {
+		return Token{}, false
+	}
+	if len(states) <= 1 || len(d.language.ExternalLexStates) == 0 {
+		return Token{}, false
+	}
+
+	primaryELS := -1
+	if int(d.state) < len(d.language.LexModes) {
+		primaryELS = int(d.language.LexModes[d.state].ExternalLexState)
+	}
+
+	elsOrder := make([]int, 0, len(states))
+	seen := make(map[int]struct{}, len(states))
+	addELS := func(st StateID) {
+		if int(st) >= len(d.language.LexModes) {
+			return
+		}
+		elsID := int(d.language.LexModes[st].ExternalLexState)
+		if elsID < 0 || elsID >= len(d.language.ExternalLexStates) {
+			return
+		}
+		if _, ok := seen[elsID]; ok {
+			return
+		}
+		seen[elsID] = struct{}{}
+		elsOrder = append(elsOrder, elsID)
+	}
+	addELS(d.state)
+	for _, st := range states {
+		addELS(st)
+	}
+	if len(elsOrder) <= 1 {
+		return Token{}, false
+	}
+
+	startPos := d.lexer.pos
+	startRow := d.lexer.row
+	startCol := d.lexer.col
+	basePayload := d.snapshotExternalPayload()
+
+	bestFound := false
+	bestELS := -1
+	bestTok := Token{}
+	bestEndPos := startPos
+	bestEndRow := startRow
+	bestEndCol := startCol
+	bestSupport := -1
+	bestPrimaryHasAction := false
+	bestOriginActions := 0
+
+	for _, elsID := range elsOrder {
+		d.restoreExternalPayload(basePayload)
+		el := newExternalLexer(d.lexer.source, startPos, startRow, startCol)
+		if !RunExternalScanner(d.language, d.externalPayload, el, d.language.ExternalLexStates[elsID]) {
+			continue
+		}
+		tok, ok := el.token()
+		if !ok {
+			continue
+		}
+
+		support := 0
+		originActions := 0
+		primaryHasAction := d.lookupActionIndex(d.state, tok.Symbol) != 0
+		for _, st := range states {
+			idx := d.lookupActionIndex(st, tok.Symbol)
+			if idx == 0 {
+				continue
+			}
+			support++
+			if int(st) < len(d.language.LexModes) && int(d.language.LexModes[st].ExternalLexState) == elsID &&
+				int(idx) < len(d.language.ParseActions) {
+				if n := len(d.language.ParseActions[idx].Actions); n > originActions {
+					originActions = n
+				}
+			}
+		}
+		if support == 0 {
+			continue
+		}
+
+		candEndPos := int(tok.EndByte)
+		candEndRow := tok.EndPoint.Row
+		candEndCol := tok.EndPoint.Column
+		better := !bestFound ||
+			support > bestSupport ||
+			(support == bestSupport && primaryHasAction && !bestPrimaryHasAction) ||
+			(support == bestSupport && primaryHasAction == bestPrimaryHasAction && originActions > bestOriginActions) ||
+			(support == bestSupport && primaryHasAction == bestPrimaryHasAction && originActions == bestOriginActions &&
+				primaryELS == elsID && primaryELS != bestELS) ||
+			(support == bestSupport && primaryHasAction == bestPrimaryHasAction && originActions == bestOriginActions &&
+				primaryELS == bestELS && d.language != nil && d.language.Name == "bash" &&
+				dfaTokenSpecificity(d.language, tok.Symbol) > dfaTokenSpecificity(d.language, bestTok.Symbol)) ||
+			(support == bestSupport && primaryHasAction == bestPrimaryHasAction && originActions == bestOriginActions &&
+				primaryELS == bestELS && tok.StartByte < bestTok.StartByte) ||
+			(support == bestSupport && primaryHasAction == bestPrimaryHasAction && originActions == bestOriginActions &&
+				primaryELS == bestELS && tok.StartByte == bestTok.StartByte && tok.EndByte > bestTok.EndByte) ||
+			(support == bestSupport && primaryHasAction == bestPrimaryHasAction && originActions == bestOriginActions &&
+				primaryELS == bestELS && tok.StartByte == bestTok.StartByte && tok.EndByte == bestTok.EndByte &&
+				(candEndPos > bestEndPos || candEndRow > bestEndRow || (candEndRow == bestEndRow && candEndCol > bestEndCol)))
+		if !better {
+			continue
+		}
+
+		bestFound = true
+		bestELS = elsID
+		bestTok = tok
+		bestEndPos = candEndPos
+		bestEndRow = candEndRow
+		bestEndCol = candEndCol
+		bestSupport = support
+		bestPrimaryHasAction = primaryHasAction
+		bestOriginActions = originActions
+	}
+
+	d.restoreExternalPayload(basePayload)
+	if !bestFound {
+		return Token{}, false
+	}
+
+	el := newExternalLexer(d.lexer.source, startPos, startRow, startCol)
+	if !RunExternalScanner(d.language, d.externalPayload, el, d.language.ExternalLexStates[bestELS]) {
+		d.restoreExternalPayload(basePayload)
+		return Token{}, false
+	}
+	tok, ok := el.token()
+	if !ok {
+		d.restoreExternalPayload(basePayload)
+		return Token{}, false
+	}
+
+	d.trackZeroWidthExternalToken(tok)
+	d.lexer.pos = int(tok.EndByte)
+	d.lexer.row = tok.EndPoint.Row
+	d.lexer.col = tok.EndPoint.Column
+	return tok, true
+}
+
+func (d *dfaTokenSource) snapshotExternalPayload() []byte {
+	if d == nil || d.language == nil || d.language.ExternalScanner == nil || d.externalPayload == nil {
+		return nil
+	}
+	buf := make([]byte, externalScannerStateBufSize)
+	n := d.language.ExternalScanner.Serialize(d.externalPayload, buf)
+	if n <= 0 {
+		return nil
+	}
+	return append([]byte(nil), buf[:n]...)
+}
+
+func (d *dfaTokenSource) restoreExternalPayload(state []byte) {
+	if d == nil || d.language == nil || d.language.ExternalScanner == nil || d.externalPayload == nil {
+		return
+	}
+	d.language.ExternalScanner.Deserialize(d.externalPayload, state)
 }
 
 func (d *dfaTokenSource) trackZeroWidthExternalToken(tok Token) {

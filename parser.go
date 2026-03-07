@@ -516,6 +516,14 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 	if mergePerKeyCap > maxStacksPerMergeKeyCeiling {
 		mergePerKeyCap = maxStacksPerMergeKeyCeiling
 	}
+	if reuse == nil && p.language != nil && p.language.Name == "bash" {
+		if maxStacks < 128 {
+			maxStacks = 128
+		}
+		if mergePerKeyCap < 96 {
+			mergePerKeyCap = 96
+		}
+	}
 	if reuse != nil {
 		// Incremental reparses benefit from tighter GLR retention because
 		// edits are localized and we prioritize latency over broad ambiguity fanout.

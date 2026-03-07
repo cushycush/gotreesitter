@@ -19,6 +19,9 @@ type Token struct {
 	EndByte    uint32
 	StartPoint Point
 	EndPoint   Point
+	// NoLookahead marks a synthetic EOF used to force EOF-table reductions
+	// without consuming input, matching tree-sitter's lex_state = -1.
+	NoLookahead bool
 }
 
 func bytesToStringNoCopy(b []byte) string {
