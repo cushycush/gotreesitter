@@ -85,3 +85,36 @@ func TestParseFilePythonNestedMethodDedentsReturnToModule(t *testing.T) {
 		t.Fatalf("root named child 2 type = %q, want %q", got, want)
 	}
 }
+
+func TestPythonImportFromTrailingCommaDoesNotCarryNameField(t *testing.T) {
+	lang := PythonLanguage()
+	parser := gotreesitter.NewParser(lang)
+
+	src := []byte("from sys import (path, argv,)\n")
+	tree, err := parser.Parse(src)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	root := tree.RootNode()
+	if root == nil {
+		t.Fatal("parse returned nil root")
+	}
+	if root.HasError() {
+		t.Fatalf("expected error-free Python parse tree, got %s", root.SExpr(lang))
+	}
+
+	stmt := root.NamedChild(0)
+	if stmt == nil || stmt.Type(lang) != "import_from_statement" {
+		t.Fatalf("expected import_from_statement, got %s", root.SExpr(lang))
+	}
+
+	for i := 0; i < stmt.ChildCount(); i++ {
+		child := stmt.Child(i)
+		if child == nil || child.Type(lang) != "," {
+			continue
+		}
+		if got := stmt.FieldNameForChild(i, lang); got != "" {
+			t.Fatalf("comma child %d unexpectedly has field %q in %s", i, got, root.SExpr(lang))
+		}
+	}
+}

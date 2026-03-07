@@ -290,3 +290,38 @@ func TestBuildReduceChildrenHiddenParentDoesNotExtendScopeFieldToTrailingAnonymo
 		t.Fatalf("fieldIDs[1] = %d, want 0", got)
 	}
 }
+
+func TestBuildReduceChildrenHiddenParentDoesNotExtendNameFieldToTrailingAnonymous(t *testing.T) {
+	lang := &Language{
+		FieldNames: []string{"", "name"},
+		SymbolMetadata: []SymbolMetadata{
+			{},
+			{Visible: true, Named: true},
+			{Visible: true, Named: false},
+			{Visible: false, Named: true},
+		},
+		FieldMapSlices: [][2]uint16{
+			{0, 1},
+		},
+		FieldMapEntries: []FieldMapEntry{
+			{FieldID: 1, ChildIndex: 0, Inherited: true},
+		},
+	}
+	parser := &Parser{language: lang}
+	arena := newNodeArena(8)
+
+	name := NewLeafNode(Symbol(1), true, 0, 4, Point{}, Point{})
+	comma := NewLeafNode(Symbol(2), false, 4, 5, Point{}, Point{})
+	hidden := NewParentNode(Symbol(3), false, []*Node{name, comma}, []FieldID{1, 0}, 0)
+
+	_, fieldIDs := parser.buildReduceChildren([]stackEntry{{node: hidden}}, 0, 1, 1, 0, 1, arena)
+	if got, want := len(fieldIDs), 2; got != want {
+		t.Fatalf("len(fieldIDs) = %d, want %d", got, want)
+	}
+	if got, want := fieldIDs[0], FieldID(1); got != want {
+		t.Fatalf("fieldIDs[0] = %d, want %d", got, want)
+	}
+	if got := fieldIDs[1]; got != 0 {
+		t.Fatalf("fieldIDs[1] = %d, want 0", got)
+	}
+}

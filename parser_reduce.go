@@ -757,7 +757,7 @@ func inheritedFieldAllowsTrailingAnonymous(lang *Language, fid FieldID) bool {
 		return true
 	}
 	switch lang.FieldNames[idx] {
-	case "scope":
+	case "scope", "name":
 		return false
 	default:
 		return true
