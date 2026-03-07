@@ -1038,62 +1038,6 @@ func (p *Parser) promotePrimaryStack(stacks []glrStack) {
 	}
 }
 
-func stackCompareForCull(a, b *glrStack) int {
-	if a.dead != b.dead {
-		if a.dead {
-			return -1
-		}
-		return 1
-	}
-	if a.accepted != b.accepted {
-		if a.accepted {
-			return 1
-		}
-		return -1
-	}
-	if aErr, bErr := stackErrorRank(a), stackErrorRank(b); aErr != bErr {
-		if aErr < bErr {
-			return 1
-		}
-		return -1
-	}
-	if a.score != b.score {
-		if a.score > b.score {
-			return 1
-		}
-		return -1
-	}
-	aDepth := a.depth()
-	bDepth := b.depth()
-	if aDepth != bDepth {
-		if aDepth > bDepth {
-			return 1
-		}
-		return -1
-	}
-	if a.byteOffset != b.byteOffset {
-		if a.byteOffset > b.byteOffset {
-			return 1
-		}
-		return -1
-	}
-	if a.shifted != b.shifted {
-		if !a.shifted {
-			return 1
-		}
-		return -1
-	}
-	aHash := stackHash(*a)
-	bHash := stackHash(*b)
-	if aHash > bHash {
-		return 1
-	}
-	if aHash < bHash {
-		return -1
-	}
-	return 0
-}
-
 func retainTopStacks(stacks []glrStack, keep int) []glrStack {
 	if keep <= 0 {
 		return stacks[:0]
@@ -1123,7 +1067,7 @@ func retainTopStacks(stacks []glrStack, keep int) []glrStack {
 			if stacks[j].top().state != state {
 				continue
 			}
-			if stackCompareForCull(&stacks[j], &stacks[best]) > 0 {
+			if stackComparePtr(&stacks[j], &stacks[best]) > 0 {
 				best = j
 			}
 		}
@@ -1132,7 +1076,7 @@ func retainTopStacks(stacks []glrStack, keep int) []glrStack {
 	for i := 0; i < len(selected); i++ {
 		best := i
 		for j := i + 1; j < len(selected); j++ {
-			if stackCompareForCull(&stacks[selected[j]], &stacks[selected[best]]) > 0 {
+			if stackComparePtr(&stacks[selected[j]], &stacks[selected[best]]) > 0 {
 				best = j
 			}
 		}
@@ -1154,7 +1098,7 @@ func retainTopStacks(stacks []glrStack, keep int) []glrStack {
 			if chosen[i] {
 				continue
 			}
-			if best < 0 || stackCompareForCull(&stacks[i], &stacks[best]) > 0 {
+			if best < 0 || stackComparePtr(&stacks[i], &stacks[best]) > 0 {
 				best = i
 			}
 		}
