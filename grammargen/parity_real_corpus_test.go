@@ -770,6 +770,13 @@ func newCandidate(text, path string, source realCorpusSampleSource, maxSampleByt
 		return realCorpusSampleCandidate{}, false
 	}
 	seen[trimmed] = struct{}{}
+	// Ensure trailing newline — most grammars expect EOF after final \n,
+	// and real source files almost universally end with one. Corpus block
+	// extraction strips trailing newlines, causing parse failures in
+	// grammars that require them (gomod, make, etc.).
+	if !strings.HasSuffix(normalized, "\n") {
+		normalized += "\n"
+	}
 	return realCorpusSampleCandidate{
 		Text:   normalized,
 		Trim:   trimmed,
