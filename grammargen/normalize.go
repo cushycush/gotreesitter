@@ -574,11 +574,12 @@ func collectInlinePatterns(g *Grammar) []string {
 			walk(rule, false)
 		}
 	}
-	// Also check extras for inline patterns (already handled by _whitespace,
-	// but walk for completeness).
-	for _, e := range g.Extras {
-		walk(e, false)
-	}
+	// NOTE: We intentionally skip walking g.Extras here.
+	// Pattern extras (like /\s/) are handled by registerExtraTerminals which
+	// creates the _whitespace symbol. Walking extras here would create a
+	// DUPLICATE terminal (e.g., both "\s" and "_whitespace") for the same
+	// pattern, inflating TokenCount. Symbol extras (like comment) are
+	// nonterminals resolved via resolveExtras.
 	return result
 }
 
