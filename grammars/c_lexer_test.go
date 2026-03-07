@@ -250,6 +250,108 @@ func TestParseCMultilineFunctionLikeMacro(t *testing.T) {
 	}
 }
 
+func dumpCTokenSourceTokens(t *testing.T, src []byte, lang *gotreesitter.Language) []string {
+	t.Helper()
+
+	ts, err := NewCTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("rebuild token source: %v", err)
+	}
+
+	var toks []string
+	for {
+		tok := ts.Next()
+		if tok.Symbol == 0 {
+			return toks
+		}
+		toks = append(toks, lang.SymbolNames[tok.Symbol]+"="+tok.Text)
+	}
+}
+
+func TestParseCppQualifiedConstructorsAndDestructorCall(t *testing.T) {
+	lang := CppLanguage()
+	parser := gotreesitter.NewParser(lang)
+	src := []byte(`namespace tree_sitter {
+namespace rules {
+
+struct Blank {};
+
+struct Rule {
+  Blank blank_;
+
+  Rule(const Rule &other) : blank_(Blank{}) {}
+  Rule(Rule &&other) noexcept : blank_(Blank{}) {}
+};
+
+static void destroy_value(Rule *rule) {
+  rule->blank_.~Blank();
+}
+
+}  // namespace rules
+}  // namespace tree_sitter
+`)
+
+	ts, err := NewCTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewCTokenSource failed: %v", err)
+	}
+
+	tree, err := parser.ParseWithTokenSource(src, ts)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	root := tree.RootNode()
+	if root == nil {
+		t.Fatal("nil root")
+	}
+	if root.HasError() {
+		t.Fatalf(
+			"parse has errors; root sexpr = %s; tokens = %v",
+			root.SExpr(lang),
+			dumpCTokenSourceTokens(t, src, lang),
+		)
+	}
+}
+
+func TestParseCppTemplateSpecialization(t *testing.T) {
+	lang := CppLanguage()
+	parser := gotreesitter.NewParser(lang)
+	src := []byte(`struct Blank {};
+
+struct Rule {
+  enum Kind { BlankType };
+  Kind type;
+
+  template <typename T>
+  bool is() const;
+};
+
+template <>
+bool Rule::is<Blank>() const { return type == BlankType; }
+`)
+
+	ts, err := NewCTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewCTokenSource failed: %v", err)
+	}
+
+	tree, err := parser.ParseWithTokenSource(src, ts)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	root := tree.RootNode()
+	if root == nil {
+		t.Fatal("nil root")
+	}
+	if root.HasError() {
+		t.Fatalf(
+			"parse has errors; root sexpr = %s; tokens = %v",
+			root.SExpr(lang),
+			dumpCTokenSourceTokens(t, src, lang),
+		)
+	}
+}
+
 func TestParseCHeaderGuard(t *testing.T) {
 	lang := CLanguage()
 	parser := gotreesitter.NewParser(lang)
