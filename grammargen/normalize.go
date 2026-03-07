@@ -934,9 +934,12 @@ func expandTopLevelRepeat(r *Rule, ruleName string) *Rule {
 		x := inner.Children[0]
 		expanded = Choice(Seq(Sym(ruleName), cloneRule(x)), cloneRule(x))
 	case RuleRepeat:
-		// repeat(x) → choice(seq(self, x), x, blank())
+		// repeat(x) → choice(blank(), seq(self, x))
+		// Matches tree-sitter's expansion. The standalone x alternative is
+		// redundant (seq(self,x) with self→blank already covers it) and
+		// causes spurious R/R conflicts.
 		x := inner.Children[0]
-		expanded = Choice(Seq(Sym(ruleName), cloneRule(x)), cloneRule(x), Blank())
+		expanded = Choice(Blank(), Seq(Sym(ruleName), cloneRule(x)))
 	default:
 		return r
 	}
