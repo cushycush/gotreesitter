@@ -53,7 +53,7 @@ const (
 	maxStacksPerMergeKey = 6
 	// Retry parses can temporarily widen the merge fanout beyond the default
 	// survivor cap without changing the steady-state parser behavior.
-	maxStacksPerMergeKeyCeiling = 24
+	maxStacksPerMergeKeyCeiling = 256
 )
 
 type glrMergeScratch struct {

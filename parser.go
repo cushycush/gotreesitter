@@ -517,11 +517,11 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		mergePerKeyCap = maxStacksPerMergeKeyCeiling
 	}
 	if reuse == nil && p.language != nil && p.language.Name == "bash" {
-		if maxStacks < 128 {
-			maxStacks = 128
+		if maxStacks < 256 {
+			maxStacks = 256
 		}
-		if mergePerKeyCap < 96 {
-			mergePerKeyCap = 96
+		if mergePerKeyCap < 256 {
+			mergePerKeyCap = 256
 		}
 	}
 	if reuse != nil {

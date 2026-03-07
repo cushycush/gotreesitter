@@ -151,3 +151,56 @@ func TestBashForValueExpansionDoesNotMarkSubscriptAsOperator(t *testing.T) {
 		t.Fatalf("subscript field = %q, want empty in %s", got, root.SExpr(lang))
 	}
 }
+
+func TestBashReleasePrefixAssignmentParsesWithoutError(t *testing.T) {
+	src := []byte(`mv *.tgz release
+cd release
+tar xzf *.tgz
+mkdir node_modules
+mv package node_modules/npm
+cp node_modules/npm/bin/*.cmd .
+zipname=npm-$(node ../cli.js -v).zip
+`)
+
+	tree, lang := bashMustParseNoError(t, src)
+	root := tree.RootNode()
+	if got, want := root.NamedChildCount(), 7; got != want {
+		t.Fatalf("named child count = %d, want %d in %s", got, want, root.SExpr(lang))
+	}
+	last := root.NamedChild(root.NamedChildCount() - 1)
+	if last == nil || last.Type(lang) != "variable_assignment" {
+		t.Fatalf("expected trailing variable_assignment, got %s", root.SExpr(lang))
+	}
+}
+
+func TestBashReleaseTarPhaseParsesWithoutError(t *testing.T) {
+	src := []byte(`cd node_modules
+tarname=npm-$(node ../../cli.js -v).tgz
+tar czf "$tarname" npm
+
+cd ..
+mv "node_modules/$tarname" .
+
+rm -rf *.cmd
+rm -rf node_modules
+
+echo "release/$tarname"
+echo "release/$zipname"
+`)
+
+	tree, lang := bashMustParseNoError(t, src)
+	root := tree.RootNode()
+	if got, want := root.NamedChildCount(), 9; got != want {
+		t.Fatalf("named child count = %d, want %d in %s", got, want, root.SExpr(lang))
+	}
+	if first := root.NamedChild(0); first == nil || first.Type(lang) != "command" {
+		t.Fatalf("expected leading command, got %s", root.SExpr(lang))
+	}
+	if second := root.NamedChild(1); second == nil || second.Type(lang) != "variable_assignment" {
+		t.Fatalf("expected tarname assignment as second child, got %s", root.SExpr(lang))
+	}
+	last := root.NamedChild(root.NamedChildCount() - 1)
+	if last == nil || last.Type(lang) != "command" {
+		t.Fatalf("expected trailing echo command, got %s", root.SExpr(lang))
+	}
+}
