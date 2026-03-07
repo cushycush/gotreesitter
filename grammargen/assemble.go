@@ -91,6 +91,26 @@ func assemble(
 		buildExternalLexStates(lang, tables, ng)
 	}
 
+	// Immediate tokens — populate bitmask so the runtime lexer can reject
+	// immediate token matches when whitespace was consumed before them.
+	{
+		hasImm := false
+		for _, t := range ng.Terminals {
+			if t.Immediate {
+				hasImm = true
+				break
+			}
+		}
+		if hasImm {
+			lang.ImmediateTokens = make([]bool, symbolCount)
+			for _, t := range ng.Terminals {
+				if t.Immediate && t.SymbolID < symbolCount {
+					lang.ImmediateTokens[t.SymbolID] = true
+				}
+			}
+		}
+	}
+
 	// Alias sequences.
 	buildAliasSequences(lang, ng)
 

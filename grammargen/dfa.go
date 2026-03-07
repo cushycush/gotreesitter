@@ -8,9 +8,10 @@ import (
 
 // dfaState is a state in the deterministic finite automaton.
 type dfaState struct {
-	transitions []dfaTransition
-	accept      int  // symbol ID if accepting, 0 if not
-	skip        bool // true for whitespace/extra tokens
+	transitions    []dfaTransition
+	accept         int  // symbol ID if accepting, 0 if not
+	acceptPriority int  // lower = higher priority (from NFA)
+	skip           bool // true for whitespace/extra tokens
 }
 
 // dfaTransition maps a character range to a next state.
@@ -158,7 +159,7 @@ func subsetConstruction(n *nfa) []dfaState {
 			}
 		}
 
-		dfaStates = append(dfaStates, dfaState{accept: accept})
+		dfaStates = append(dfaStates, dfaState{accept: accept, acceptPriority: bestPriority})
 		worklist = append(worklist, ss)
 		return id
 	}
@@ -357,11 +358,23 @@ func moveAndClose(n *nfa, states []int, lo, hi rune) []int {
 func convertDFAToLexStates(dfa []dfaState, addSkipTransitions bool) []gotreesitter.LexState {
 	states := make([]gotreesitter.LexState, len(dfa))
 	for i, ds := range dfa {
+		prio := int16(0)
+		if ds.accept > 0 && ds.acceptPriority < int(^uint(0)>>1) {
+			// Clamp to int16 range.
+			if ds.acceptPriority > 32767 {
+				prio = 32767
+			} else if ds.acceptPriority < -32768 {
+				prio = -32768
+			} else {
+				prio = int16(ds.acceptPriority)
+			}
+		}
 		ls := gotreesitter.LexState{
-			AcceptToken: gotreesitter.Symbol(ds.accept),
-			Skip:        ds.skip,
-			Default:     -1,
-			EOF:         -1,
+			AcceptToken:    gotreesitter.Symbol(ds.accept),
+			AcceptPriority: prio,
+			Skip:           ds.skip,
+			Default:        -1,
+			EOF:            -1,
 		}
 
 		for _, t := range ds.transitions {

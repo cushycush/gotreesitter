@@ -94,6 +94,11 @@ func acquireDFATokenSource(lexer *Lexer, language *Language, lookupActionIndex f
 			seen[lm.LexState] = struct{}{}
 			ts.fallbackLexStates = append(ts.fallbackLexStates, lm.LexState)
 		}
+		// Set immediate token info so the lexer rejects immediate matches
+		// after whitespace consumption (tree-sitter token.immediate() semantics).
+		if len(language.ImmediateTokens) > 0 {
+			lexer.SetImmediateTokens(language.ImmediateTokens)
+		}
 	}
 	return ts
 }
