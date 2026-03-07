@@ -266,6 +266,11 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 				metrics.NoError++
 
 				sexprMatch := genSexp == refSexp
+				// Normalize unicode escapes: ts2go blobs may have \uXXXX
+				// in symbol names from C source, grammargen uses UTF-8.
+				if !sexprMatch && strings.Contains(refSexp, `\u`) {
+					sexprMatch = unescapeUnicodeInType(genSexp) == unescapeUnicodeInType(refSexp)
+				}
 				if !sexprMatch {
 					refRootType := refRoot.Type(refLang)
 					genRootType := genRoot.Type(genLang)

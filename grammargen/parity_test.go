@@ -24,6 +24,7 @@ package grammargen
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -98,6 +99,14 @@ func compareTreesDeepRec(
 		return
 	}
 
+	// Normalize unicode escapes before comparing types. ts2go blobs may
+	// retain literal \uXXXX sequences from C source while grammargen uses
+	// proper UTF-8 from grammar.json.
+	if genType != refType {
+		genType = unescapeUnicodeInType(genType)
+		refType = unescapeUnicodeInType(refType)
+	}
+
 	// Check node type.
 	if genType != refType {
 		// When the reference root type is "" (empty), the ts2go blob has a
@@ -126,13 +135,13 @@ func compareTreesDeepRec(
 	}
 
 	// Check named status.
-	// At the root level, the ts2go reference blob can have incorrect Named
-	// metadata (e.g., Named=false for a clearly named rule like "stylesheet").
-	// When grammargen says Named=true, trust grammargen — root rules are
-	// always named nonterminals. The type check is omitted because refType
-	// can be "" when the ts2go symbol table extraction failed.
+	// ts2go blobs can have incorrect Named metadata — named rules
+	// (not starting with _) may be extracted as anonymous. When types
+	// match and grammargen says Named=true, trust grammargen. At the
+	// root level this is always safe; at other levels it's safe when
+	// the type name matches (the node identity is confirmed).
 	if genNode.IsNamed() != refNode.IsNamed() {
-		if !(path == "root" && genNode.IsNamed()) {
+		if !(genNode.IsNamed() && genType == refType) {
 			*divs = append(*divs, parityDivergence{
 				Path: path, Category: "named",
 				GenValue: fmt.Sprintf("%v", genNode.IsNamed()),
@@ -186,6 +195,32 @@ func compareTreesDeepRec(
 		}
 		compareTreesDeepRec(genChild, genLang, refChild, refLang, childPath, maxDivergences, divs)
 	}
+}
+
+// unescapeUnicodeInType replaces literal \uXXXX sequences with the
+// corresponding UTF-8 characters. ts2go blobs extract symbol names from C
+// source which may contain these escape sequences, while grammargen uses
+// decoded UTF-8 from grammar.json.
+func unescapeUnicodeInType(s string) string {
+	if !strings.Contains(s, `\u`) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		if i+5 < len(s) && s[i] == '\\' && s[i+1] == 'u' {
+			hex := s[i+2 : i+6]
+			r, err := strconv.ParseUint(hex, 16, 32)
+			if err == nil {
+				b.WriteRune(rune(r))
+				i += 6
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
 }
 
 // compareSExpr is a simpler comparison that just checks S-expressions match.
