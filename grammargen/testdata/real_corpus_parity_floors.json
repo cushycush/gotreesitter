@@ -10,25 +10,25 @@
   "total_eligible": 729,
   "total_no_error": 729,
   "total_sexpr_parity": 391,
-  "total_deep_parity": 347,
+  "total_deep_parity": 382,
   "metrics": {
     "bash": {
       "eligible": 25,
       "no_error": 25,
       "sexpr_parity": 7,
-      "deep_parity": 7
+      "deep_parity": 14
     },
     "c_lang": {
       "eligible": 19,
       "no_error": 19,
       "sexpr_parity": 7,
-      "deep_parity": 7
+      "deep_parity": 8
     },
     "comment": {
       "eligible": 1,
       "no_error": 1,
       "sexpr_parity": 0,
-      "deep_parity": 0
+      "deep_parity": 1
     },
     "cpon": {
       "eligible": 12,
@@ -58,7 +58,7 @@
       "eligible": 25,
       "no_error": 25,
       "sexpr_parity": 13,
-      "deep_parity": 12
+      "deep_parity": 13
     },
     "dot": {
       "eligible": 11,
@@ -82,7 +82,7 @@
       "eligible": 25,
       "no_error": 25,
       "sexpr_parity": 9,
-      "deep_parity": 8
+      "deep_parity": 9
     },
     "forth": {
       "eligible": 25,
@@ -112,7 +112,7 @@
       "eligible": 7,
       "no_error": 7,
       "sexpr_parity": 5,
-      "deep_parity": 5
+      "deep_parity": 7
     },
     "gitignore": {
       "eligible": 14,
@@ -142,7 +142,7 @@
       "eligible": 25,
       "no_error": 25,
       "sexpr_parity": 0,
-      "deep_parity": 0
+      "deep_parity": 3
     },
     "hcl": {
       "eligible": 16,
@@ -166,7 +166,7 @@
       "eligible": 25,
       "no_error": 25,
       "sexpr_parity": 9,
-      "deep_parity": 8
+      "deep_parity": 9
     },
     "jq": {
       "eligible": 6,
@@ -202,7 +202,7 @@
       "eligible": 5,
       "no_error": 5,
       "sexpr_parity": 1,
-      "deep_parity": 1
+      "deep_parity": 2
     },
     "make": {
       "eligible": 25,
@@ -214,25 +214,25 @@
       "eligible": 25,
       "no_error": 25,
       "sexpr_parity": 22,
-      "deep_parity": 16
+      "deep_parity": 17
     },
     "ocaml": {
       "eligible": 25,
       "no_error": 25,
       "sexpr_parity": 7,
-      "deep_parity": 5
+      "deep_parity": 6
     },
     "pem": {
       "eligible": 3,
       "no_error": 3,
       "sexpr_parity": 1,
-      "deep_parity": 1
+      "deep_parity": 2
     },
     "php": {
       "eligible": 25,
       "no_error": 25,
       "sexpr_parity": 5,
-      "deep_parity": 4
+      "deep_parity": 8
     },
     "promql": {
       "eligible": 25,
@@ -256,19 +256,19 @@
       "eligible": 21,
       "no_error": 21,
       "sexpr_parity": 3,
-      "deep_parity": 2
+      "deep_parity": 10
     },
     "regex": {
       "eligible": 3,
       "no_error": 3,
       "sexpr_parity": 1,
-      "deep_parity": 0
+      "deep_parity": 1
     },
     "requirements": {
       "eligible": 3,
       "no_error": 3,
       "sexpr_parity": 0,
-      "deep_parity": 0
+      "deep_parity": 1
     },
     "ron": {
       "eligible": 7,
