@@ -259,7 +259,7 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 						mismatchLogs++
 						t.Logf("sample %d (%s:%s) gen ERROR on clean ref: %s",
 							i, cand.Source, cand.Path,
-							genSexp[:minInt(len(genSexp), 200)])
+							genSexp[:min(len(genSexp), 200)])
 					}
 					continue
 				}
