@@ -116,6 +116,7 @@ func NewCTokenSource(src []byte, lang *gotreesitter.Language) (*CTokenSource, er
 	ts.characterSymbol = tl.optional("character")
 	ts.primitiveTypeSymbol = tl.optional("primitive_type")
 	ts.preprocEndSymbol = tl.optional("preproc_include_token2")
+	ts.newlineSymbol = tl.optional("\n")
 	ts.preprocArgSymbol = tl.optional("preproc_arg")
 	ts.preprocDirectiveSymbol = tl.optional("preproc_directive")
 	ts.newlineSymbol = tl.optional("\n")
@@ -382,13 +383,16 @@ func (ts *CTokenSource) scanDirective(offset int) (int, string, gotreesitter.Sym
 }
 
 func (ts *CTokenSource) shouldUseGenericDirective(specificSym gotreesitter.Symbol) bool {
-	if ts.preprocDirectiveSym == 0 || !ts.hasAction(ts.preprocDirectiveSym) {
+	if ts.preprocDirectiveSym == 0 {
 		return false
 	}
 	if specificSym == 0 {
 		return true
 	}
-	return !ts.hasAction(specificSym)
+	if ts.hasAction(specificSym) {
+		return false
+	}
+	return ts.hasAction(ts.preprocDirectiveSym)
 }
 
 func (ts *CTokenSource) emitGenericDirectiveLine(directiveEnd int) gotreesitter.Token {
@@ -1183,7 +1187,6 @@ func (ts *CTokenSource) eofToken() gotreesitter.Token {
 func (ts *CTokenSource) preprocEndToken() gotreesitter.Token {
 	return ts.lineEndToken(ts.preprocEndSymbol)
 }
-
 func (ts *CTokenSource) lineEndToken(sym gotreesitter.Symbol) gotreesitter.Token {
 	start := ts.cur.offset
 	startPt := ts.cur.point()
@@ -1265,6 +1268,10 @@ func (ts *CTokenSource) systemLibStringToken() (gotreesitter.Token, bool) {
 	return gotreesitter.Token{}, false
 }
 
+// updatePreprocStateForLiteral tracks directive-specific newline/argument
+// behavior for the token-source bridge. Flat directives use preproc_arg +
+// preproc_include_token2, while #if/#elif condition lines tokenize their
+// expression normally and terminate with the literal newline token.
 func (ts *CTokenSource) updatePreprocStateForLiteral(text string) {
 	if ts.preprocState == cPreprocAfterDefineParams {
 		if text == ")" {
