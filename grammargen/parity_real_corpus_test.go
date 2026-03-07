@@ -261,16 +261,24 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 
 				sexprMatch := genSexp == refSexp
 				if !sexprMatch {
+					refRootType := refRoot.Type(refLang)
+					genRootType := genRoot.Type(genLang)
 					// When the reference root type is empty (ts2go extraction
 					// issue), the SExprs may differ only in the root node name.
 					// Normalize by stripping the root wrapper from both and
 					// comparing inner content.
-					refRootType := refRoot.Type(refLang)
-					genRootType := genRoot.Type(genLang)
 					if refRootType == "" && genRootType != "" {
-						// ref SExpr: "( child1 child2)" or just children
-						// gen SExpr: "(program child1 child2)"
-						// Strip the outer wrapper and compare.
+						genInner := stripSExprRoot(genSexp)
+						refInner := stripSExprRoot(refSexp)
+						if genInner != "" && genInner == refInner {
+							sexprMatch = true
+						}
+					}
+					// When both have the same root type but differ in Named
+					// status (gen=true, ref=false due to ts2go metadata issue),
+					// the SExprs differ only in the root wrapper. Strip and compare.
+					if !sexprMatch && genRootType == refRootType && genRootType != "" &&
+						genRoot.IsNamed() && !refRoot.IsNamed() {
 						genInner := stripSExprRoot(genSexp)
 						refInner := stripSExprRoot(refSexp)
 						if genInner != "" && genInner == refInner {
