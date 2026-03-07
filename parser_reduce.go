@@ -674,7 +674,8 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 							break
 						}
 					}
-					if hadDirectFieldedChild || extendTrailingAfterSingleNamed {
+					allowTrailingAnonymous := inheritedFieldAllowsTrailingAnonymous(lang, fid)
+					if allowTrailingAnonymous && (hadDirectFieldedChild || extendTrailingAfterSingleNamed) {
 						lastFielded := -1
 						for j := out; j < fieldEnd; j++ {
 							if fieldIDs[j] == fid {
@@ -741,6 +742,22 @@ func inheritedFieldAllowsSingleNamedLift(lang *Language, fid FieldID) bool {
 	}
 	switch lang.FieldNames[idx] {
 	case "operator":
+		return false
+	default:
+		return true
+	}
+}
+
+func inheritedFieldAllowsTrailingAnonymous(lang *Language, fid FieldID) bool {
+	if lang == nil {
+		return true
+	}
+	idx := int(fid)
+	if idx < 0 || idx >= len(lang.FieldNames) {
+		return true
+	}
+	switch lang.FieldNames[idx] {
+	case "scope":
 		return false
 	default:
 		return true
