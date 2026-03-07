@@ -256,11 +256,25 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 
 	for _, name := range namedTokens {
 		visible := !strings.HasPrefix(name, "_")
+		displayName := name
+		named := true
+		kind := SymbolKind(SymbolNamedToken)
+		// Hidden named tokens that are pure STRING literals should be treated
+		// as anonymous visible terminals matching tree-sitter's behavior:
+		// _end = "/" becomes the visible "/" terminal, not an invisible _end token.
+		if !visible {
+			if rule, ok := g.Rules[name]; ok && rule != nil && rule.Kind == RuleString {
+				displayName = rule.Value
+				visible = true
+				named = false
+				kind = SymbolTerminal
+			}
+		}
 		st.addSymbol(name, SymbolInfo{
-			Name:    name,
+			Name:    displayName,
 			Visible: visible,
-			Named:   true,
-			Kind:    SymbolNamedToken,
+			Named:   named,
+			Kind:    kind,
 		})
 	}
 
