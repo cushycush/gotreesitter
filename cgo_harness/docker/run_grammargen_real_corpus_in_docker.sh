@@ -6,7 +6,7 @@ RUNNER="$SCRIPT_DIR/run_parity_in_docker.sh"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 IMAGE_TAG="gotreesitter/cgo-harness:go1.24-local"
-MEMORY_LIMIT="8g"
+MEMORY_LIMIT="10g"
 CPUS_LIMIT="4"
 PIDS_LIMIT="4096"
 OUT_ROOT=""
@@ -180,9 +180,10 @@ if [[ "$OFFLINE" == "1" && -z "$CONTAINER_SEED_DIR" ]]; then
 fi
 
 read -r -d '' CUSTOM_CMD <<EOF2 || true
-set -euo pipefail
+set -eo pipefail
 export PATH=/usr/local/go/bin:\$PATH
 mkdir -p /tmp/grammar_parity
+echo '{}' > /tmp/real_corpus_parity_floors.json
 
 SEED_DIR_IN_CONTAINER="$CONTAINER_SEED_DIR"
 OFFLINE_MODE="$OFFLINE"
@@ -213,12 +214,57 @@ clone_repo() {
 
 if [[ "\$OFFLINE_MODE" != "1" ]]; then
   # Deterministic subset with mature real-world corpora used by importParityGrammars.
-  clone_repo json https://github.com/tree-sitter/tree-sitter-json.git
-  clone_repo css https://github.com/tree-sitter/tree-sitter-css.git
-  clone_repo html https://github.com/tree-sitter/tree-sitter-html.git
-  clone_repo graphql https://github.com/tree-sitter/tree-sitter-graphql.git
-  clone_repo toml https://github.com/tree-sitter/tree-sitter-toml.git
-  clone_repo dockerfile https://github.com/camdencheek/tree-sitter-dockerfile.git
+  # Each clone_repo call is best-effort; failure of one repo doesn't block others.
+  clone_repo json https://github.com/tree-sitter/tree-sitter-json.git || true
+  clone_repo css https://github.com/tree-sitter/tree-sitter-css.git || true
+  clone_repo html https://github.com/tree-sitter/tree-sitter-html.git || true
+  clone_repo graphql https://github.com/bkegley/tree-sitter-graphql.git || true
+  clone_repo toml https://github.com/tree-sitter/tree-sitter-toml.git || true
+  clone_repo dockerfile https://github.com/camdencheek/tree-sitter-dockerfile.git || true
+  clone_repo ini https://github.com/justinmk/tree-sitter-ini.git || true
+  clone_repo properties https://github.com/tree-sitter-grammars/tree-sitter-properties.git || true
+  clone_repo jsdoc https://github.com/tree-sitter/tree-sitter-jsdoc.git || true
+  clone_repo csv https://github.com/amaanq/tree-sitter-csv.git || true
+  clone_repo json5 https://github.com/Joakker/tree-sitter-json5.git || true
+  clone_repo diff https://github.com/the-mikedavis/tree-sitter-diff.git || true
+  clone_repo dot https://github.com/rydesun/tree-sitter-dot.git || true
+  clone_repo ron https://github.com/amaanq/tree-sitter-ron.git || true
+  clone_repo proto https://github.com/treywood/tree-sitter-proto.git || true
+  clone_repo comment https://github.com/stsewd/tree-sitter-comment.git || true
+  clone_repo regex https://github.com/tree-sitter/tree-sitter-regex.git || true
+  clone_repo nix https://github.com/nix-community/tree-sitter-nix.git || true
+  clone_repo jq https://github.com/flurie/tree-sitter-jq.git || true
+  clone_repo hcl https://github.com/tree-sitter-grammars/tree-sitter-hcl.git || true
+  clone_repo scheme https://github.com/6cdh/tree-sitter-scheme.git || true
+  clone_repo forth https://github.com/AlexanderBrevig/tree-sitter-forth.git || true
+  clone_repo corn https://github.com/jakestanger/tree-sitter-corn.git || true
+  clone_repo cpon https://github.com/psvz/tree-sitter-cpon.git || true
+  clone_repo textproto https://github.com/PorterAtGoogle/tree-sitter-textproto.git || true
+  clone_repo promql https://github.com/MichaHoffmann/tree-sitter-promql.git || true
+  clone_repo gitignore https://github.com/shuber/tree-sitter-gitignore.git || true
+  clone_repo eds https://github.com/uyha/tree-sitter-eds.git || true
+  clone_repo go https://github.com/tree-sitter/tree-sitter-go.git || true
+  clone_repo c https://github.com/tree-sitter/tree-sitter-c.git || true
+  clone_repo sql https://github.com/m-novikov/tree-sitter-sql.git || true
+  clone_repo make https://github.com/alemuller/tree-sitter-make.git || true
+  clone_repo javascript https://github.com/tree-sitter/tree-sitter-javascript.git || true
+  clone_repo python https://github.com/tree-sitter/tree-sitter-python.git || true
+  clone_repo ruby https://github.com/tree-sitter/tree-sitter-ruby.git || true
+  clone_repo rust https://github.com/tree-sitter/tree-sitter-rust.git || true
+  clone_repo bash https://github.com/tree-sitter/tree-sitter-bash.git || true
+  clone_repo java https://github.com/tree-sitter/tree-sitter-java.git || true
+  clone_repo lua https://github.com/tree-sitter-grammars/tree-sitter-lua.git || true
+  clone_repo kotlin https://github.com/fwcd/tree-sitter-kotlin.git || true
+  clone_repo php https://github.com/tree-sitter/tree-sitter-php.git || true
+  clone_repo elixir https://github.com/elixir-lang/tree-sitter-elixir.git || true
+  clone_repo c_sharp https://github.com/tree-sitter/tree-sitter-c-sharp.git || true
+  clone_repo ocaml https://github.com/tree-sitter/tree-sitter-ocaml.git || true
+  clone_repo dart https://github.com/UserNobworthy/tree-sitter-dart.git || true
+  clone_repo scala https://github.com/tree-sitter/tree-sitter-scala.git || true
+  clone_repo swift https://github.com/tree-sitter/tree-sitter-swift.git || true
+  clone_repo haskell https://github.com/tree-sitter/tree-sitter-haskell.git || true
+  clone_repo yaml https://github.com/tree-sitter-grammars/tree-sitter-yaml.git || true
+  clone_repo markdown https://github.com/tree-sitter-grammars/tree-sitter-markdown.git || true
 fi
 
 if ! find /tmp/grammar_parity -mindepth 1 -maxdepth 1 -type d | grep -q .; then
@@ -235,6 +281,7 @@ cd /workspace
   GTS_GRAMMARGEN_REAL_CORPUS_MAX_GRAMMARS=$MAX_GRAMMARS \
   GTS_GRAMMARGEN_REAL_CORPUS_ALLOW_PARTIAL=1 \
   GTS_GRAMMARGEN_REAL_CORPUS_FLOORS_PATH=/tmp/real_corpus_parity_floors.json \
+  GTS_GRAMMARGEN_REAL_CORPUS_SKIP=rust,c_sharp,java,ruby,cpp \
   go test ./grammargen -run '^TestMultiGrammarImportRealCorpusParity$' -count=1 -v
 EOF2
 

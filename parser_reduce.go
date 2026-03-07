@@ -463,7 +463,7 @@ func extendParentSpanToWindow(parent *Node, entries []stackEntry, start, reduced
 			parent.startByte = n.startByte
 			parent.startPoint = n.startPoint
 		}
-		if n.startByte <= parent.endByte && n.endByte > parent.endByte {
+		if n.endByte > parent.endByte {
 			parent.endByte = n.endByte
 			parent.endPoint = n.endPoint
 		}

@@ -166,7 +166,7 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 			realRoot = n
 		}
 	}
-	if realRoot == nil && p != nil && p.language != nil && p.language.Name == "ini" {
+	if realRoot == nil && p != nil && p.language != nil {
 		// Some grammars can leave detached trivia/comment nodes alongside the
 		// real root at EOF. Recover by selecting a single expected/root-like
 		// node and folding the detached trivia around it.
@@ -341,7 +341,12 @@ func isDetachedTriviaNode(n, root *Node, source []byte, lang *Language) bool {
 
 func isRootLikeName(name string) bool {
 	switch name {
-	case "source_file", "program", "module", "document", "file":
+	case "source_file", "program", "module", "document", "file",
+		"source", "source_code", "translation_unit", "compilation_unit",
+		"makefile", "stylesheet", "config_file", "chunk", "query",
+		"pattern", "fragment", "hcl", "template", "script",
+		"config", "configuration", "specification", "schema",
+		"description_unit", "project":
 		return true
 	default:
 		return false

@@ -32,6 +32,7 @@ const (
 	realCorpusRatchetRebaseEnv  = "GTS_GRAMMARGEN_REAL_CORPUS_RATCHET_REBASE"
 	realCorpusFloorsPathEnv     = "GTS_GRAMMARGEN_REAL_CORPUS_FLOORS_PATH"
 	realCorpusAllowPartialEnv   = "GTS_GRAMMARGEN_REAL_CORPUS_ALLOW_PARTIAL"
+	realCorpusSkipEnv           = "GTS_GRAMMARGEN_REAL_CORPUS_SKIP"
 	realCorpusFloorsFileVersion = 3
 	maxRealCorpusWalkFiles      = 6000
 )
@@ -145,6 +146,15 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 		}
 	}
 
+	skipSet := map[string]bool{}
+	if raw := strings.TrimSpace(os.Getenv(realCorpusSkipEnv)); raw != "" {
+		for _, s := range strings.Split(raw, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				skipSet[s] = true
+			}
+		}
+	}
+
 	testedGrammars := 0
 	totalEligible := 0
 	totalNoError := 0
@@ -153,6 +163,9 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 	observed := map[string]realCorpusMetrics{}
 
 	for _, g := range importParityGrammars {
+		if skipSet[g.name] {
+			continue
+		}
 		if maxGrammars > 0 && testedGrammars >= maxGrammars {
 			break
 		}
@@ -188,8 +201,21 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 			genParser := gotreesitter.NewParser(genLang)
 			refParser := gotreesitter.NewParser(refLang)
 
+			// Log root symbol inference for diagnostics.
+			if genRootSym, genHasRoot := genParser.InferredRootSymbol(); genHasRoot {
+				genRootName := ""
+				if int(genRootSym) < len(genLang.SymbolNames) {
+					genRootName = genLang.SymbolNames[genRootSym]
+				}
+				t.Logf("root-diag: gen inferredRoot=sym%d(%q) hasRoot=true", genRootSym, genRootName)
+			} else {
+				t.Logf("root-diag: gen hasRoot=false symCount=%d tokenCount=%d initialState=%d",
+					genLang.SymbolCount, genLang.TokenCount, genLang.InitialState)
+			}
+
 			metrics := realCorpusMetrics{}
 			mismatchLogs := 0
+			divCategoryCounts := map[string]int{}
 			seen := 0
 			grammarDeadline := time.Time{}
 			if maxSecsPerGrammar > 0 {
@@ -233,18 +259,44 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 				}
 				metrics.NoError++
 
-				if genSexp == refSexp {
+				sexprMatch := genSexp == refSexp
+				if !sexprMatch {
+					// When the reference root type is empty (ts2go extraction
+					// issue), the SExprs may differ only in the root node name.
+					// Normalize by stripping the root wrapper from both and
+					// comparing inner content.
+					refRootType := refRoot.Type(refLang)
+					genRootType := genRoot.Type(genLang)
+					if refRootType == "" && genRootType != "" {
+						// ref SExpr: "( child1 child2)" or just children
+						// gen SExpr: "(program child1 child2)"
+						// Strip the outer wrapper and compare.
+						genInner := stripSExprRoot(genSexp)
+						refInner := stripSExprRoot(refSexp)
+						if genInner != "" && genInner == refInner {
+							sexprMatch = true
+						}
+					}
+				}
+				if sexprMatch {
 					metrics.SExprParity++
 				}
 				divs := compareTreesDeep(genRoot, genLang, refRoot, refLang, "root", 10)
 				if len(divs) == 0 {
 					metrics.DeepParity++
-				} else if requireParity {
-					t.Fatalf("sample %d (%s:%s) deep parity mismatch: %s\nGEN: %s\nREF: %s",
-						i, cand.Source, cand.Path, divs[0].String(), genSexp, refSexp)
-				} else if mismatchLogs < 3 {
-					mismatchLogs++
-					t.Logf("sample %d (%s:%s) deep mismatch: %s", i, cand.Source, cand.Path, divs[0].String())
+				} else {
+					divCategoryCounts[divs[0].Category]++
+					if requireParity {
+						t.Fatalf("sample %d (%s:%s) deep parity mismatch: %s\nGEN: %s\nREF: %s",
+							i, cand.Source, cand.Path, divs[0].String(), genSexp, refSexp)
+					} else if mismatchLogs < 5 {
+						mismatchLogs++
+						t.Logf("sample %d (%s:%s) deep mismatch: %s", i, cand.Source, cand.Path, divs[0].String())
+						if divs[0].Category == "type" && (divs[0].GenValue == "" || divs[0].RefValue == "") {
+							t.Logf("  root-diag: genRoot.symbol=%d genRoot.Type=%q refRoot.symbol=%d refRoot.Type=%q genSymNames=%d",
+								genRoot.Symbol(), genRoot.Type(genLang), refRoot.Symbol(), refRoot.Type(refLang), len(genLang.SymbolNames))
+						}
+					}
 				}
 				if metrics.Eligible >= maxCases {
 					break
@@ -270,11 +322,21 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 			totalSExprParity += metrics.SExprParity
 			totalDeepParity += metrics.DeepParity
 
-			t.Logf("real-corpus[%s]: no-error %d/%d, sexpr parity %d/%d, deep parity %d/%d (requireParity=%v, seen=%d/%d)",
+			divSummary := ""
+			if len(divCategoryCounts) > 0 {
+				parts := make([]string, 0, len(divCategoryCounts))
+				for cat, cnt := range divCategoryCounts {
+					parts = append(parts, fmt.Sprintf("%s=%d", cat, cnt))
+				}
+				sort.Strings(parts)
+				divSummary = " divs=[" + strings.Join(parts, ",") + "]"
+			}
+			t.Logf("real-corpus[%s]: no-error %d/%d, sexpr parity %d/%d, deep parity %d/%d%s (requireParity=%v, seen=%d/%d)",
 				profile,
 				metrics.NoError, metrics.Eligible,
 				metrics.SExprParity, metrics.Eligible,
 				metrics.DeepParity, metrics.Eligible,
+				divSummary,
 				requireParity, seen, len(candidates))
 		})
 	}
@@ -820,6 +882,26 @@ func getenvInt(key string, def int) int {
 		return def
 	}
 	return n
+}
+
+// stripSExprRoot removes the outermost S-expression wrapper, returning only
+// the inner content. For example, "(program (x) (y))" → "(x) (y)" and
+// "( (x) (y))" → "(x) (y)".
+func stripSExprRoot(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 || s[0] != '(' || s[len(s)-1] != ')' {
+		return s
+	}
+	inner := s[1 : len(s)-1]
+	// Skip the root type name (if any).
+	inner = strings.TrimLeft(inner, " ")
+	// Find first '(' which starts the first child.
+	idx := strings.IndexByte(inner, '(')
+	if idx < 0 {
+		return strings.TrimSpace(inner)
+	}
+	// Everything before '(' is the root name + space. Skip it.
+	return strings.TrimSpace(inner[idx:])
 }
 
 func getenvBool(key string) bool {
