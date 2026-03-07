@@ -1081,10 +1081,12 @@ func resolveReduceReduceLegacy(reduces []lrAction, ng *NormalizedGrammar) ([]lrA
 			best = r
 			bestProd = rProd
 		} else if rProd.Prec == bestProd.Prec {
-			if len(rProd.RHS) > len(bestProd.RHS) {
+			// Tree-sitter uses dynamic precedence as the next tiebreaker,
+			// then falls back to production index (earlier declaration wins).
+			if rProd.DynPrec > bestProd.DynPrec {
 				best = r
 				bestProd = rProd
-			} else if len(rProd.RHS) == len(bestProd.RHS) && r.prodIdx < best.prodIdx {
+			} else if rProd.DynPrec == bestProd.DynPrec && r.prodIdx < best.prodIdx {
 				best = r
 				bestProd = rProd
 			}
