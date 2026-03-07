@@ -27,11 +27,12 @@ type CTokenSource struct {
 	escapeSymbol        gotreesitter.Symbol
 	characterSymbol     gotreesitter.Symbol
 	primitiveTypeSymbol gotreesitter.Symbol
+	systemLibStringSym  gotreesitter.Symbol
 	preprocEndSymbol    gotreesitter.Symbol // preproc_include_token2: line terminator for preprocessor directives
 	preprocArgSymbol    gotreesitter.Symbol
 
 	// Preprocessor state tracking
-	preprocState int // 0=normal, 1=afterDirective, 2=afterName (expect arg)
+	preprocState int // 0=normal, 1=afterDirective, 2=afterName (expect arg), 3=afterInclude
 
 	keywordSymbols map[string]gotreesitter.Symbol
 	literalSymbols map[string]gotreesitter.Symbol
@@ -50,6 +51,13 @@ type cLexerTables struct {
 }
 
 var cLexerTablesCache sync.Map // map[*gotreesitter.Language]*cLexerTables
+
+const (
+	cPreprocNormal = iota
+	cPreprocAfterDirective
+	cPreprocAfterName
+	cPreprocAfterInclude
+)
 
 func bytesToStringNoCopy(b []byte) string {
 	if len(b) == 0 {
@@ -85,6 +93,7 @@ func NewCTokenSource(src []byte, lang *gotreesitter.Language) (*CTokenSource, er
 	ts.escapeSymbol = tl.optional("escape_sequence")
 	ts.characterSymbol = tl.optional("character")
 	ts.primitiveTypeSymbol = tl.optional("primitive_type")
+	ts.systemLibStringSym = tl.optional("system_lib_string")
 	ts.preprocEndSymbol = tl.optional("preproc_include_token2")
 	ts.preprocArgSymbol = tl.optional("preproc_arg")
 
@@ -146,8 +155,14 @@ func (ts *CTokenSource) Next() gotreesitter.Token {
 			continue
 		}
 
+		if ts.preprocState == cPreprocAfterInclude {
+			if tok, ok := ts.systemLibStringToken(); ok {
+				return tok
+			}
+		}
+
 		// In preprocessor "expect arg" state: scan rest of line as preproc_arg
-		if ts.preprocState == 2 && ts.preprocArgSymbol != 0 {
+		if ts.preprocState == cPreprocAfterName && ts.preprocArgSymbol != 0 {
 			if tok, ok := ts.preprocArgToken(); ok {
 				return tok
 			}
@@ -169,8 +184,8 @@ func (ts *CTokenSource) Next() gotreesitter.Token {
 		if isCIdentStart(b) {
 			tok := ts.identifierOrKeywordToken()
 			// After directive keyword, next identifier is the macro name
-			if ts.preprocState == 1 {
-				ts.preprocState = 2 // now expect preproc_arg
+			if ts.preprocState == cPreprocAfterDirective {
+				ts.preprocState = cPreprocAfterName
 			}
 			return tok
 		}
@@ -178,10 +193,7 @@ func (ts *CTokenSource) Next() gotreesitter.Token {
 			return ts.numberToken()
 		}
 		if tok, ok := ts.literalToken(); ok {
-			// Detect #define start (needs preproc_arg + line terminator)
-			if ts.isPreprocDirective(tok.Text) {
-				ts.preprocState = 1
-			}
+			ts.preprocState = ts.nextPreprocState(tok.Text)
 			return tok
 		}
 
@@ -624,17 +636,43 @@ func (ts *CTokenSource) preprocArgToken() (gotreesitter.Token, bool) {
 	return makeToken(ts.preprocArgSymbol, ts.src, start, ts.cur.offset, startPt, ts.cur.point()), true
 }
 
+func (ts *CTokenSource) systemLibStringToken() (gotreesitter.Token, bool) {
+	if ts.systemLibStringSym == 0 || ts.cur.eof() || ts.cur.peekByte() != '<' {
+		return gotreesitter.Token{}, false
+	}
+
+	start := ts.cur.offset
+	startPt := ts.cur.point()
+	ts.cur.advanceByte()
+	for !ts.cur.eof() {
+		b := ts.cur.peekByte()
+		if b == '>' {
+			ts.cur.advanceByte()
+			return makeToken(ts.systemLibStringSym, ts.src, start, ts.cur.offset, startPt, ts.cur.point()), true
+		}
+		if b == '\n' {
+			return gotreesitter.Token{}, false
+		}
+		ts.cur.advanceRune()
+	}
+
+	return gotreesitter.Token{}, false
+}
+
 // isPreprocDirective returns true for "flat" preprocessor directives whose
 // grammar productions end with token.immediate(\n) — compiled as
 // preproc_include_token2. Conditional directives (#ifdef, #ifndef, #if,
 // #elif, #else, #endif) handle newlines through lex mode switching and
 // must NOT receive an explicit \n token.
-func (ts *CTokenSource) isPreprocDirective(text string) bool {
+func (ts *CTokenSource) nextPreprocState(text string) int {
 	switch text {
-	case "#define", "#include", "#pragma", "#undef", "#error", "#warning":
-		return true
+	case "#include":
+		return cPreprocAfterInclude
+	case "#define", "#pragma", "#undef", "#error", "#warning":
+		return cPreprocAfterDirective
+	default:
+		return cPreprocNormal
 	}
-	return false
 }
 
 func isCIdentStart(b byte) bool {

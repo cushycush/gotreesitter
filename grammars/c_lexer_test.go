@@ -114,6 +114,46 @@ func TestParseCMixedWithPreprocessor(t *testing.T) {
 	}
 }
 
+func TestParseCPreprocessorIncludesWithSystemHeaders(t *testing.T) {
+	lang := CLanguage()
+	parser := gotreesitter.NewParser(lang)
+	src := []byte("#include \"runtime/parser.h\"\n#include <assert.h>\n#include <stdio.h>\n")
+	ts, err := NewCTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewCTokenSource failed: %v", err)
+	}
+
+	tree, err := parser.ParseWithTokenSource(src, ts)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	root := tree.RootNode()
+	if root == nil {
+		t.Fatal("nil root")
+	}
+	if root.HasError() {
+		t.Fatalf("include parse has errors; root type = %s", root.Type(lang))
+	}
+
+	includeCount := 0
+	systemHeaderCount := 0
+	gotreesitter.Walk(root, func(node *gotreesitter.Node, depth int) gotreesitter.WalkAction {
+		switch node.Type(lang) {
+		case "preproc_include":
+			includeCount++
+		case "system_lib_string":
+			systemHeaderCount++
+		}
+		return gotreesitter.WalkContinue
+	})
+	if got, want := includeCount, 3; got != want {
+		t.Fatalf("preproc_include count = %d, want %d", got, want)
+	}
+	if got, want := systemHeaderCount, 2; got != want {
+		t.Fatalf("system_lib_string count = %d, want %d", got, want)
+	}
+}
+
 func TestParseCHeaderGuard(t *testing.T) {
 	lang := CLanguage()
 	parser := gotreesitter.NewParser(lang)
