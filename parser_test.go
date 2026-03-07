@@ -903,6 +903,45 @@ func TestBuildResultFoldExtrasPreservesFieldMappings(t *testing.T) {
 	}
 }
 
+func TestBuildReduceChildrenHiddenChildDoesNotDuplicateExistingField(t *testing.T) {
+	lang := &Language{
+		SymbolNames: []string{"EOF", "_hidden", "!=", "identifier"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF", Visible: false, Named: false},
+			{Name: "_hidden", Visible: false, Named: false},
+			{Name: "!=", Visible: true, Named: false},
+			{Name: "identifier", Visible: true, Named: true},
+		},
+		FieldNames: []string{"", "operators"},
+		FieldMapSlices: [][2]uint16{
+			{0, 1},
+		},
+		FieldMapEntries: []FieldMapEntry{
+			{FieldID: 1, ChildIndex: 0, Inherited: false},
+		},
+	}
+
+	parser := NewParser(lang)
+	arena := newNodeArena(arenaClassFull)
+	operator := newLeafNodeInArena(arena, 2, false, 0, 2, Point{Row: 0, Column: 0}, Point{Row: 0, Column: 2})
+	rhs := newLeafNodeInArena(arena, 3, true, 3, 4, Point{Row: 0, Column: 3}, Point{Row: 0, Column: 4})
+	hidden := newParentNodeInArena(arena, 1, false, []*Node{operator, rhs}, []FieldID{1, 0}, 0)
+
+	children, fieldIDs := parser.buildReduceChildren([]stackEntry{{node: hidden}}, 0, 1, 1, 0, arena)
+	if got, want := len(children), 2; got != want {
+		t.Fatalf("len(children) = %d, want %d", got, want)
+	}
+	if got, want := len(fieldIDs), 2; got != want {
+		t.Fatalf("len(fieldIDs) = %d, want %d", got, want)
+	}
+	if got, want := fieldIDs[0], FieldID(1); got != want {
+		t.Fatalf("fieldIDs[0] = %d, want %d", got, want)
+	}
+	if got := fieldIDs[1]; got != 0 {
+		t.Fatalf("fieldIDs[1] = %d, want 0", got)
+	}
+}
+
 func TestParserMultiDigitNumbers(t *testing.T) {
 	lang := buildArithmeticLanguage()
 	parser := NewParser(lang)

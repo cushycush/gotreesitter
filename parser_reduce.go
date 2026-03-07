@@ -585,15 +585,15 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 		}
 		copy(children[out:], kids)
 		if fieldIDs != nil {
+			fieldEnd := out + len(kids)
+			if fieldEnd > len(fieldIDs) {
+				fieldEnd = len(fieldIDs)
+			}
 			// Propagate the hidden node's own field IDs to the
 			// inlined children. This implements "inherited" field
 			// semantics: fields assigned inside hidden/non-visible
 			// nodes become visible on the parent.
 			if len(n.fieldIDs) > 0 {
-				fieldEnd := out + len(kids)
-				if fieldEnd > len(fieldIDs) {
-					fieldEnd = len(fieldIDs)
-				}
 				for j := out; j < fieldEnd; j++ {
 					kidIdx := j - out
 					if kidIdx < len(n.fieldIDs) && n.fieldIDs[kidIdx] != 0 {
@@ -602,12 +602,19 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 				}
 			}
 			// Apply the parent's inherited field assignment to the
-			// first named inlined child that has no field yet. Named
-			// nodes are the typical field targets; applying to an
-			// anonymous token (e.g. "=") would be incorrect.
+			// first named inlined child that has no field yet, but
+			// only if inlining did not already surface that same
+			// field on one of the copied children.
 			if fid != 0 {
-				for j := out; j < out+len(kids); j++ {
-					if j < len(fieldIDs) && fieldIDs[j] == 0 && children[j] != nil && children[j].isNamed {
+				alreadyAssigned := false
+				for j := out; j < fieldEnd; j++ {
+					if fieldIDs[j] == fid {
+						alreadyAssigned = true
+						break
+					}
+				}
+				for j := out; !alreadyAssigned && j < fieldEnd; j++ {
+					if fieldIDs[j] == 0 && children[j] != nil && children[j].isNamed {
 						if inherited && nodeHasDirectFieldID(children[j], fid) {
 							continue
 						}
