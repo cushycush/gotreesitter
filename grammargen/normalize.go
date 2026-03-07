@@ -216,7 +216,7 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 	stringLiterals := collectStringLiterals(g)
 	for _, s := range stringLiterals {
 		st.addSymbol(s, SymbolInfo{
-			Name:    s,
+			Name:    escapeAnonymousName(s),
 			Visible: true,
 			Named:   false,
 			Kind:    SymbolTerminal,
@@ -752,7 +752,7 @@ func liftTokensInRule(r *Rule, parentName string, st *symbolTable, entries *[]in
 		displayName := regKey
 		if visible {
 			if s := extractTokenStringValue(r); s != "" {
-				displayName = s
+				displayName = escapeAnonymousName(s)
 			}
 		}
 
@@ -824,6 +824,12 @@ func extractTokenStringValue(r *Rule) string {
 		return r.Value
 	}
 	return ""
+}
+
+// escapeAnonymousName escapes special characters in anonymous terminal display
+// names to match tree-sitter C behavior. Currently only ? is escaped to \?.
+func escapeAnonymousName(s string) string {
+	return strings.ReplaceAll(s, "?", `\?`)
 }
 
 // prepareRule normalizes a rule tree for production extraction:
