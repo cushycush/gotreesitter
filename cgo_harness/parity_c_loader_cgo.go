@@ -149,7 +149,15 @@ func buildParityCRef(rootDir string, entry parityLockEntry) (*parityCRef, error)
 		if err := os.MkdirAll(filepath.Dir(repoDir), 0o755); err != nil {
 			return nil, fmt.Errorf("%s: mkdir repo parent: %w", entry.Name, err)
 		}
-		if err := clonePinnedRepo(entry.RepoURL, entry.Commit, repoDir); err != nil {
+		if cacheDir := parityRepoCacheDir(); cacheDir != "" {
+			cachedRepo, cacheErr := findCachedParityRepo(cacheDir, entry.Name, commitShort)
+			if cacheErr != nil {
+				return nil, fmt.Errorf("%s: parity repo cache miss: %w", entry.Name, cacheErr)
+			}
+			if err := clonePinnedRepoFromLocalCache(cachedRepo, entry.Commit, repoDir); err != nil {
+				return nil, fmt.Errorf("%s: clone pinned repo from local cache: %w", entry.Name, err)
+			}
+		} else if err := clonePinnedRepo(entry.RepoURL, entry.Commit, repoDir); err != nil {
 			return nil, fmt.Errorf("%s: clone pinned repo: %w", entry.Name, err)
 		}
 	}
@@ -246,6 +254,33 @@ func loadParityLock(path string) (map[string]parityLockEntry, error) {
 	return entries, nil
 }
 
+func parityRepoCacheDir() string {
+	return strings.TrimSpace(os.Getenv("GTS_PARITY_REPO_CACHE"))
+}
+
+func findCachedParityRepo(cacheDir, name, commitShort string) (string, error) {
+	candidates := []string{
+		filepath.Join(cacheDir, name+"-"+commitShort),
+		filepath.Join(cacheDir, paritySafeName(name)+"-"+commitShort),
+		filepath.Join(cacheDir, paritySafeName(name+"-"+commitShort)),
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("checked %s", strings.Join(candidates, ", "))
+}
+
+func clonePinnedRepoFromLocalCache(cacheRepoDir, commit, dest string) error {
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		return err
+	}
+	// The host cache is already pinned to the requested commit, so copying it is
+	// enough and avoids Git safe.directory checks on the bind mount.
+	return runCommand("", "cp", "-a", cacheRepoDir+string(filepath.Separator)+".", dest)
+}
+
 func clonePinnedRepo(repoURL, commit, dest string) error {
 	if err := runCommandRetry("", 4, "git", "clone", "--depth=1", repoURL, dest); err != nil {
 		// Fallback to a full clone if shallow clone repeatedly fails with a
@@ -261,6 +296,10 @@ func clonePinnedRepo(repoURL, commit, dest string) error {
 	}
 
 checkout:
+	return clonePinnedCheckout(commit, dest)
+}
+
+func clonePinnedCheckout(commit, dest string) error {
 	if commit == "" {
 		return nil
 	}

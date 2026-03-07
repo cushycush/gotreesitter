@@ -53,7 +53,7 @@ const (
 	maxStacksPerMergeKey = 6
 	// Retry parses can temporarily widen the merge fanout beyond the default
 	// survivor cap without changing the steady-state parser behavior.
-	maxStacksPerMergeKeyCeiling = 24
+	maxStacksPerMergeKeyCeiling = 256
 )
 
 type glrMergeScratch struct {
@@ -857,7 +857,10 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 			perfRecordStackEquivalentHashMissSkip()
 		}
 		if duplicateIndex >= 0 {
-			if stackCompareMerge(&stack, &result[duplicateIndex]) > 0 {
+			// Equal-ranked duplicates should not preserve the first-inserted
+			// branch by accident. Let later survivors replace ties so
+			// post-reduce reprocessing can keep the branch that stayed viable.
+			if stackCompareMerge(&stack, &result[duplicateIndex]) >= 0 {
 				result[duplicateIndex] = stack
 				for j := 0; j < slot.count; j++ {
 					if slot.indices[j] == duplicateIndex {

@@ -44,6 +44,10 @@ func TestCorpusDiag(t *testing.T) {
 				t.Fatalf("Language() returned nil for %q", tc.langName)
 			}
 
+			if _, err := os.Stat(tc.filePath); err != nil {
+				t.Skipf("diag fixture not present: %v", err)
+			}
+
 			src, err := os.ReadFile(tc.filePath)
 			if err != nil {
 				t.Fatalf("failed to read %s: %v", tc.filePath, err)

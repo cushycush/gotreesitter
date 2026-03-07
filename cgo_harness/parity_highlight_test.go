@@ -212,6 +212,7 @@ func runHighlightParityForSource(t *testing.T, tc parityCase, src []byte) (goOnl
 	if err != nil {
 		t.Fatalf("Go parse error: %v", err)
 	}
+	defer releaseGoTree(goTree)
 
 	goCaps := collectGoHighlightCaptures(t, goLang, goTree, queryStr, src)
 

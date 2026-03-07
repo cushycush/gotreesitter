@@ -38,6 +38,8 @@ type dfaTokenSource struct {
 
 const maxConsecutiveZeroWidthTokens = 4
 const maxConsecutiveZeroWidthTokensExternal = 128
+const maxConsecutiveZeroWidthTokensRepeatableExternal = 4096
+const noLookaheadLexState = ^uint16(0)
 
 var dfaTokenSourcePool = sync.Pool{
 	New: func() any {
@@ -113,6 +115,14 @@ func (d *dfaTokenSource) Next() Token {
 		startPos = d.lexer.pos
 	}
 	for {
+		if d.shouldForceEOFLookahead() {
+			tok := d.syntheticEOFLookaheadToken()
+			if DebugDFA.Load() {
+				fmt.Printf("  SYN tok %d  %d %d state=%d\n", tok.Symbol, tok.StartByte, tok.EndByte, d.state)
+			}
+			return tok
+		}
+
 		tok := Token{}
 		tokenFromExternal := false
 		if extTok, ok := d.nextExternalToken(); ok {
@@ -146,8 +156,13 @@ func (d *dfaTokenSource) Next() Token {
 				d.zeroWidthCount = 1
 			}
 			limit := maxConsecutiveZeroWidthTokens
-			if d.language != nil && d.language.Name == "yaml" {
-				limit = maxConsecutiveZeroWidthTokensExternal
+			if d.language != nil {
+				switch {
+				case d.language.Name == "yaml":
+					limit = maxConsecutiveZeroWidthTokensExternal
+				case d.allowRepeatedZeroWidthExternalSymbol(tok.Symbol):
+					limit = maxConsecutiveZeroWidthTokensRepeatableExternal
+				}
 			}
 			if d.zeroWidthCount > limit {
 				if d.lexer.pos < len(d.lexer.source) {
@@ -209,6 +224,30 @@ func (d *dfaTokenSource) nextDFAToken() Token {
 	}
 	tok := d.lexer.Next(lexState)
 	return d.promoteKeyword(tok)
+}
+
+func (d *dfaTokenSource) shouldForceEOFLookahead() bool {
+	if d == nil || d.language == nil {
+		return false
+	}
+	if int(d.state) >= len(d.language.LexModes) {
+		return false
+	}
+	return d.language.LexModes[d.state].LexState == noLookaheadLexState
+}
+
+func (d *dfaTokenSource) syntheticEOFLookaheadToken() Token {
+	if d == nil || d.lexer == nil {
+		return Token{NoLookahead: true}
+	}
+	pt := Point{Row: d.lexer.row, Column: d.lexer.col}
+	return Token{
+		StartByte:   uint32(d.lexer.pos),
+		EndByte:     uint32(d.lexer.pos),
+		StartPoint:  pt,
+		EndPoint:    pt,
+		NoLookahead: true,
+	}
 }
 
 // nextGLRUnionDFAToken tries each unique GLR stack state's lex mode and
@@ -457,7 +496,8 @@ func (d *dfaTokenSource) nextExternalToken() (Token, bool) {
 	if d.language != nil && d.language.Name != "yaml" &&
 		d.lexer.pos == d.extZeroPos && d.state == d.extZeroState && len(d.extZeroTried) > 0 {
 		for i := range valid {
-			if i < len(d.extZeroTried) && d.extZeroTried[i] {
+			if i < len(d.extZeroTried) && d.extZeroTried[i] &&
+				!d.allowRepeatedZeroWidthExternalSymbol(d.language.ExternalSymbols[i]) {
 				valid[i] = false
 			}
 		}
@@ -506,6 +546,13 @@ func (d *dfaTokenSource) trackZeroWidthExternalToken(tok Token) {
 	}
 	// Track zero-width tokens for loop prevention.
 	if tok.EndByte <= tok.StartByte {
+		if d.allowRepeatedZeroWidthExternalSymbol(tok.Symbol) {
+			d.extZeroPos = -1
+			if len(d.extZeroTried) > 0 {
+				d.extZeroTried = d.extZeroTried[:0]
+			}
+			return
+		}
 		if d.lexer.pos != d.extZeroPos || d.state != d.extZeroState {
 			// New position or state — reset the tried set.
 			d.extZeroPos = d.lexer.pos
@@ -532,6 +579,22 @@ func (d *dfaTokenSource) trackZeroWidthExternalToken(tok Token) {
 	}
 	// Non-zero-width token: clear the zero-width loop state.
 	d.extZeroPos = -1
+}
+
+func (d *dfaTokenSource) allowRepeatedZeroWidthExternalSymbol(sym Symbol) bool {
+	if d == nil || d.language == nil {
+		return false
+	}
+	nameIdx := int(sym)
+	if nameIdx < 0 || nameIdx >= len(d.language.SymbolNames) {
+		return false
+	}
+	switch d.language.SymbolNames[nameIdx] {
+	case "_implicit_end_tag":
+		return true
+	default:
+		return false
+	}
 }
 
 const (

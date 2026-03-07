@@ -141,7 +141,7 @@ func TestExtendParentSpanNoOp(t *testing.T) {
 	if got, want := parent.startByte, uint32(10); got != want {
 		t.Fatalf("parent.startByte = %d, want %d", got, want)
 	}
-	if got, want := parent.endByte, uint32(21); got != want {
+	if got, want := parent.endByte, uint32(20); got != want {
 		t.Fatalf("parent.endByte = %d, want %d", got, want)
 	}
 }

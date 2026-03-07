@@ -14,6 +14,8 @@ package cgoharness
 import (
 	"fmt"
 	"os"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"testing"
 
@@ -360,6 +362,20 @@ func parseWithGo(tc parityCase, src []byte, oldTree *gotreesitter.Tree) (*gotree
 	return tree, lang, nil
 }
 
+func releaseGoTree(tree *gotreesitter.Tree) {
+	if tree != nil {
+		tree.Release()
+	}
+}
+
+func scheduleParityMemoryScavenge(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() {
+		runtime.GC()
+		debug.FreeOSMemory()
+	})
+}
+
 func runParityCase(t *testing.T, tc parityCase, label string, src []byte) {
 	t.Helper()
 
@@ -367,6 +383,7 @@ func runParityCase(t *testing.T, tc parityCase, label string, src []byte) {
 	if err != nil {
 		t.Fatalf("[%s/%s] gotreesitter parse error: %v", tc.name, label, err)
 	}
+	defer releaseGoTree(goTree)
 	cLang, err := ParityCLanguage(tc.name)
 	if err != nil {
 		if skipReason := parityReferenceSkipReason(err); skipReason != "" {
@@ -661,6 +678,7 @@ func TestParityFreshParse(t *testing.T) {
 		}
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			scheduleParityMemoryScavenge(t)
 			if reason := paritySkipReason(tc.name); reason != "" {
 				t.Skipf("known mismatch: %s", reason)
 			}
@@ -681,6 +699,7 @@ func TestParityIncrementalParse(t *testing.T) {
 		}
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			scheduleParityMemoryScavenge(t)
 			if reason := paritySkipReason(tc.name); reason != "" {
 				t.Skipf("known mismatch: %s", reason)
 			}
@@ -694,6 +713,7 @@ func TestParityIncrementalParse(t *testing.T) {
 			if err != nil {
 				t.Fatalf("[%s/incremental] initial gotreesitter parse error: %v", tc.name, err)
 			}
+			defer releaseGoTree(oldTree)
 			cLang, err := ParityCLanguage(tc.name)
 			if err != nil {
 				if skipReason := parityReferenceSkipReason(err); skipReason != "" {
@@ -735,6 +755,7 @@ func TestParityIncrementalParse(t *testing.T) {
 				compareNodes(goFreshTree.RootNode(), goFreshLang, cFreshTree.RootNode(), "root", &freshErrs)
 				cFreshTree.Close()
 				if len(freshErrs) > 0 {
+					releaseGoTree(goFreshTree)
 					if firstFreshErr == "" {
 						firstFreshErr = fmt.Sprintf("%s: %s", candidate.label, freshErrs[0])
 					}
@@ -758,11 +779,15 @@ func TestParityIncrementalParse(t *testing.T) {
 
 				goIncrTree, goIncrLang, err := parseWithGo(tc, candidateEdited, candidateOldTree)
 				if err != nil {
+					releaseGoTree(candidateOldTree)
 					t.Fatalf("[%s/incremental] gotreesitter candidate incremental parse on %s error: %v", tc.name, candidate.label, err)
 				}
+				releaseGoTree(candidateOldTree)
 
 				var incrErrs []string
 				compareGoNodes(goIncrTree.RootNode(), goIncrLang, goFreshTree.RootNode(), "root", &incrErrs)
+				releaseGoTree(goFreshTree)
+				releaseGoTree(goIncrTree)
 				if len(incrErrs) > 0 {
 					if firstIncrErr == "" {
 						firstIncrErr = fmt.Sprintf("%s: %s", candidate.label, incrErrs[0])
@@ -805,6 +830,7 @@ func TestParityIncrementalParse(t *testing.T) {
 			if err != nil {
 				t.Fatalf("[%s/incremental] gotreesitter incremental parse error: %v", tc.name, err)
 			}
+			defer releaseGoTree(goTree)
 
 			cTree := cParser.Parse(edited, nil)
 			if cTree == nil || cTree.RootNode() == nil {
@@ -846,6 +872,7 @@ func TestParityHasNoErrors(t *testing.T) {
 		}
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			scheduleParityMemoryScavenge(t)
 			if reason := paritySkipReason(tc.name); reason != "" {
 				t.Skipf("known mismatch: %s", reason)
 			}
@@ -869,6 +896,7 @@ func TestParityHasNoErrors(t *testing.T) {
 			if err != nil {
 				t.Fatalf("[%s/errors] gotreesitter parse error: %v", tc.name, err)
 			}
+			defer releaseGoTree(tree)
 			if tree.RootNode().HasError() {
 				t.Errorf("[%s] RootNode().HasError() = true on well-formed input", tc.name)
 			}

@@ -1277,6 +1277,7 @@ var linguistExtensions = map[string]string{
 	".tsx": "tsx",
 	".ttl": "turtle",
 	".twig": "twig",
+	".txt": "vimdoc",
 	".txx": "cpp",
 	".typ": "xml",
 	".udf": "sql",

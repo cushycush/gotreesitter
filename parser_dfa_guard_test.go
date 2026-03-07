@@ -111,3 +111,42 @@ func TestParseIncrementalWithTokenSourceNilLanguageReturnsError(t *testing.T) {
 		t.Errorf("expected ErrNoLanguage, got: %v", err)
 	}
 }
+
+func TestAllowRepeatedZeroWidthExternalImplicitEndTag(t *testing.T) {
+	lang := &Language{
+		SymbolNames:     []string{"end", "_implicit_end_tag", "_other"},
+		ExternalSymbols: []Symbol{1, 2},
+	}
+	d := &dfaTokenSource{language: lang}
+
+	if !d.allowRepeatedZeroWidthExternalSymbol(1) {
+		t.Fatal("expected _implicit_end_tag to be repeatable")
+	}
+	if d.allowRepeatedZeroWidthExternalSymbol(2) {
+		t.Fatal("expected non-implicit external symbol to remain guarded")
+	}
+}
+
+func TestTrackZeroWidthExternalRepeatableSymbolClearsLoopGuard(t *testing.T) {
+	lang := &Language{
+		SymbolNames:     []string{"end", "_implicit_end_tag"},
+		ExternalSymbols: []Symbol{1},
+	}
+	d := &dfaTokenSource{
+		language:     lang,
+		lexer:        &Lexer{},
+		state:        7,
+		extZeroPos:   12,
+		extZeroState: 7,
+		extZeroTried: []bool{true},
+	}
+
+	d.trackZeroWidthExternalToken(Token{Symbol: 1, StartByte: 5, EndByte: 5})
+
+	if got := d.extZeroPos; got != -1 {
+		t.Fatalf("extZeroPos = %d, want -1", got)
+	}
+	if got := len(d.extZeroTried); got != 0 {
+		t.Fatalf("len(extZeroTried) = %d, want 0", got)
+	}
+}

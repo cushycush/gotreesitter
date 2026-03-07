@@ -619,7 +619,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 			if perfCountersEnabled {
 				perfRecordGlobalCapCull(len(stacks), maxStacks)
 			}
-			stacks = retainTopStacks(stacks, maxStacks)
+			stacks = retainTopStacksForLanguage(stacks, maxStacks, p.language)
 			if p.glrTrace {
 				fmt.Printf("[GLR] after cull:\n")
 				for ci := range stacks {
@@ -1054,7 +1054,70 @@ func (p *Parser) promotePrimaryStack(stacks []glrStack) {
 	}
 }
 
+func stackCompareForCull(lang *Language, a, b *glrStack) int {
+	if lang == nil || lang.Name != "c_sharp" {
+		return stackComparePtr(a, b)
+	}
+	if a.dead != b.dead {
+		if a.dead {
+			return -1
+		}
+		return 1
+	}
+	if a.accepted != b.accepted {
+		if a.accepted {
+			return 1
+		}
+		return -1
+	}
+	if aErr, bErr := stackErrorRank(a), stackErrorRank(b); aErr != bErr {
+		if aErr < bErr {
+			return 1
+		}
+		return -1
+	}
+	if a.score != b.score {
+		if a.score > b.score {
+			return 1
+		}
+		return -1
+	}
+	aDepth := a.depth()
+	bDepth := b.depth()
+	if aDepth != bDepth {
+		if aDepth > bDepth {
+			return 1
+		}
+		return -1
+	}
+	if a.byteOffset != b.byteOffset {
+		if a.byteOffset > b.byteOffset {
+			return 1
+		}
+		return -1
+	}
+	if a.shifted != b.shifted {
+		if !a.shifted {
+			return 1
+		}
+		return -1
+	}
+	aHash := stackHash(*a)
+	bHash := stackHash(*b)
+	if aHash > bHash {
+		return 1
+	}
+	if aHash < bHash {
+		return -1
+	}
+	return 0
+}
+
 func retainTopStacks(stacks []glrStack, keep int) []glrStack {
+	return retainTopStacksForLanguage(stacks, keep, nil)
+}
+
+func retainTopStacksForLanguage(stacks []glrStack, keep int, lang *Language) []glrStack {
 	if keep <= 0 {
 		return stacks[:0]
 	}
@@ -1083,7 +1146,7 @@ func retainTopStacks(stacks []glrStack, keep int) []glrStack {
 			if stacks[j].top().state != state {
 				continue
 			}
-			if stackComparePtr(&stacks[j], &stacks[best]) > 0 {
+			if stackCompareForCull(lang, &stacks[j], &stacks[best]) > 0 {
 				best = j
 			}
 		}
@@ -1092,7 +1155,7 @@ func retainTopStacks(stacks []glrStack, keep int) []glrStack {
 	for i := 0; i < len(selected); i++ {
 		best := i
 		for j := i + 1; j < len(selected); j++ {
-			if stackComparePtr(&stacks[selected[j]], &stacks[selected[best]]) > 0 {
+			if stackCompareForCull(lang, &stacks[selected[j]], &stacks[selected[best]]) > 0 {
 				best = j
 			}
 		}
@@ -1114,7 +1177,7 @@ func retainTopStacks(stacks []glrStack, keep int) []glrStack {
 			if chosen[i] {
 				continue
 			}
-			if best < 0 || stackComparePtr(&stacks[i], &stacks[best]) > 0 {
+			if best < 0 || stackCompareForCull(lang, &stacks[i], &stacks[best]) > 0 {
 				best = i
 			}
 		}

@@ -28,6 +28,7 @@ func assertGoIssue3FieldLookups(t *testing.T, src []byte) {
 	if err != nil {
 		t.Fatalf("go parse failed: %v", err)
 	}
+	defer releaseGoTree(tree)
 
 	fn := firstGoNamedChildByType(tree.RootNode(), lang, "function_declaration")
 	if fn == nil {

@@ -337,7 +337,6 @@ afterIndentLoop:
 
 		if isValid(pyTokIndent) && indentLength > currentIndent {
 			s.indents = append(s.indents, indentLength)
-			lexer.MarkEnd()
 			lexer.SetResultSymbol(pySymIndent)
 			return true
 		}
@@ -349,13 +348,11 @@ afterIndentLoop:
 			!s.insideInterpolatedString &&
 			firstCommentIndentLength < int32(currentIndent) {
 			s.indents = s.indents[:len(s.indents)-1]
-			lexer.MarkEnd()
 			lexer.SetResultSymbol(pySymDedent)
 			return true
 		}
 
 		if isValid(pyTokNewline) && !errorRecoveryMode {
-			lexer.MarkEnd()
 			lexer.SetResultSymbol(pySymNewline)
 			return true
 		}

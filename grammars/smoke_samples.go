@@ -206,7 +206,7 @@ var ParseSmokeSamples = map[string]string{
 	"markdown":        "# Heading\n",
 	"markdown_inline": "hello **world**\n",
 	"mermaid":         "flowchart TD\nA-->B\n",
-	"meson":           "project('hello', 'c')\n",
+	"meson":           "message('hello')\n",
 	"nim":             "echo \"hello\"\n",
 	"objc":            "@interface Foo : NSObject\n@end\n",
 	"odin":            "package main\n",

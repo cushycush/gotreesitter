@@ -939,6 +939,7 @@ func TestParityYAMLCorpus(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Go parse error: %v", err)
 			}
+			defer releaseGoTree(goTree)
 			if goTree.RootNode().HasError() {
 				t.Logf("WARNING: Go parse tree has error nodes")
 			}
@@ -1010,6 +1011,7 @@ func TestParityYAMLCorpusStructural(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Go parse error: %v", err)
 			}
+			defer releaseGoTree(goTree)
 
 			cParser := sitter.NewParser()
 			defer cParser.Close()
@@ -1091,16 +1093,17 @@ func TestParityYAMLCorpusSummary(t *testing.T) {
 			t.Logf("  %s: Go parse error: %v", sample.name, err)
 			continue
 		}
-
 		goCaps := collectGoHighlightCaptures(t, goLang, goTree, queryStr, src)
 
 		cParser := sitter.NewParser()
 		if err := cParser.SetLanguage(cLang); err != nil {
+			releaseGoTree(goTree)
 			cParser.Close()
 			continue
 		}
 		cTree := cParser.Parse(src, nil)
 		if cTree == nil {
+			releaseGoTree(goTree)
 			cParser.Close()
 			continue
 		}
@@ -1108,6 +1111,7 @@ func TestParityYAMLCorpusSummary(t *testing.T) {
 		cCaps := collectCHighlightCaptures(t, cLang, cTree, queryStr, src)
 		cTree.Close()
 		cParser.Close()
+		releaseGoTree(goTree)
 
 		onlyGo, onlyC := diffCaptures(goCaps, cCaps)
 
