@@ -832,6 +832,21 @@ func liftTokensInRule(r *Rule, parentName string, st *symbolTable, entries *[]in
 	switch r.Kind {
 	case RuleToken, RuleImmToken:
 		// Inline Token/ImmToken inside a nonterminal rule.
+
+		// For non-immediate Token wrapping a simple STRING (possibly through
+		// prec wrappers), reuse the bare string symbol if it was already
+		// registered in Phase 1. This matches tree-sitter C which unifies
+		// token("x") and token(prec(N, "x")) with the bare "x" terminal.
+		if r.Kind == RuleToken {
+			if sv := extractTokenStringValue(r); sv != "" {
+				if _, exists := st.lookup(sv); exists {
+					key := canonicalTokenKey(r)
+					dedup[key] = sv
+					return Sym(sv)
+				}
+			}
+		}
+
 		// Check if an identical pattern was already registered.
 		key := canonicalTokenKey(r)
 		if existingName, ok := dedup[key]; ok {
