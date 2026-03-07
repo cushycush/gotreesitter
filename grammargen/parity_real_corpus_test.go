@@ -255,7 +255,7 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 
 				genHasError := strings.Contains(genSexp, "ERROR") || strings.Contains(genSexp, "MISSING")
 				if genHasError {
-					if mismatchLogs < 5 {
+					if mismatchLogs < 25 {
 						mismatchLogs++
 						t.Logf("sample %d (%s:%s) gen ERROR on clean ref: %s",
 							i, cand.Source, cand.Path,
@@ -300,15 +300,19 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 					// the SExpr strings differ due to Language metadata
 					// differences (visibility, named) between gen/ref.
 					sexprMatch = true
+				} else {
+					// Always record div categories regardless of sexpr status,
+					// so the summary captures deep-only failures too.
+					divCategoryCounts[divs[0].Category]++
 				}
 				if sexprMatch {
 					metrics.SExprParity++
-				} else {
-					divCategoryCounts[divs[0].Category]++
-					if requireParity {
+				}
+				if len(divs) > 0 {
+					if !sexprMatch && requireParity {
 						t.Fatalf("sample %d (%s:%s) deep parity mismatch: %s\nGEN: %s\nREF: %s",
 							i, cand.Source, cand.Path, divs[0].String(), genSexp, refSexp)
-					} else if mismatchLogs < 5 {
+					} else if mismatchLogs < 25 {
 						mismatchLogs++
 						t.Logf("sample %d (%s:%s) deep mismatch: %s", i, cand.Source, cand.Path, divs[0].String())
 						if divs[0].Category == "type" && (divs[0].GenValue == "" || divs[0].RefValue == "") {

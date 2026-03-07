@@ -313,8 +313,13 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 		if rule == nil {
 			continue
 		}
+		// When a hidden rule's entire body is repeat/repeat1, expand to a
+		// self-referencing choice BEFORE prepareRule, matching tree-sitter's
+		// behavior (tree-sitter makes the rule self-recursive rather than
+		// creating a separate aux rule).
+		rule = expandTopLevelRepeat(cloneRule(rule), name)
 		prevAuxCount := len(auxRules)
-		processed := prepareRule(cloneRule(rule), name, st, auxRules, &auxCounter)
+		processed := prepareRule(rule, name, st, auxRules, &auxCounter)
 		processedRules[name] = processed
 		// Track which grammar rule each new auxiliary rule originates from.
 		if len(auxRules) > prevAuxCount {
@@ -732,6 +737,58 @@ func prepareRule(r *Rule, parentName string, st *symbolTable, auxRules map[strin
 		r.Children[i] = prepareRule(c, parentName, st, auxRules, counter)
 	}
 	return r
+}
+
+// expandTopLevelRepeat expands repeat/repeat1 at the top level of a hidden
+// rule into a self-referencing choice. This matches tree-sitter's behavior:
+// when a hidden rule IS a repeat, tree-sitter makes the rule self-recursive
+// (e.g., _a_list → _a_list item | item) rather than creating a separate aux.
+//
+// Only applies when the ENTIRE rule body is a repeat/repeat1 (possibly
+// wrapped in precedence). Nested repeats inside seq/choice are handled
+// normally by prepareRule (which creates aux rules).
+func expandTopLevelRepeat(r *Rule, ruleName string) *Rule {
+	if r == nil {
+		return r
+	}
+	// Only inline for hidden rules (underscore-prefixed). Visible rules
+	// must use aux rules to keep flat structure — self-recursion in a
+	// visible rule creates deeply nested nodes in the parse tree.
+	if !strings.HasPrefix(ruleName, "_") {
+		return r
+	}
+	// Unwrap precedence wrappers to check the inner structure.
+	inner := r
+	var precWrappers []*Rule
+	for inner.Kind == RulePrec || inner.Kind == RulePrecLeft ||
+		inner.Kind == RulePrecRight || inner.Kind == RulePrecDynamic {
+		precWrappers = append(precWrappers, inner)
+		if len(inner.Children) == 0 {
+			return r
+		}
+		inner = inner.Children[0]
+	}
+
+	var expanded *Rule
+	switch inner.Kind {
+	case RuleRepeat1:
+		// repeat1(x) → choice(seq(self, x), x)
+		x := inner.Children[0]
+		expanded = Choice(Seq(Sym(ruleName), cloneRule(x)), cloneRule(x))
+	case RuleRepeat:
+		// repeat(x) → choice(seq(self, x), x, blank())
+		x := inner.Children[0]
+		expanded = Choice(Seq(Sym(ruleName), cloneRule(x)), cloneRule(x), Blank())
+	default:
+		return r
+	}
+
+	// Re-wrap with precedence if there were any wrappers.
+	for i := len(precWrappers) - 1; i >= 0; i-- {
+		w := precWrappers[i]
+		expanded = &Rule{Kind: w.Kind, Prec: w.Prec, Children: []*Rule{expanded}}
+	}
+	return expanded
 }
 
 // registerExtraTerminals pre-registers terminal symbols from extras
