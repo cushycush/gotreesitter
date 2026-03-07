@@ -882,7 +882,7 @@ func extractTreeSitterCorpusInputs(data []byte) []string {
 			i++
 		}
 		start := i
-		for i < len(lines) && strings.TrimSpace(lines[i]) != "---" {
+		for i < len(lines) && !isDashFence(lines[i]) {
 			i++
 		}
 		if i > start {
@@ -905,6 +905,19 @@ func isEqualsFence(line string) bool {
 	}
 	for _, r := range s {
 		if r != '=' {
+			return false
+		}
+	}
+	return true
+}
+
+func isDashFence(line string) bool {
+	s := strings.TrimSpace(line)
+	if len(s) < 3 {
+		return false
+	}
+	for _, r := range s {
+		if r != '-' {
 			return false
 		}
 	}
