@@ -611,3 +611,71 @@ func TestParseCWithTokenSource(t *testing.T) {
 		t.Fatal("expected c parse without syntax errors")
 	}
 }
+
+func TestParseCppDestructorCallWithTokenSource(t *testing.T) {
+	lang := CppLanguage()
+	parser := gotreesitter.NewParser(lang)
+	src := []byte("namespace tree_sitter {\nnamespace rules {\n\nstruct Blank {};\nstruct Rule {\n  enum Type { BlankType };\n  Type type;\n  Blank blank_;\n\n  static void destroy_value(Rule *rule) {\n    switch (rule->type) {\n      case Rule::BlankType: return rule->blank_.~Blank();\n    }\n  }\n};\n\n}\n}\n")
+	ts, err := NewCTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewCTokenSource failed: %v", err)
+	}
+
+	tree, err := parser.ParseWithTokenSource(src, ts)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	root := tree.RootNode()
+	if root == nil {
+		t.Fatal("nil root")
+	}
+	if root.HasError() {
+		t.Fatalf("destructor call parse has errors: %s", root.SExpr(lang))
+	}
+
+	foundDestructor := false
+	gotreesitter.Walk(root, func(node *gotreesitter.Node, depth int) gotreesitter.WalkAction {
+		if node.Type(lang) == "destructor_name" && node.Text(src) == "~Blank" {
+			foundDestructor = true
+			return gotreesitter.WalkStop
+		}
+		return gotreesitter.WalkContinue
+	})
+	if !foundDestructor {
+		t.Fatalf("expected destructor_name for ~Blank in tree: %s", root.SExpr(lang))
+	}
+}
+
+func TestParseCppTemplateSpecializationWithTokenSource(t *testing.T) {
+	lang := CppLanguage()
+	parser := gotreesitter.NewParser(lang)
+	src := []byte("struct Blank {};\nstruct Rule {\n  template <typename T>\n  bool is() const;\n};\n\ntemplate <>\nbool Rule::is<Blank>() const { return true; }\n")
+	ts, err := NewCTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewCTokenSource failed: %v", err)
+	}
+
+	tree, err := parser.ParseWithTokenSource(src, ts)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	root := tree.RootNode()
+	if root == nil {
+		t.Fatal("nil root")
+	}
+	if root.HasError() {
+		t.Fatalf("template specialization parse has errors: %s", root.SExpr(lang))
+	}
+
+	foundTemplate := false
+	gotreesitter.Walk(root, func(node *gotreesitter.Node, depth int) gotreesitter.WalkAction {
+		if node.Type(lang) == "template_declaration" {
+			foundTemplate = true
+			return gotreesitter.WalkStop
+		}
+		return gotreesitter.WalkContinue
+	})
+	if !foundTemplate {
+		t.Fatalf("expected template_declaration in tree: %s", root.SExpr(lang))
+	}
+}

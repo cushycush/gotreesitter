@@ -40,23 +40,26 @@ type CTokenSource struct {
 	preprocState int // 0=normal, 1=afterDirective, 2=afterDefine, 3=afterDefineName, 4=afterDefineParams, 5=afterName, 6=afterInclude, 7=conditionalExpr
 
 	parserState         gotreesitter.StateID
+	parserStateKnown    bool
 	glrStates           []gotreesitter.StateID
 	lastSyntheticOffset int
 
-	keywordSymbols map[string]gotreesitter.Symbol
-	literalSymbols map[string]gotreesitter.Symbol
-	maxLiteralLen  int
+	keywordSymbols       map[string]gotreesitter.Symbol
+	literalSymbols       map[string]gotreesitter.Symbol
+	literalSymbolChoices map[string][]gotreesitter.Symbol
+	maxLiteralLen        int
 
 	stringOpeners []prefixedToken
 	charOpeners   []prefixedToken
 }
 
 type cLexerTables struct {
-	keywordSymbols map[string]gotreesitter.Symbol
-	literalSymbols map[string]gotreesitter.Symbol
-	maxLiteralLen  int
-	stringOpeners  []prefixedToken
-	charOpeners    []prefixedToken
+	keywordSymbols       map[string]gotreesitter.Symbol
+	literalSymbols       map[string]gotreesitter.Symbol
+	literalSymbolChoices map[string][]gotreesitter.Symbol
+	maxLiteralLen        int
+	stringOpeners        []prefixedToken
+	charOpeners          []prefixedToken
 }
 
 var cLexerTablesCache sync.Map // map[*gotreesitter.Language]*cLexerTables
@@ -148,6 +151,7 @@ func (ts *CTokenSource) SupportsIncrementalReuse() bool {
 
 func (ts *CTokenSource) SetParserState(state gotreesitter.StateID) {
 	ts.parserState = state
+	ts.parserStateKnown = true
 }
 
 func (ts *CTokenSource) SetGLRStates(states []gotreesitter.StateID) {
@@ -527,6 +531,7 @@ func (ts *CTokenSource) buildSymbolTables() {
 
 	keywordSymbols := make(map[string]gotreesitter.Symbol)
 	literalSymbols := make(map[string]gotreesitter.Symbol)
+	literalSymbolChoices := make(map[string][]gotreesitter.Symbol)
 	maxLiteralLen := 0
 
 	limit := int(ts.lang.TokenCount)
@@ -561,6 +566,9 @@ func (ts *CTokenSource) buildSymbolTables() {
 		if lexeme == "" {
 			continue
 		}
+		if choices := literalSymbolChoices[lexeme]; len(choices) == 0 || choices[len(choices)-1] != sym {
+			literalSymbolChoices[lexeme] = append(choices, sym)
+		}
 		escapes := tokenNameEscapeCount(name)
 		if prev, exists := literalEscapes[lexeme]; exists && prev <= escapes {
 			continue
@@ -572,10 +580,15 @@ func (ts *CTokenSource) buildSymbolTables() {
 		}
 	}
 
-	// tree-sitter-c has two distinct token IDs that display as "(".
-	// The declaration/parser path expects the higher-ID variant.
-	if syms := ts.lang.TokenSymbolsByName("("); len(syms) > 0 {
-		literalSymbols["("] = syms[len(syms)-1]
+	// tree-sitter-c/cpp expose duplicate punctuation tokens for a few
+	// parser-state-sensitive delimiters. Bias the default toward the
+	// higher-ID variant, then let parser-state probing fall back when a
+	// different duplicate is the only valid action.
+	for _, lexeme := range []string{"(", ">"} {
+		if syms := ts.lang.TokenSymbolsByName(lexeme); len(syms) > 0 {
+			literalSymbols[lexeme] = syms[len(syms)-1]
+			literalSymbolChoices[lexeme] = append(literalSymbolChoices[lexeme][:0], syms...)
+		}
 	}
 
 	base := &CTokenSource{
@@ -587,11 +600,12 @@ func (ts *CTokenSource) buildSymbolTables() {
 	charOpeners := base.collectOpeners([]string{"u8'", "L'", "U'", "u'", "'"}, ts.apostropheSymbol)
 
 	tables := &cLexerTables{
-		keywordSymbols: keywordSymbols,
-		literalSymbols: literalSymbols,
-		maxLiteralLen:  maxLiteralLen,
-		stringOpeners:  stringOpeners,
-		charOpeners:    charOpeners,
+		keywordSymbols:       keywordSymbols,
+		literalSymbols:       literalSymbols,
+		literalSymbolChoices: literalSymbolChoices,
+		maxLiteralLen:        maxLiteralLen,
+		stringOpeners:        stringOpeners,
+		charOpeners:          charOpeners,
 	}
 	if actual, loaded := cLexerTablesCache.LoadOrStore(ts.lang, tables); loaded {
 		ts.applyLexerTables(actual.(*cLexerTables))
@@ -606,6 +620,7 @@ func (ts *CTokenSource) applyLexerTables(tables *cLexerTables) {
 	}
 	ts.keywordSymbols = tables.keywordSymbols
 	ts.literalSymbols = tables.literalSymbols
+	ts.literalSymbolChoices = tables.literalSymbolChoices
 	ts.maxLiteralLen = tables.maxLiteralLen
 	ts.stringOpeners = tables.stringOpeners
 	ts.charOpeners = tables.charOpeners
@@ -866,6 +881,10 @@ func (ts *CTokenSource) matchLiteral() (gotreesitter.Symbol, int) {
 		maxN = remaining
 	}
 
+	var fallbackSym gotreesitter.Symbol
+	var fallbackN int
+	useParserContext := ts.hasParserContext()
+
 	for n := maxN; n >= 1; n-- {
 		lex := bytesToStringNoCopy(ts.src[ts.cur.offset : ts.cur.offset+n])
 		sym, ok := ts.literalSymbols[lex]
@@ -875,9 +894,62 @@ func (ts *CTokenSource) matchLiteral() (gotreesitter.Symbol, int) {
 		if lexemeNeedsBoundary(lex) && !hasWordBoundaryAfter(ts.src, ts.cur.offset+n) {
 			continue
 		}
-		return sym, n
+		sym = ts.selectLiteralSymbol(lex, sym)
+		if fallbackSym == 0 {
+			fallbackSym, fallbackN = sym, n
+		}
+		if !useParserContext || ts.hasParserAction(sym) {
+			return sym, n
+		}
+	}
+	if fallbackSym != 0 {
+		return fallbackSym, fallbackN
 	}
 	return 0, 0
+}
+
+func (ts *CTokenSource) hasParserContext() bool {
+	if ts == nil {
+		return false
+	}
+	return ts.parserStateKnown || len(ts.glrStates) > 0
+}
+
+func (ts *CTokenSource) selectLiteralSymbol(lexeme string, fallback gotreesitter.Symbol) gotreesitter.Symbol {
+	choices := ts.literalSymbolChoices[lexeme]
+	if len(choices) <= 1 {
+		if len(choices) == 1 {
+			return choices[0]
+		}
+		return fallback
+	}
+	if ts.hasParserAction(fallback) {
+		return fallback
+	}
+	for _, sym := range choices {
+		if sym != fallback && ts.hasParserAction(sym) {
+			return sym
+		}
+	}
+	return fallback
+}
+
+func (ts *CTokenSource) hasParserAction(sym gotreesitter.Symbol) bool {
+	if ts == nil || ts.lang == nil || sym == 0 {
+		return false
+	}
+	if len(ts.glrStates) > 0 {
+		for _, state := range ts.glrStates {
+			if ts.lookupActionIndex(state, sym) != 0 {
+				return true
+			}
+		}
+		return false
+	}
+	if !ts.parserStateKnown {
+		return false
+	}
+	return ts.lookupActionIndex(ts.parserState, sym) != 0
 }
 
 func (ts *CTokenSource) matchAt(lexeme string) bool {
