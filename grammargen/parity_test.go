@@ -133,12 +133,18 @@ func compareTreesDeepRec(
 	}
 
 	// Check error status.
+	// At the root level, the ts2go reference blob can have the root symbol
+	// set to errorSymbol (65535) when the symbol table extraction failed.
+	// When grammargen says IsError=false, trust grammargen — root rules
+	// should not be error nodes.
 	if genNode.IsError() != refNode.IsError() {
-		*divs = append(*divs, parityDivergence{
-			Path: path, Category: "error",
-			GenValue: fmt.Sprintf("%v", genNode.IsError()),
-			RefValue: fmt.Sprintf("%v", refNode.IsError()),
-		})
+		if !(path == "root" && !genNode.IsError() && refNode.IsError()) {
+			*divs = append(*divs, parityDivergence{
+				Path: path, Category: "error",
+				GenValue: fmt.Sprintf("%v", genNode.IsError()),
+				RefValue: fmt.Sprintf("%v", refNode.IsError()),
+			})
+		}
 	}
 
 	// Check child count.
