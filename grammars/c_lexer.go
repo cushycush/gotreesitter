@@ -245,6 +245,9 @@ func (ts *CTokenSource) Next() gotreesitter.Token {
 			}
 			return tok
 		}
+		if ts.shouldLexSignedNumber() {
+			return ts.numberToken()
+		}
 		if isASCIIDigit(b) {
 			return ts.numberToken()
 		}
@@ -783,6 +786,9 @@ func (ts *CTokenSource) numberToken() gotreesitter.Token {
 	start := ts.cur.offset
 	startPt := ts.cur.point()
 
+	if !ts.cur.eof() && (ts.cur.peekByte() == '+' || ts.cur.peekByte() == '-') {
+		ts.cur.advanceByte()
+	}
 	if ts.cur.peekByte() == '0' && ts.cur.offset+1 < len(ts.src) && (ts.src[ts.cur.offset+1] == 'x' || ts.src[ts.cur.offset+1] == 'X') {
 		ts.cur.advanceByte()
 		ts.cur.advanceByte()
@@ -822,6 +828,24 @@ func (ts *CTokenSource) numberToken() gotreesitter.Token {
 	}
 
 	return makeToken(ts.numberSymbol, ts.src, start, ts.cur.offset, startPt, ts.cur.point())
+}
+
+func (ts *CTokenSource) shouldLexSignedNumber() bool {
+	if ts.numberSymbol == 0 || !ts.hasAction(ts.numberSymbol) || ts.cur.eof() {
+		return false
+	}
+	b := ts.cur.peekByte()
+	if b != '+' && b != '-' {
+		return false
+	}
+	next := ts.cur.offset + 1
+	if next >= len(ts.src) {
+		return false
+	}
+	if isASCIIDigit(ts.src[next]) {
+		return true
+	}
+	return ts.src[next] == '.' && next+1 < len(ts.src) && isASCIIDigit(ts.src[next+1])
 }
 
 func (ts *CTokenSource) literalToken() (gotreesitter.Token, bool) {

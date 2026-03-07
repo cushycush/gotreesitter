@@ -314,6 +314,98 @@ func TestParseCFixedWidthIntegerTypesAsPrimitiveTypes(t *testing.T) {
 	}
 }
 
+func TestParseCSignedIntegerLiteralsAsNumberLiterals(t *testing.T) {
+	lang := CLanguage()
+	parser := gotreesitter.NewParser(lang)
+	src := []byte("int f(int a) {\n  switch (a) {\n    case -1:\n      return +2;\n    default:\n      return 0;\n  }\n}\n")
+	ts, err := NewCTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewCTokenSource failed: %v", err)
+	}
+
+	tree, err := parser.ParseWithTokenSource(src, ts)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	root := tree.RootNode()
+	if root == nil {
+		t.Fatal("nil root")
+	}
+	if root.HasError() {
+		t.Fatalf("signed integer parse has errors: %s", root.SExpr(lang))
+	}
+
+	gotNumber := map[string]bool{}
+	gotUnary := map[string]bool{}
+	gotreesitter.Walk(root, func(node *gotreesitter.Node, depth int) gotreesitter.WalkAction {
+		if !node.IsNamed() {
+			return gotreesitter.WalkContinue
+		}
+		switch node.Type(lang) {
+		case "number_literal":
+			gotNumber[node.Text(src)] = true
+		case "unary_expression":
+			gotUnary[node.Text(src)] = true
+		}
+		return gotreesitter.WalkContinue
+	})
+
+	for _, want := range []string{"-1", "+2"} {
+		if !gotNumber[want] {
+			t.Fatalf("missing number_literal %q in tree: %s", want, root.SExpr(lang))
+		}
+		if gotUnary[want] {
+			t.Fatalf("%q parsed as unary_expression unexpectedly: %s", want, root.SExpr(lang))
+		}
+	}
+}
+
+func TestParseCSubtractionKeepsBinaryExpression(t *testing.T) {
+	lang := CLanguage()
+	parser := gotreesitter.NewParser(lang)
+	src := []byte("int f(int a) {\n  return a - 1;\n}\n")
+	ts, err := NewCTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewCTokenSource failed: %v", err)
+	}
+
+	tree, err := parser.ParseWithTokenSource(src, ts)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	root := tree.RootNode()
+	if root == nil {
+		t.Fatal("nil root")
+	}
+	if root.HasError() {
+		t.Fatalf("subtraction parse has errors: %s", root.SExpr(lang))
+	}
+
+	foundBinary := false
+	foundSignedLiteral := false
+	gotreesitter.Walk(root, func(node *gotreesitter.Node, depth int) gotreesitter.WalkAction {
+		if !node.IsNamed() {
+			return gotreesitter.WalkContinue
+		}
+		switch node.Type(lang) {
+		case "binary_expression":
+			foundBinary = true
+		case "number_literal":
+			if node.Text(src) == "-1" {
+				foundSignedLiteral = true
+			}
+		}
+		return gotreesitter.WalkContinue
+	})
+
+	if !foundBinary {
+		t.Fatalf("expected binary_expression in tree: %s", root.SExpr(lang))
+	}
+	if foundSignedLiteral {
+		t.Fatalf("unexpected signed number_literal in subtraction tree: %s", root.SExpr(lang))
+	}
+}
+
 func TestCTokenSourceEmitsGenericEndifInsideLinkageSpecification(t *testing.T) {
 	lang := CLanguage()
 	src := []byte("#ifdef __cplusplus\nextern \"C\" {\n#endif\n\nint x;\n\n#ifdef __cplusplus\n}\n#endif\n")
