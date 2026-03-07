@@ -1,16 +1,16 @@
 {
   "version": 3,
-  "generated_at": "2026-03-07T05:00:00Z",
-  "commit_sha": "8508d93",
+  "generated_at": "2026-03-07T05:15:00Z",
+  "commit_sha": "3977dec",
   "corpus_root": "/tmp/grammar_parity",
   "profile": "aggressive",
   "max_cases": 25,
   "max_sample_bytes": 524288,
-  "grammar_count": 50,
-  "total_eligible": 682,
-  "total_no_error": 682,
-  "total_sexpr_parity": 369,
-  "total_deep_parity": 319,
+  "grammar_count": 52,
+  "total_eligible": 729,
+  "total_no_error": 729,
+  "total_sexpr_parity": 391,
+  "total_deep_parity": 347,
   "metrics": {
     "bash": {
       "eligible": 25,
@@ -34,7 +34,7 @@
       "eligible": 12,
       "no_error": 12,
       "sexpr_parity": 10,
-      "deep_parity": 8
+      "deep_parity": 10
     },
     "css": {
       "eligible": 25,
@@ -91,14 +91,14 @@
       "deep_parity": 25
     },
     "git_config": {
-      "eligible": 1,
-      "no_error": 1,
-      "sexpr_parity": 1,
-      "deep_parity": 0
+      "eligible": 2,
+      "no_error": 2,
+      "sexpr_parity": 2,
+      "deep_parity": 2
     },
     "git_rebase": {
-      "eligible": 3,
-      "no_error": 3,
+      "eligible": 4,
+      "no_error": 4,
       "sexpr_parity": 3,
       "deep_parity": 3
     },
@@ -109,10 +109,10 @@
       "deep_parity": 6
     },
     "gitcommit": {
-      "eligible": 4,
-      "no_error": 4,
-      "sexpr_parity": 4,
-      "deep_parity": 0
+      "eligible": 7,
+      "no_error": 7,
+      "sexpr_parity": 5,
+      "deep_parity": 5
     },
     "gitignore": {
       "eligible": 14,
@@ -161,6 +161,12 @@
       "no_error": 1,
       "sexpr_parity": 0,
       "deep_parity": 0
+    },
+    "javascript": {
+      "eligible": 25,
+      "no_error": 25,
+      "sexpr_parity": 9,
+      "deep_parity": 8
     },
     "jq": {
       "eligible": 6,
@@ -292,7 +298,7 @@
       "eligible": 4,
       "no_error": 4,
       "sexpr_parity": 4,
-      "deep_parity": 3
+      "deep_parity": 4
     },
     "swift": {
       "eligible": 25,
