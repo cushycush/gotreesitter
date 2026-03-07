@@ -679,6 +679,10 @@ func prepareRule(r *Rule, parentName string, st *symbolTable, auxRules map[strin
 	// Handle the current node.
 	switch r.Kind {
 	case RuleRepeat:
+		// repeat(x) = optional(repeat1(x)) — matches tree-sitter's lowering.
+		// Creates a repeat1-style aux rule (always matches at least one x),
+		// then wraps the reference in choice(aux, blank()) so the parent
+		// gets both "with repeat" and "without repeat" production variants.
 		*counter++
 		auxName := fmt.Sprintf("_%s_repeat%d", parentName, *counter)
 		if _, exists := st.lookupNonterm(auxName); !exists {
@@ -688,11 +692,11 @@ func prepareRule(r *Rule, parentName string, st *symbolTable, auxRules map[strin
 			inner := r.Children[0]
 			preparedInner := prepareRule(cloneRule(inner), parentName, st, auxRules, counter)
 			auxRules[auxName] = Choice(
-				Seq(Sym(auxName), preparedInner),
-				Blank(),
+				Seq(Sym(auxName), cloneRule(preparedInner)),
+				cloneRule(preparedInner),
 			)
 		}
-		return Sym(auxName)
+		return Choice(Sym(auxName), Blank())
 
 	case RuleRepeat1:
 		*counter++
