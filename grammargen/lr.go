@@ -96,10 +96,13 @@ func buildLRTables(ng *NormalizedGrammar) (*LRTables, error) {
 	// Compute FIRST and nullable sets.
 	ctx.computeFirstSets()
 
-	// Build item sets. Use DeRemer/Pennello LALR for large grammars (>400 productions)
-	// which would otherwise be slow with the iterative LR(1) construction.
+	// Build item sets. Use DeRemer/Pennello LALR for most grammars (>100 productions).
+	// tree-sitter's C compiler uses LALR for all grammars. The iterative LR(1) with
+	// extended merging is kept only for very small grammars where it can produce
+	// slightly more precise states. For mid-to-large grammars, LALR produces
+	// state counts closer to tree-sitter C (~1x vs 2-16x with extended merging).
 	var itemSets []lrItemSet
-	if len(ng.Productions) > 400 {
+	if len(ng.Productions) > 100 {
 		itemSets = ctx.buildItemSetsLALR()
 	} else {
 		itemSets = ctx.buildItemSets()
