@@ -644,23 +644,36 @@ func liftTokensInRule(r *Rule, parentName string, st *symbolTable, entries *[]in
 	case RuleToken, RuleImmToken:
 		// Inline Token/ImmToken inside a nonterminal rule.
 		// Create an anonymous terminal symbol for it.
+		// Visibility matches tree-sitter: STRING-based tokens are visible
+		// (delimiters like quotes, brackets), PATTERN-based tokens are invisible
+		// (internal content matchers).
 		counter[parentName]++
-		anonName := fmt.Sprintf("_%s_token%d", parentName, counter[parentName])
+		visible := isStringOnlyToken(r)
+		// Use a unique key for symbol table registration to avoid merging
+		// with other terminals that have the same string value (e.g., opening
+		// vs closing quotes both being `"`).
+		regKey := fmt.Sprintf("_%s_token%d", parentName, counter[parentName])
+		displayName := regKey
+		if visible {
+			if s := extractTokenStringValue(r); s != "" {
+				displayName = s
+			}
+		}
 
-		st.addSymbol(anonName, SymbolInfo{
-			Name:    anonName,
-			Visible: false,
+		st.addSymbol(regKey, SymbolInfo{
+			Name:    displayName,
+			Visible: visible,
 			Named:   false,
 			Kind:    SymbolTerminal,
 		})
 
 		*entries = append(*entries, inlineTokenEntry{
-			name:      anonName,
+			name:      regKey,
 			rule:      r,
 			immediate: r.Kind == RuleImmToken,
 		})
 
-		return Sym(anonName)
+		return Sym(regKey)
 
 	case RuleString, RulePattern, RuleSymbol, RuleBlank:
 		// Leaf nodes — no Token/ImmToken inside.
@@ -672,6 +685,49 @@ func liftTokensInRule(r *Rule, parentName string, st *symbolTable, entries *[]in
 		r.Children[i] = liftTokensInRule(c, parentName, st, entries, counter)
 	}
 	return r
+}
+
+// isStringOnlyToken returns true if a Token/ImmToken wraps a STRING literal
+// (possibly through prec wrappers). Such tokens represent visible delimiters
+// (quotes, brackets) that appear as children in the parse tree.
+func isStringOnlyToken(r *Rule) bool {
+	if r == nil {
+		return false
+	}
+	// Unwrap Token/ImmToken wrapper
+	if r.Kind == RuleToken || r.Kind == RuleImmToken {
+		if len(r.Children) > 0 {
+			return isStringOnlyToken(r.Children[0])
+		}
+		return false
+	}
+	// Unwrap precedence wrappers
+	if r.Kind == RulePrec || r.Kind == RulePrecLeft || r.Kind == RulePrecRight || r.Kind == RulePrecDynamic {
+		if len(r.Children) > 0 {
+			return isStringOnlyToken(r.Children[0])
+		}
+		return false
+	}
+	return r.Kind == RuleString
+}
+
+// extractTokenStringValue returns the string literal value from a Token/ImmToken
+// that wraps a STRING, or "" if it's not a simple string token.
+func extractTokenStringValue(r *Rule) string {
+	if r == nil {
+		return ""
+	}
+	if r.Kind == RuleToken || r.Kind == RuleImmToken ||
+		r.Kind == RulePrec || r.Kind == RulePrecLeft || r.Kind == RulePrecRight || r.Kind == RulePrecDynamic {
+		if len(r.Children) > 0 {
+			return extractTokenStringValue(r.Children[0])
+		}
+		return ""
+	}
+	if r.Kind == RuleString {
+		return r.Value
+	}
+	return ""
 }
 
 // prepareRule normalizes a rule tree for production extraction:
