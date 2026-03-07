@@ -714,24 +714,117 @@ type inlineTokenEntry struct {
 // Token/ImmToken nodes (not at the rule top level), registers anonymous
 // terminal symbols for them, and replaces them with Sym references.
 // This must run before tokenCount is recorded so inline tokens get terminal IDs.
+//
+// Inline tokens with identical patterns are deduplicated to share a single
+// symbol, matching tree-sitter C behavior. Without this, synonym tokens
+// (e.g. _variable_assignment_token4 and _RECIPEPREFIX_assignment_token2 both
+// matching "\n") cause parse failures when the DFA picks the wrong synonym
+// and the parser can't find an action for it after a reduce chain.
 func liftInlineTokens(g *Grammar, st *symbolTable) []inlineTokenEntry {
 	var entries []inlineTokenEntry
-	counter := make(map[string]int) // per-parent-rule counters
+	counter := make(map[string]int)    // per-parent-rule counters
+	dedup := make(map[string]string)   // canonical pattern key → symbol name
 
 	for _, name := range g.RuleOrder {
 		rule := g.Rules[name]
 		if isTerminalRule(rule) {
 			continue
 		}
-		g.Rules[name] = liftTokensInRule(rule, name, st, &entries, counter)
+		g.Rules[name] = liftTokensInRule(rule, name, st, &entries, counter, dedup)
 	}
 
 	return entries
 }
 
+// canonicalTokenKey computes a canonical string key for an inline token's
+// pattern, used to deduplicate tokens with identical matching behavior.
+// Precedence wrappers are stripped since they affect conflict resolution,
+// not pattern matching. Token vs ImmToken are distinguished since they
+// have different lexing semantics.
+func canonicalTokenKey(r *Rule) string {
+	if r == nil {
+		return ""
+	}
+	var sb strings.Builder
+	switch r.Kind {
+	case RuleToken:
+		sb.WriteString("T:")
+	case RuleImmToken:
+		sb.WriteString("I:")
+	default:
+		return ""
+	}
+	if len(r.Children) > 0 {
+		writeCanonicalInner(r.Children[0], &sb)
+	}
+	return sb.String()
+}
+
+// writeCanonicalInner writes a canonical representation of a rule subtree,
+// stripping precedence/field wrappers that don't affect pattern matching.
+func writeCanonicalInner(r *Rule, sb *strings.Builder) {
+	if r == nil {
+		return
+	}
+	switch r.Kind {
+	case RulePrec, RulePrecLeft, RulePrecRight, RulePrecDynamic:
+		if len(r.Children) > 0 {
+			writeCanonicalInner(r.Children[len(r.Children)-1], sb)
+		}
+	case RuleField:
+		if len(r.Children) > 0 {
+			writeCanonicalInner(r.Children[0], sb)
+		}
+	case RuleString:
+		sb.WriteString("s:")
+		sb.WriteString(r.Value)
+	case RulePattern:
+		sb.WriteString("p:")
+		sb.WriteString(r.Value)
+	case RuleSeq:
+		sb.WriteString("q(")
+		for i, c := range r.Children {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			writeCanonicalInner(c, sb)
+		}
+		sb.WriteByte(')')
+	case RuleChoice:
+		sb.WriteString("c(")
+		for i, c := range r.Children {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			writeCanonicalInner(c, sb)
+		}
+		sb.WriteByte(')')
+	case RuleBlank:
+		sb.WriteString("b")
+	case RuleRepeat:
+		sb.WriteString("*(")
+		if len(r.Children) > 0 {
+			writeCanonicalInner(r.Children[0], sb)
+		}
+		sb.WriteByte(')')
+	case RuleRepeat1:
+		sb.WriteString("+(")
+		if len(r.Children) > 0 {
+			writeCanonicalInner(r.Children[0], sb)
+		}
+		sb.WriteByte(')')
+	case RuleSymbol:
+		sb.WriteString("r:")
+		sb.WriteString(r.Value)
+	default:
+		fmt.Fprintf(sb, "?%d:%s", r.Kind, r.Value)
+	}
+}
+
 // liftTokensInRule recursively walks a rule tree, replacing inline Token/ImmToken
 // nodes with Sym references to newly-registered anonymous terminal symbols.
-func liftTokensInRule(r *Rule, parentName string, st *symbolTable, entries *[]inlineTokenEntry, counter map[string]int) *Rule {
+// Tokens with identical patterns are deduplicated via the dedup map.
+func liftTokensInRule(r *Rule, parentName string, st *symbolTable, entries *[]inlineTokenEntry, counter map[string]int, dedup map[string]string) *Rule {
 	if r == nil {
 		return r
 	}
@@ -739,15 +832,18 @@ func liftTokensInRule(r *Rule, parentName string, st *symbolTable, entries *[]in
 	switch r.Kind {
 	case RuleToken, RuleImmToken:
 		// Inline Token/ImmToken inside a nonterminal rule.
+		// Check if an identical pattern was already registered.
+		key := canonicalTokenKey(r)
+		if existingName, ok := dedup[key]; ok {
+			return Sym(existingName)
+		}
+
 		// Create an anonymous terminal symbol for it.
 		// Visibility matches tree-sitter: STRING-based tokens are visible
 		// (delimiters like quotes, brackets), PATTERN-based tokens are invisible
 		// (internal content matchers).
 		counter[parentName]++
 		visible := isStringOnlyToken(r)
-		// Use a unique key for symbol table registration to avoid merging
-		// with other terminals that have the same string value (e.g., opening
-		// vs closing quotes both being `"`).
 		regKey := fmt.Sprintf("_%s_token%d", parentName, counter[parentName])
 		displayName := regKey
 		if visible {
@@ -762,6 +858,8 @@ func liftTokensInRule(r *Rule, parentName string, st *symbolTable, entries *[]in
 			Named:   false,
 			Kind:    SymbolTerminal,
 		})
+
+		dedup[key] = regKey
 
 		*entries = append(*entries, inlineTokenEntry{
 			name:      regKey,
@@ -778,7 +876,7 @@ func liftTokensInRule(r *Rule, parentName string, st *symbolTable, entries *[]in
 
 	// Recurse into children.
 	for i, c := range r.Children {
-		r.Children[i] = liftTokensInRule(c, parentName, st, entries, counter)
+		r.Children[i] = liftTokensInRule(c, parentName, st, entries, counter, dedup)
 	}
 	return r
 }
