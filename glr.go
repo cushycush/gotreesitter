@@ -684,7 +684,10 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 			perfRecordStackEquivalentHashMissSkip()
 		}
 		if duplicateIndex >= 0 {
-			if stackCompareMerge(&stack, &result[duplicateIndex]) > 0 {
+			// Equal-ranked duplicates should not preserve the first-inserted
+			// branch by accident. Let later survivors replace ties so
+			// post-reduce reprocessing can keep the branch that stayed viable.
+			if stackCompareMerge(&stack, &result[duplicateIndex]) >= 0 {
 				result[duplicateIndex] = stack
 				for j := 0; j < slot.count; j++ {
 					if slot.indices[j] == duplicateIndex {
