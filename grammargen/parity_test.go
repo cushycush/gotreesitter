@@ -179,7 +179,12 @@ func compareTreesDeepRec(
 		// If named children align, recurse into them instead of failing.
 		genNamed := namedChildren(genNode)
 		refNamed := namedChildren(refNode)
-		if len(genNamed) == len(refNamed) && len(genNamed) > 0 && namedTypesMatch(genNamed, genLang, refNamed, refLang) {
+		if len(genNamed) == len(refNamed) && namedTypesMatch(genNamed, genLang, refNamed, refLang) {
+			// Both sides have the same named children (possibly zero).
+			// When zero, the difference is purely anonymous tokens — tolerate it.
+			if len(genNamed) == 0 {
+				return
+			}
 			for i, gn := range genNamed {
 				rn := refNamed[i]
 				childType := gn.Type(genLang)

@@ -1,6 +1,6 @@
 {
-  "version": 7,
-  "generated_at": "2026-03-07T22:00:00Z",
+  "version": 8,
+  "generated_at": "2026-03-07T22:30:00Z",
   "commit_sha": "b9c9f55",
   "corpus_root": "/tmp/grammar_parity",
   "profile": "aggressive",
@@ -10,7 +10,7 @@
   "total_eligible": 915,
   "total_no_error": 915,
   "total_sexpr_parity": 636,
-  "total_deep_parity": 624,
+  "total_deep_parity": 629,
   "metrics": {
     "bash": {
       "eligible": 25,
@@ -22,7 +22,7 @@
       "eligible": 25,
       "no_error": 25,
       "sexpr_parity": 12,
-      "deep_parity": 11
+      "deep_parity": 12
     },
     "comment": {
       "eligible": 3,
@@ -190,7 +190,7 @@
       "eligible": 25,
       "no_error": 25,
       "sexpr_parity": 18,
-      "deep_parity": 17
+      "deep_parity": 18
     },
     "nix": {
       "eligible": 25,
@@ -202,7 +202,7 @@
       "eligible": 25,
       "no_error": 25,
       "sexpr_parity": 11,
-      "deep_parity": 9
+      "deep_parity": 11
     },
     "pem": {
       "eligible": 5,
@@ -238,7 +238,7 @@
       "eligible": 25,
       "no_error": 25,
       "sexpr_parity": 9,
-      "deep_parity": 8
+      "deep_parity": 9
     },
     "regex": {
       "eligible": 25,
