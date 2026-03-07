@@ -146,7 +146,7 @@ func (d *dfaTokenSource) Next() Token {
 				d.zeroWidthCount = 1
 			}
 			limit := maxConsecutiveZeroWidthTokens
-			if d.language != nil && d.language.Name == "yaml" {
+			if d.language != nil && (d.language.Name == "yaml" || d.language.Name == "python") {
 				limit = maxConsecutiveZeroWidthTokensExternal
 			}
 			if d.zeroWidthCount > limit {
