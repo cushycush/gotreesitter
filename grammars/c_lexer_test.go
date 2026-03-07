@@ -268,6 +268,52 @@ func TestParseCHeaderGuard(t *testing.T) {
 	}
 }
 
+func TestParseCFixedWidthIntegerTypesAsPrimitiveTypes(t *testing.T) {
+	lang := CLanguage()
+	parser := gotreesitter.NewParser(lang)
+	src := []byte("typedef struct {\n  uint32_t count;\n  int32_t delta;\n} Sample;\n")
+	ts, err := NewCTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewCTokenSource failed: %v", err)
+	}
+
+	tree, err := parser.ParseWithTokenSource(src, ts)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	root := tree.RootNode()
+	if root == nil {
+		t.Fatal("nil root")
+	}
+	if root.HasError() {
+		t.Fatalf("fixed-width integer parse has errors: %s", root.SExpr(lang))
+	}
+
+	gotPrimitive := map[string]bool{}
+	gotTypeIdentifier := map[string]bool{}
+	gotreesitter.Walk(root, func(node *gotreesitter.Node, depth int) gotreesitter.WalkAction {
+		if !node.IsNamed() {
+			return gotreesitter.WalkContinue
+		}
+		switch node.Type(lang) {
+		case "primitive_type":
+			gotPrimitive[node.Text(src)] = true
+		case "type_identifier":
+			gotTypeIdentifier[node.Text(src)] = true
+		}
+		return gotreesitter.WalkContinue
+	})
+
+	for _, want := range []string{"uint32_t", "int32_t"} {
+		if !gotPrimitive[want] {
+			t.Fatalf("missing primitive_type %q in tree: %s", want, root.SExpr(lang))
+		}
+		if gotTypeIdentifier[want] {
+			t.Fatalf("%q parsed as type_identifier unexpectedly: %s", want, root.SExpr(lang))
+		}
+	}
+}
+
 func TestCTokenSourceEmitsGenericEndifInsideLinkageSpecification(t *testing.T) {
 	lang := CLanguage()
 	src := []byte("#ifdef __cplusplus\nextern \"C\" {\n#endif\n\nint x;\n\n#ifdef __cplusplus\n}\n#endif\n")
@@ -435,7 +481,6 @@ func TestParseCPreprocConditionalPragmasWithTokenSource(t *testing.T) {
 		t.Fatalf("preproc_call count = %d, want %d: %s", got, want, root.SExpr(lang))
 	}
 }
-
 func TestParseCDefineWithExpression(t *testing.T) {
 	lang := CLanguage()
 	parser := gotreesitter.NewParser(lang)

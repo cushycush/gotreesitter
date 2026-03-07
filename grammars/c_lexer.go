@@ -1002,7 +1002,11 @@ func isCIdentPart(b byte) bool {
 
 func isCPrimitiveType(text string) bool {
 	switch text {
-	case "char", "int", "float", "double", "void", "_Bool", "_Complex", "bool", "__int128", "size_t", "ssize_t", "ptrdiff_t", "intptr_t", "uintptr_t", "wchar_t", "char16_t", "char32_t":
+	case "char", "int", "float", "double", "void", "_Bool", "_Complex", "bool", "__int128",
+		"size_t", "ssize_t", "ptrdiff_t", "intptr_t", "uintptr_t",
+		"int8_t", "int16_t", "int32_t", "int64_t",
+		"uint8_t", "uint16_t", "uint32_t", "uint64_t",
+		"wchar_t", "char16_t", "char32_t":
 		return true
 	default:
 		return false
