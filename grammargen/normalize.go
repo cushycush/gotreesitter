@@ -584,20 +584,102 @@ func collectInlinePatterns(g *Grammar) []string {
 
 // classifyRules separates rule names into named tokens (terminal rules)
 // and nonterminals. A rule is a "named token" if its definition is:
-// - a string literal (like true: "true")
 // - wrapped in token() or token.immediate()
 // - a pattern
-// Otherwise it's a nonterminal.
+// - a string literal ONLY when no other rule shares the same string value
+//   (if multiple named rules define the same STRING, or the STRING is used
+//   inline in nonterminal rules, the named rule becomes a nonterminal
+//   wrapping the shared anonymous terminal — matching tree-sitter C behavior).
 func classifyRules(g *Grammar) (tokens, nonterms []string) {
+	// Count how many distinct sources each STRING value has.
+	// Sources: named bare-STRING rules + inline STRING usage in nonterminal rules.
+	sharedStrings := computeSharedStrings(g)
+
 	for _, name := range g.RuleOrder {
 		rule := g.Rules[name]
 		if isTerminalRule(rule) {
-			tokens = append(tokens, name)
+			// Check if this is a bare STRING rule whose value is shared.
+			if sv := terminalStringValue(rule); sv != "" && sharedStrings[sv] {
+				nonterms = append(nonterms, name)
+			} else {
+				tokens = append(tokens, name)
+			}
 		} else {
 			nonterms = append(nonterms, name)
 		}
 	}
 	return
+}
+
+// computeSharedStrings identifies STRING values that are used by multiple
+// sources. A STRING value is "shared" when it appears in more than one named
+// bare-STRING rule, or when it appears both in a named bare-STRING rule AND
+// as an inline string in a nonterminal rule.
+func computeSharedStrings(g *Grammar) map[string]bool {
+	// Count named bare-STRING rules per string value.
+	namedUses := make(map[string]int)
+	for _, name := range g.RuleOrder {
+		rule := g.Rules[name]
+		if sv := terminalStringValue(rule); sv != "" {
+			namedUses[sv]++
+		}
+	}
+
+	// Count inline STRING usage in nonterminal rules.
+	inlineUses := make(map[string]bool)
+	var walkInline func(r *Rule, inToken bool)
+	walkInline = func(r *Rule, inToken bool) {
+		if r == nil {
+			return
+		}
+		switch r.Kind {
+		case RuleString:
+			if !inToken {
+				inlineUses[r.Value] = true
+			}
+			return
+		case RuleToken, RuleImmToken:
+			return // strings inside token() don't count as separate inline usage
+		}
+		for _, c := range r.Children {
+			walkInline(c, inToken)
+		}
+	}
+	for _, name := range g.RuleOrder {
+		rule := g.Rules[name]
+		if !isTerminalRule(rule) {
+			walkInline(rule, false)
+		}
+	}
+	for _, e := range g.Extras {
+		walkInline(e, false)
+	}
+
+	shared := make(map[string]bool)
+	for sv, count := range namedUses {
+		if count > 1 || inlineUses[sv] {
+			shared[sv] = true
+		}
+	}
+	return shared
+}
+
+// terminalStringValue returns the string value of a bare STRING terminal rule
+// (including through prec wrappers). Returns "" for non-STRING terminals
+// (TOKEN, PATTERN, etc.) or non-terminal rules.
+func terminalStringValue(r *Rule) string {
+	if r == nil {
+		return ""
+	}
+	switch r.Kind {
+	case RuleString:
+		return r.Value
+	case RulePrec, RulePrecLeft, RulePrecRight, RulePrecDynamic:
+		if len(r.Children) > 0 {
+			return terminalStringValue(r.Children[0])
+		}
+	}
+	return ""
 }
 
 // isTerminalRule returns true if the rule defines a terminal token.
