@@ -170,3 +170,80 @@ func TestParseCWithTokenSource(t *testing.T) {
 		t.Fatal("expected c parse without syntax errors")
 	}
 }
+
+func TestCTokenSourceLineCommentContinuationCRLF(t *testing.T) {
+	lang := CLanguage()
+	src := []byte("// hello \\\r\n   still a comment\r\nthis_is_not a_comment;\r\n")
+	ts, err := NewCTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewCTokenSource failed: %v", err)
+	}
+
+	comment := ts.Next()
+	if got, want := comment.Text, "// hello \\\r\n   still a comment\r"; got != want {
+		t.Fatalf("comment token text = %q, want %q", got, want)
+	}
+
+	ident := ts.Next()
+	if got, want := ident.Text, "this_is_not"; got != want {
+		t.Fatalf("next token text = %q, want %q", got, want)
+	}
+}
+
+func TestCTokenSourceSystemIncludeAndPragmaTokens(t *testing.T) {
+	lang := CLanguage()
+	src := []byte("#include <stdbool.h>\n#pragma GCC diagnostic push\n")
+	ts, err := NewCTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewCTokenSource failed: %v", err)
+	}
+
+	tok := ts.Next()
+	if got, want := tok.Text, "#include"; got != want {
+		t.Fatalf("directive text = %q, want %q", got, want)
+	}
+
+	tok = ts.Next()
+	if got, want := tok.Text, "<stdbool.h>"; got != want {
+		t.Fatalf("include arg text = %q, want %q", got, want)
+	}
+	if got := lang.SymbolNames[tok.Symbol]; got != "system_lib_string" {
+		t.Fatalf("include arg symbol = %q, want %q", got, "system_lib_string")
+	}
+
+	tok = ts.Next()
+	if got := lang.SymbolNames[tok.Symbol]; got != "preproc_include_token2" {
+		t.Fatalf("line terminator symbol = %q, want %q", got, "preproc_include_token2")
+	}
+
+	tok = ts.Next()
+	if got, want := tok.Text, "#pragma"; got != want {
+		t.Fatalf("pragma text = %q, want %q", got, want)
+	}
+
+	tok = ts.Next()
+	if got, want := tok.Text, "GCC diagnostic push"; got != want {
+		t.Fatalf("pragma arg text = %q, want %q", got, want)
+	}
+	if got := lang.SymbolNames[tok.Symbol]; got != "preproc_arg" {
+		t.Fatalf("pragma arg symbol = %q, want %q", got, "preproc_arg")
+	}
+}
+
+func TestParseCSystemIncludeAndPragma(t *testing.T) {
+	lang := CLanguage()
+	parser := gotreesitter.NewParser(lang)
+	src := []byte("#include <assert.h>\n#pragma GCC diagnostic push\n")
+	ts, err := NewCTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewCTokenSource failed: %v", err)
+	}
+
+	tree, err := parser.ParseWithTokenSource(src, ts)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if root := tree.RootNode(); root == nil || root.HasError() {
+		t.Fatalf("parse has errors")
+	}
+}
