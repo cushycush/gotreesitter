@@ -6,14 +6,14 @@ RUNNER="$SCRIPT_DIR/run_parity_in_docker.sh"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 IMAGE_TAG="gotreesitter/cgo-harness:go1.24-local"
-MEMORY_LIMIT="10g"
+MEMORY_LIMIT="12g"
 CPUS_LIMIT="4"
 PIDS_LIMIT="4096"
 OUT_ROOT=""
 LABEL="grammargen-real-corpus"
 PROFILE="aggressive"
 MAX_CASES="25"
-MAX_GRAMMARS="12"
+MAX_GRAMMARS="0"
 SEED_DIR=""
 CONTAINER_SEED_DIR=""
 OFFLINE=0
@@ -203,13 +203,17 @@ clone_repo() {
   local name="\$1"
   local url="\$2"
   local dest="/tmp/grammar_parity/\$name"
-  if [[ -d "\$dest/.git" ]]; then
-    git -C "\$dest" fetch --depth=1 origin
-    git -C "\$dest" reset --hard FETCH_HEAD
-  else
-    rm -rf "\$dest"
-    git clone --depth=1 "\$url" "\$dest"
-  fi
+  local attempt
+  for attempt in 1 2 3; do
+    if [[ -d "\$dest/.git" ]]; then
+      git -C "\$dest" fetch --depth=1 origin && git -C "\$dest" reset --hard FETCH_HEAD && return 0
+    else
+      rm -rf "\$dest"
+      git clone --depth=1 "\$url" "\$dest" && return 0
+    fi
+    sleep 2
+  done
+  return 1
 }
 
 if [[ "\$OFFLINE_MODE" != "1" ]]; then
