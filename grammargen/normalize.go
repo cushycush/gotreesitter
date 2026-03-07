@@ -408,6 +408,12 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 		productions = append(productions, prods...)
 	}
 
+	// Phase 7b: Deduplicate productions.
+	// enumerateAlternatives can produce duplicate productions when Choice
+	// alternatives overlap after expansion. Tree-sitter deduplicates these.
+	// Extra duplicates cause spurious reduce-reduce conflicts.
+	productions = deduplicateProductions(productions)
+
 	// Phase 8: Resolve conflicts.
 	var conflicts [][]int
 	for _, cgroup := range g.Conflicts {
@@ -1399,6 +1405,47 @@ func addRuleSymbol(r *Rule, st *symbolTable, rhs *[]int) {
 			*rhs = append(*rhs, id)
 		}
 	}
+}
+
+// deduplicateProductions removes duplicate productions that have the same
+// LHS, RHS, fields, and aliases. Keeps the first occurrence (lowest production
+// ID). Reassigns production IDs to be contiguous.
+func deduplicateProductions(prods []Production) []Production {
+	type prodKey struct {
+		lhs    int
+		rhs    string // fmt.Sprint of RHS slice
+		prec   int
+		assoc  Assoc
+		dynP   int
+		fields string
+		alias  string
+	}
+
+	seen := make(map[prodKey]bool, len(prods))
+	result := make([]Production, 0, len(prods))
+
+	for _, p := range prods {
+		k := prodKey{
+			lhs:    p.LHS,
+			rhs:    fmt.Sprint(p.RHS),
+			prec:   p.Prec,
+			assoc:  p.Assoc,
+			dynP:   p.DynPrec,
+			fields: fmt.Sprint(p.Fields),
+			alias:  fmt.Sprint(p.Aliases),
+		}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		result = append(result, p)
+	}
+
+	// Reassign contiguous production IDs.
+	for i := range result {
+		result[i].ProductionID = i
+	}
+	return result
 }
 
 // expandInlineRules returns a copy of the grammar with all inline rule
