@@ -1025,9 +1025,12 @@ func resolveActionConflict(actions []lrAction, ng *NormalizedGrammar) ([]lrActio
 		if shiftMatchesConflictGroup(shift, reduce.lhsSym, ng) {
 			return actions, nil
 		}
-		if isDeclaredConflict(reduce.prodIdx, ng) {
-			return actions, nil
-		}
+		// Note: isDeclaredConflict is NOT checked here. Tree-sitter C only
+		// keeps S/R conflicts as GLR when both the shift and reduce LHS
+		// symbols appear in the same conflict group. shiftMatchesConflictGroup
+		// already verifies that. Checking only the reduce side (which is what
+		// isDeclaredConflict does) would be too permissive — it keeps GLR
+		// entries for conflicts that tree-sitter resolves deterministically.
 		if isTransitiveConflict(shift, reduce, ng) {
 			return actions, nil
 		}
@@ -1127,17 +1130,6 @@ func shiftMatchesConflictGroup(shift lrAction, reduceLHS int, ng *NormalizedGram
 	return false
 }
 
-func isDeclaredConflict(prodIdx int, ng *NormalizedGrammar) bool {
-	prod := &ng.Productions[prodIdx]
-	for _, cgroup := range ng.Conflicts {
-		for _, sym := range cgroup {
-			if sym == prod.LHS {
-				return true
-			}
-		}
-	}
-	return false
-}
 
 func isTransitiveConflict(shift lrAction, reduce lrAction, ng *NormalizedGrammar) bool {
 	if len(ng.Conflicts) == 0 {
