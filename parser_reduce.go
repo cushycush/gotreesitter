@@ -190,12 +190,12 @@ func (p *Parser) pushStackNode(s *glrStack, state StateID, node *Node, entryScra
 	}
 }
 
-func reduceWindowFromGSS(s *glrStack, childCount int, buf []stackEntry) ([]stackEntry, StateID, bool) {
+func reduceWindowFromGSS(s *glrStack, childCount int, buf []stackEntry) ([]stackEntry, StateID, *Node, bool) {
 	if s == nil || s.gss.head == nil || s.depth() == 0 {
-		return nil, 0, false
+		return nil, 0, nil, false
 	}
 	if childCount == 0 {
-		return buf[:0], s.top().state, true
+		return buf[:0], s.top().state, nil, true
 	}
 
 	rev := buf[:0]
@@ -212,19 +212,20 @@ func reduceWindowFromGSS(s *glrStack, childCount int, buf []stackEntry) ([]stack
 		n = n.prev
 	}
 	if nonExtraFound < childCount || n == nil || n.prev == nil {
-		return rev[:0], 0, false
+		return rev[:0], 0, nil, false
 	}
 	topState := n.prev.entry.state
+	predNode := n.prev.entry.node
 
 	for i, j := 0, len(rev)-1; i < j; i, j = i+1, j-1 {
 		rev[i], rev[j] = rev[j], rev[i]
 	}
-	return rev, topState, true
+	return rev, topState, predNode, true
 }
 
 func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, tmp []stackEntry, deferParentLinks bool, trackChildErrors bool) {
 	childCount := int(act.ChildCount)
-	windowEntries, topState, ok := reduceWindowFromGSS(s, childCount, tmp)
+	windowEntries, topState, predNode, ok := reduceWindowFromGSS(s, childCount, tmp)
 	if !ok {
 		s.dead = true
 		if tmpEntries != nil {
@@ -264,6 +265,14 @@ func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, tok Toke
 	shouldUseRawSpan := shouldUseRawSpanForReduction(act.Symbol, children, p.language.SymbolMetadata, p.forceRawSpanAll, p.forceRawSpanTable)
 	if shouldUseRawSpan && reducedEnd > 0 {
 		span := computeReduceRawSpan(windowEntries, 0, reducedEnd)
+		// Clamp startByte to predecessor's end position. Invisible entries
+		// reduced earlier in the parse can retain stale absolute positions
+		// (e.g. startByte=0 for a repeat helper built at document start).
+		// The predecessor's endByte is where this reduction's content begins.
+		if predNode != nil && span.startByte < predNode.endByte {
+			span.startByte = predNode.endByte
+			span.startPoint = predNode.endPoint
+		}
 		parent.startByte = span.startByte
 		parent.endByte = span.endByte
 		parent.startPoint = span.startPoint
@@ -787,6 +796,13 @@ func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, tok Token, anyR
 	shouldUseRawSpan := shouldUseRawSpanForReduction(act.Symbol, children, p.language.SymbolMetadata, p.forceRawSpanAll, p.forceRawSpanTable)
 	if shouldUseRawSpan && window.reducedEnd > window.start {
 		span := computeReduceRawSpan(entries, window.start, window.reducedEnd)
+		// Clamp startByte to predecessor's end position (see GSS path comment).
+		if window.start > 0 {
+			if predNode := entries[window.start-1].node; predNode != nil && span.startByte < predNode.endByte {
+				span.startByte = predNode.endByte
+				span.startPoint = predNode.endPoint
+			}
+		}
 		parent.startByte = span.startByte
 		parent.endByte = span.endByte
 		parent.startPoint = span.startPoint
