@@ -1285,23 +1285,36 @@ func flattenRule2(r *Rule, lhsID int, st *symbolTable, prodIDCounter *int) []Pro
 		return []Production{prod}
 
 	default:
-		// If no top-level prec was found, scan the rule tree for inner
-		// prec wrappers (e.g., prec.left(16, $.expr) inside a seq element).
-		// These should propagate to the production.
-		if prec == 0 && assoc == AssocNone && dynPrec == 0 {
-			prec, assoc, dynPrec = scanInnerPrec(inner)
-		}
-
 		// Enumerate all alternatives from Choice-within-Seq by expanding
 		// the rule into a list of "flat" RHS sequences.
 		alternatives := enumerateAlternatives(inner)
 		var prods []Production
 		for _, alt := range alternatives {
+			// Compute per-alternative prec: use rightmost element's prec
+			// (matching tree-sitter's behavior where the rightmost prec
+			// wrapper in a production wins). Fall back to the outer prec
+			// from unwrapPrec, then scanInnerPrec as last resort.
+			altPrec, altAssoc, altDyn := prec, assoc, dynPrec
+			for _, elem := range alt {
+				if elem.prec != 0 {
+					altPrec = elem.prec
+				}
+				if elem.assoc != AssocNone {
+					altAssoc = elem.assoc
+				}
+				if elem.dynPrec != 0 {
+					altDyn = elem.dynPrec
+				}
+			}
+			if altPrec == 0 && altAssoc == AssocNone && altDyn == 0 {
+				altPrec, altAssoc, altDyn = scanInnerPrec(inner)
+			}
+
 			prod := Production{
 				LHS:          lhsID,
-				Prec:         prec,
-				Assoc:        assoc,
-				DynPrec:      dynPrec,
+				Prec:         altPrec,
+				Assoc:        altAssoc,
+				DynPrec:      altDyn,
 				ProductionID: *prodIDCounter,
 			}
 			*prodIDCounter++
@@ -1325,6 +1338,9 @@ type rhsElement struct {
 	fieldName  string // non-empty if wrapped in a Field
 	aliasName  string // non-empty if wrapped in an Alias
 	aliasNamed bool   // true if alias is a named symbol ($.name form)
+	prec       int    // precedence from enclosing prec wrapper (0 = none)
+	assoc      Assoc  // associativity from enclosing prec wrapper
+	dynPrec    int    // dynamic precedence from enclosing prec_dynamic wrapper
 }
 
 // enumerateAlternatives expands a rule containing inline Choice nodes
@@ -1402,7 +1418,25 @@ func enumerateAlternatives(r *Rule) [][]*rhsElement {
 
 	case RulePrec, RulePrecLeft, RulePrecRight, RulePrecDynamic:
 		if len(r.Children) > 0 {
-			return enumerateAlternatives(r.Children[0])
+			innerAlts := enumerateAlternatives(r.Children[0])
+			// Tag all elements in each alternative with the prec info.
+			for _, alt := range innerAlts {
+				for _, elem := range alt {
+					switch r.Kind {
+					case RulePrecLeft:
+						elem.prec = r.Prec
+						elem.assoc = AssocLeft
+					case RulePrecRight:
+						elem.prec = r.Prec
+						elem.assoc = AssocRight
+					case RulePrecDynamic:
+						elem.dynPrec = r.Prec
+					default: // RulePrec
+						elem.prec = r.Prec
+					}
+				}
+			}
+			return innerAlts
 		}
 		return [][]*rhsElement{{}}
 
