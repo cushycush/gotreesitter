@@ -16,7 +16,7 @@ func TestBuildReduceChildrenHiddenParentExtendsInheritedFieldToTrailingAnonymous
 			{0, 1},
 		},
 		FieldMapEntries: []FieldMapEntry{
-			{FieldID: 1, ChildIndex: 0, Inherited: true},
+			{FieldID: 1, ChildIndex: 0, Inherited: false},
 		},
 	}
 	parser := &Parser{language: lang}
@@ -323,5 +323,36 @@ func TestBuildReduceChildrenHiddenParentDoesNotExtendNameFieldToTrailingAnonymou
 	}
 	if got := fieldIDs[1]; got != 0 {
 		t.Fatalf("fieldIDs[1] = %d, want 0", got)
+	}
+}
+
+func TestBuildReduceChildrenHiddenParentInheritedSingleNamedFieldOverridesChildField(t *testing.T) {
+	lang := &Language{
+		Name:       "c",
+		FieldNames: []string{"", "declarator", "parameters"},
+		SymbolMetadata: []SymbolMetadata{
+			{},
+			{Visible: true, Named: true},
+			{Visible: false, Named: true},
+		},
+		FieldMapSlices: [][2]uint16{
+			{0, 1},
+		},
+		FieldMapEntries: []FieldMapEntry{
+			{FieldID: 1, ChildIndex: 0, Inherited: true},
+		},
+	}
+	parser := &Parser{language: lang}
+	arena := newNodeArena(8)
+
+	child := NewParentNode(Symbol(1), true, []*Node{NewLeafNode(Symbol(1), true, 0, 1, Point{}, Point{})}, []FieldID{2}, 0)
+	hidden := NewParentNode(Symbol(2), false, []*Node{child}, []FieldID{2}, 0)
+
+	_, fieldIDs := parser.buildReduceChildren([]stackEntry{{node: hidden}}, 0, 1, 1, 0, 1, arena)
+	if got, want := len(fieldIDs), 1; got != want {
+		t.Fatalf("len(fieldIDs) = %d, want %d", got, want)
+	}
+	if got, want := fieldIDs[0], FieldID(1); got != want {
+		t.Fatalf("fieldIDs[0] = %d, want %d", got, want)
 	}
 }

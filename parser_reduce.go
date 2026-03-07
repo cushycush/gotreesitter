@@ -655,9 +655,15 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 						inheritedFieldAllowsMixedNamedRepeat(lang, fid)
 					extendTrailingAfterSingleNamed := assignedNamedCount == 0 && namedCount == 1 && !hasUnnamedBetweenNamed
 					allowSingleNamedLift := inheritedFieldAllowsSingleNamedLift(lang, fid)
+					allowSingleNamedOverride := assignedNamedCount == 0 && namedCount == 1 &&
+						!hasUnnamedBetweenNamed && allowSingleNamedLift &&
+						preferSingleNamedParentFieldOverride(lang, fid)
 					for j := out; j < fieldEnd; j++ {
 						child := children[j]
-						if fieldIDs[j] != 0 || child == nil || !child.isNamed {
+						if child == nil || !child.isNamed {
+							continue
+						}
+						if fieldIDs[j] != 0 && !(allowSingleNamedOverride && j == lastNamedIndex) {
 							continue
 						}
 						if assignedNamedCount == 0 && !assignAllNamed && !allowSingleNamedLift {
@@ -761,6 +767,25 @@ func inheritedFieldAllowsTrailingAnonymous(lang *Language, fid FieldID) bool {
 		return false
 	default:
 		return true
+	}
+}
+
+func preferSingleNamedParentFieldOverride(lang *Language, fid FieldID) bool {
+	if lang == nil {
+		return false
+	}
+	idx := int(fid)
+	if idx < 0 || idx >= len(lang.FieldNames) {
+		return false
+	}
+	if lang.FieldNames[idx] != "declarator" {
+		return false
+	}
+	switch lang.Name {
+	case "c", "cpp", "objc":
+		return true
+	default:
+		return false
 	}
 }
 
