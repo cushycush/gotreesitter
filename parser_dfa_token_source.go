@@ -238,34 +238,12 @@ func (d *dfaTokenSource) nextTokenForLexState(lexState uint16) Token {
 	if d == nil || d.lexer == nil {
 		return Token{}
 	}
-	if lexState == noLookaheadLexState {
-		return d.syntheticEOFLookaheadToken()
+	if lexState == ^uint16(0) {
+		tok := d.eofTokenAtLexerPos()
+		tok.NoLookahead = true
+		return tok
 	}
 	return d.lexer.Next(lexState)
-}
-
-func (d *dfaTokenSource) shouldForceEOFLookahead() bool {
-	if d == nil || d.language == nil {
-		return false
-	}
-	if int(d.state) >= len(d.language.LexModes) {
-		return false
-	}
-	return d.language.LexModes[d.state].LexState == noLookaheadLexState
-}
-
-func (d *dfaTokenSource) syntheticEOFLookaheadToken() Token {
-	if d == nil || d.lexer == nil {
-		return Token{NoLookahead: true}
-	}
-	pt := Point{Row: d.lexer.row, Column: d.lexer.col}
-	return Token{
-		StartByte:   uint32(d.lexer.pos),
-		EndByte:     uint32(d.lexer.pos),
-		StartPoint:  pt,
-		EndPoint:    pt,
-		NoLookahead: true,
-	}
 }
 
 // nextGLRUnionDFAToken tries each unique GLR stack state's lex mode and
@@ -311,6 +289,7 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 	bestEndRow := startRow
 	bestEndCol := startCol
 	bestVisible := false
+	bestOriginActions := 0
 
 	// Deduplicate lex states to avoid redundant scans.
 	seen := make(map[uint16]struct{}, len(d.glrStates))
@@ -344,6 +323,10 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 				score++
 			}
 		}
+		originActionCount := 0
+		if idx := d.lookupActionIndex(st, candTok.Symbol); idx != 0 && int(idx) < len(d.language.ParseActions) {
+			originActionCount = len(d.language.ParseActions[idx].Actions)
+		}
 
 		if score <= 0 {
 			continue
@@ -360,6 +343,7 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 			(candTok.StartByte == bestTok.StartByte && splitPreference == 0 && candEndPos > bestEndPos) ||
 			(candTok.StartByte == bestTok.StartByte && splitPreference == 0 && candEndPos == bestEndPos && candTok.EndByte > bestTok.EndByte) ||
 			(candTok.StartByte == bestTok.StartByte && splitPreference == 0 && candEndPos == bestEndPos && candTok.EndByte == bestTok.EndByte && d.preferSpecificTokenOnExactMatch(candTok, candEndPos, bestTok, bestEndPos)) ||
+			(candTok.StartByte == bestTok.StartByte && splitPreference == 0 && candEndPos == bestEndPos && candTok.EndByte == bestTok.EndByte && originActionCount > bestOriginActions) ||
 			(candTok.StartByte == bestTok.StartByte && splitPreference == 0 && candEndPos == bestEndPos && candTok.EndByte == bestTok.EndByte && score > bestScore) ||
 			(candTok.StartByte == bestTok.StartByte && splitPreference == 0 && candEndPos == bestEndPos && candTok.EndByte == bestTok.EndByte && score == bestScore && candVisible && !bestVisible)
 		if better {
@@ -370,6 +354,7 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 			bestEndRow = candEndRow
 			bestEndCol = candEndCol
 			bestVisible = candVisible
+			bestOriginActions = originActionCount
 		}
 	}
 
