@@ -1,7 +1,7 @@
 {
-  "version": 4,
-  "generated_at": "2026-03-07T13:55:00Z",
-  "commit_sha": "362d200",
+  "version": 5,
+  "generated_at": "2026-03-07T20:30:00Z",
+  "commit_sha": "c08d90f",
   "corpus_root": "/tmp/grammar_parity",
   "profile": "aggressive",
   "max_cases": 25,
@@ -9,8 +9,8 @@
   "grammar_count": 49,
   "total_eligible": 915,
   "total_no_error": 915,
-  "total_sexpr_parity": 598,
-  "total_deep_parity": 575,
+  "total_sexpr_parity": 631,
+  "total_deep_parity": 603,
   "metrics": {
     "bash": {
       "eligible": 25,
@@ -45,19 +45,19 @@
     "csv": {
       "eligible": 7,
       "no_error": 7,
-      "sexpr_parity": 6,
-      "deep_parity": 6
+      "sexpr_parity": 7,
+      "deep_parity": 7
     },
     "diff": {
       "eligible": 14,
       "no_error": 14,
-      "sexpr_parity": 6,
-      "deep_parity": 6
+      "sexpr_parity": 7,
+      "deep_parity": 7
     },
     "dockerfile": {
       "eligible": 25,
       "no_error": 25,
-      "sexpr_parity": 9,
+      "sexpr_parity": 11,
       "deep_parity": 9
     },
     "dot": {
@@ -81,8 +81,8 @@
     "elixir": {
       "eligible": 25,
       "no_error": 25,
-      "sexpr_parity": 12,
-      "deep_parity": 12
+      "sexpr_parity": 13,
+      "deep_parity": 13
     },
     "forth": {
       "eligible": 25,
@@ -99,8 +99,8 @@
     "git_rebase": {
       "eligible": 14,
       "no_error": 14,
-      "sexpr_parity": 11,
-      "deep_parity": 11
+      "sexpr_parity": 14,
+      "deep_parity": 14
     },
     "gitattributes": {
       "eligible": 11,
@@ -111,7 +111,7 @@
     "gitcommit": {
       "eligible": 25,
       "no_error": 25,
-      "sexpr_parity": 8,
+      "sexpr_parity": 13,
       "deep_parity": 8
     },
     "go_lang": {
@@ -153,14 +153,20 @@
     "ini": {
       "eligible": 11,
       "no_error": 11,
-      "sexpr_parity": 5,
-      "deep_parity": 5
+      "sexpr_parity": 6,
+      "deep_parity": 6
     },
     "javascript": {
       "eligible": 25,
       "no_error": 25,
       "sexpr_parity": 6,
       "deep_parity": 6
+    },
+    "jsdoc": {
+      "eligible": 16,
+      "no_error": 16,
+      "sexpr_parity": 11,
+      "deep_parity": 11
     },
     "json": {
       "eligible": 6,
@@ -174,12 +180,6 @@
       "sexpr_parity": 25,
       "deep_parity": 25
     },
-    "jsdoc": {
-      "eligible": 16,
-      "no_error": 16,
-      "sexpr_parity": 5,
-      "deep_parity": 5
-    },
     "lua": {
       "eligible": 25,
       "no_error": 25,
@@ -189,8 +189,8 @@
     "make": {
       "eligible": 25,
       "no_error": 25,
-      "sexpr_parity": 7,
-      "deep_parity": 7
+      "sexpr_parity": 18,
+      "deep_parity": 17
     },
     "nix": {
       "eligible": 25,
@@ -207,14 +207,14 @@
     "pem": {
       "eligible": 5,
       "no_error": 5,
-      "sexpr_parity": 1,
-      "deep_parity": 1
+      "sexpr_parity": 5,
+      "deep_parity": 5
     },
     "php": {
       "eligible": 25,
       "no_error": 25,
-      "sexpr_parity": 8,
-      "deep_parity": 8
+      "sexpr_parity": 9,
+      "deep_parity": 9
     },
     "promql": {
       "eligible": 25,
