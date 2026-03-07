@@ -652,6 +652,143 @@ func TestProductionRepeatInSeq(t *testing.T) {
 	}
 }
 
+// TestProductionTopLevelRepeat1 tests that a hidden rule defined as repeat1(x)
+// at the top level becomes self-recursive, matching tree-sitter's behavior.
+// Only hidden (underscore-prefixed) rules get this treatment.
+func TestProductionTopLevelRepeat1(t *testing.T) {
+	g := &Grammar{
+		Name: "test_toplevel_repeat1",
+		Rules: map[string]*Rule{
+			"document": Seq(Sym("_list")),
+			"_list":    Repeat1(Sym("item")),
+			"item":     Pat(`[a-z]+`),
+		},
+		RuleOrder: []string{"document", "_list", "item"},
+	}
+
+	ng, err := Normalize(g)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+
+	listID := -1
+	for i, info := range ng.Symbols {
+		if info.Name == "_list" {
+			listID = i
+			break
+		}
+	}
+	if listID < 0 {
+		t.Fatal("_list symbol not found")
+	}
+
+	var prods []Production
+	for _, p := range ng.Productions {
+		if p.LHS == listID {
+			prods = append(prods, p)
+		}
+	}
+
+	t.Logf("_list productions: %d", len(prods))
+	ccSet := make(map[int]bool)
+	for i, p := range prods {
+		rhsNames := make([]string, len(p.RHS))
+		for j, rid := range p.RHS {
+			if rid >= 0 && rid < len(ng.Symbols) {
+				rhsNames[j] = ng.Symbols[rid].Name
+			} else {
+				rhsNames[j] = fmt.Sprintf("?%d", rid)
+			}
+		}
+		t.Logf("  prod[%d]: cc=%d rhs=[%s]", i, len(p.RHS), strings.Join(rhsNames, ", "))
+		ccSet[len(p.RHS)] = true
+	}
+
+	// Tree-sitter: _list → _list item | item (self-recursive, cc=2 and cc=1)
+	if !ccSet[2] {
+		t.Error("MISSING: cc=2 (_list → _list item)")
+	}
+	if !ccSet[1] {
+		t.Error("MISSING: cc=1 (_list → item)")
+	}
+	if len(prods) != 2 {
+		t.Errorf("expected 2 productions for _list, got %d", len(prods))
+	}
+
+	// Verify NO aux repeat symbol was created.
+	for _, info := range ng.Symbols {
+		if strings.Contains(info.Name, "__list_repeat") {
+			t.Errorf("unexpected aux repeat symbol: %s (should be self-recursive)", info.Name)
+		}
+	}
+}
+
+// TestProductionTopLevelRepeat tests that a hidden rule defined as repeat(x)
+// at the top level becomes self-recursive with an epsilon alternative.
+func TestProductionTopLevelRepeat(t *testing.T) {
+	g := &Grammar{
+		Name: "test_toplevel_repeat",
+		Rules: map[string]*Rule{
+			"document": Seq(Sym("_items")),
+			"_items":   Repeat(Sym("item")),
+			"item":     Pat(`[a-z]+`),
+		},
+		RuleOrder: []string{"document", "_items", "item"},
+	}
+
+	ng, err := Normalize(g)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+
+	itemsID := -1
+	for i, info := range ng.Symbols {
+		if info.Name == "_items" {
+			itemsID = i
+			break
+		}
+	}
+	if itemsID < 0 {
+		t.Fatal("_items symbol not found")
+	}
+
+	var prods []Production
+	for _, p := range ng.Productions {
+		if p.LHS == itemsID {
+			prods = append(prods, p)
+		}
+	}
+
+	t.Logf("_items productions: %d", len(prods))
+	ccSet := make(map[int]bool)
+	for i, p := range prods {
+		rhsNames := make([]string, len(p.RHS))
+		for j, rid := range p.RHS {
+			if rid >= 0 && rid < len(ng.Symbols) {
+				rhsNames[j] = ng.Symbols[rid].Name
+			} else {
+				rhsNames[j] = fmt.Sprintf("?%d", rid)
+			}
+		}
+		t.Logf("  prod[%d]: cc=%d rhs=[%s]", i, len(p.RHS), strings.Join(rhsNames, ", "))
+		ccSet[len(p.RHS)] = true
+	}
+
+	// Tree-sitter: _items → _items item | item | ε (self-recursive, cc=2, cc=1, cc=0)
+	if !ccSet[2] {
+		t.Error("MISSING: cc=2 (_items → _items item)")
+	}
+	if !ccSet[1] {
+		t.Error("MISSING: cc=1 (_items → item)")
+	}
+	if !ccSet[0] {
+		t.Error("MISSING: cc=0 (_items → ε)")
+	}
+	if len(prods) != 3 {
+		t.Errorf("expected 3 productions for _items, got %d", len(prods))
+	}
+}
+
 // TestProductionChoiceWithBlank tests that imported CHOICE+BLANK (without Optional lowering) works.
 func TestProductionChoiceWithBlank(t *testing.T) {
 	// Simulates what grammar.json import produces: CHOICE with BLANK directly.
