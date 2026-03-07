@@ -268,6 +268,96 @@ func TestParseCHeaderGuard(t *testing.T) {
 	}
 }
 
+func TestCTokenSourceEmitsGenericEndifInsideLinkageSpecification(t *testing.T) {
+	lang := CLanguage()
+	src := []byte("#ifdef __cplusplus\nextern \"C\" {\n#endif\n\nint x;\n\n#ifdef __cplusplus\n}\n#endif\n")
+	ts, err := NewCTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewCTokenSource failed: %v", err)
+	}
+
+	ts.cur = newSourceCursor(src)
+	ts.cur.advanceBytes(32)
+	ts.SetParserState(35)
+
+	tok := ts.Next()
+	if got, want := lang.SymbolNames[tok.Symbol], "preproc_directive"; got != want {
+		t.Fatalf("directive token = %q, want %q", got, want)
+	}
+	if got, want := tok.Text, "#endif"; got != want {
+		t.Fatalf("directive text = %q, want %q", got, want)
+	}
+
+	tok = ts.Next()
+	if got, want := lang.SymbolNames[tok.Symbol], "preproc_include_token2"; got != want {
+		t.Fatalf("line terminator token = %q, want %q", got, want)
+	}
+}
+
+func TestCTokenSourceInsertsMissingEndifBeforeBraceWrappedClose(t *testing.T) {
+	lang := CLanguage()
+	src := []byte("#ifdef __cplusplus\nextern \"C\" {\n#endif\n\nint x;\n\n#ifdef __cplusplus\n}\n#endif\n")
+	ts, err := NewCTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewCTokenSource failed: %v", err)
+	}
+
+	ts.cur = newSourceCursor(src)
+	ts.cur.advanceBytes(66)
+	ts.SetParserState(10)
+
+	tok := ts.Next()
+	if got, want := lang.SymbolNames[tok.Symbol], "#endif"; got != want {
+		t.Fatalf("synthetic token = %q, want %q", got, want)
+	}
+	if got, want := tok.StartByte, uint32(66); got != want {
+		t.Fatalf("synthetic token start = %d, want %d", got, want)
+	}
+	if got, want := tok.EndByte, uint32(66); got != want {
+		t.Fatalf("synthetic token end = %d, want %d", got, want)
+	}
+	if tok.Text != "" {
+		t.Fatalf("synthetic token text = %q, want empty", tok.Text)
+	}
+}
+
+func TestParseCExternCWrapperWithTokenSource(t *testing.T) {
+	lang := CLanguage()
+	parser := gotreesitter.NewParser(lang)
+	src := []byte("#ifdef __cplusplus\nextern \"C\" {\n#endif\n\nint x;\n\n#ifdef __cplusplus\n}\n#endif\n")
+	ts, err := NewCTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewCTokenSource failed: %v", err)
+	}
+
+	tree, err := parser.ParseWithTokenSource(src, ts)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	root := tree.RootNode()
+	if root == nil {
+		t.Fatal("nil root")
+	}
+	if !root.HasError() {
+		t.Fatalf("extern wrapper parse should preserve the missing conditional close: %s", root.SExpr(lang))
+	}
+	if got, want := root.NamedChildCount(), 1; got != want {
+		t.Fatalf("root NamedChildCount = %d, want %d: %s", got, want, root.SExpr(lang))
+	}
+
+	foundLinkage := false
+	gotreesitter.Walk(root, func(node *gotreesitter.Node, depth int) gotreesitter.WalkAction {
+		if node.Type(lang) == "linkage_specification" {
+			foundLinkage = true
+			return gotreesitter.WalkStop
+		}
+		return gotreesitter.WalkContinue
+	})
+	if !foundLinkage {
+		t.Fatalf("expected linkage_specification in tree, got %s", root.SExpr(lang))
+	}
+}
+
 func TestParseCDefineWithExpression(t *testing.T) {
 	lang := CLanguage()
 	parser := gotreesitter.NewParser(lang)
