@@ -119,7 +119,7 @@ func (d *dfaTokenSource) Next() Token {
 		if extTok, ok := d.nextExternalToken(); ok {
 			tok = extTok
 			tokenFromExternal = true
-		} else if d.language != nil && (d.language.Name == "cpp" || d.language.Name == "bash") {
+		} else if d.language != nil && (d.language.Name == "cpp" || d.language.Name == "bash" || d.language.Name == "dart") {
 			if unionTok, ok := d.nextGLRUnionDFAToken(); ok {
 				tok = unionTok
 			} else {

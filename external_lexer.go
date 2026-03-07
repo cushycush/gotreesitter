@@ -62,7 +62,7 @@ func (l *ExternalLexer) Advance(skip bool) {
 		l.point.Row++
 		l.point.Column = 0
 	} else {
-		l.point.Column++
+		l.point.Column += uint32(size)
 	}
 
 	if skip {

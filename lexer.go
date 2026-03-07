@@ -168,7 +168,7 @@ func (l *Lexer) scan(startState uint16, startPos int, startRow, startCol uint32)
 			scanRow++
 			scanCol = 0
 		} else {
-			scanCol++
+			scanCol += uint32(size)
 		}
 
 		if skipTransition {
@@ -224,6 +224,6 @@ func (l *Lexer) skipOneRune() {
 		l.row++
 		l.col = 0
 	} else {
-		l.col++
+		l.col += uint32(size)
 	}
 }
