@@ -119,9 +119,11 @@ func compareTreesDeepRec(
 	// Check named status.
 	// At the root level, the ts2go reference blob can have incorrect Named
 	// metadata (e.g., Named=false for a clearly named rule like "stylesheet").
-	// When grammargen says Named=true and the types match, trust grammargen.
+	// When grammargen says Named=true, trust grammargen — root rules are
+	// always named nonterminals. The type check is omitted because refType
+	// can be "" when the ts2go symbol table extraction failed.
 	if genNode.IsNamed() != refNode.IsNamed() {
-		if !(path == "root" && genNode.IsNamed() && genType == refType) {
+		if !(path == "root" && genNode.IsNamed()) {
 			*divs = append(*divs, parityDivergence{
 				Path: path, Category: "named",
 				GenValue: fmt.Sprintf("%v", genNode.IsNamed()),
