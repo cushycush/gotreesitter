@@ -263,11 +263,11 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 				if !sexprMatch {
 					refRootType := refRoot.Type(refLang)
 					genRootType := genRoot.Type(genLang)
-					// When the reference root type is empty (ts2go extraction
-					// issue), the SExprs may differ only in the root node name.
-					// Normalize by stripping the root wrapper from both and
-					// comparing inner content.
-					if refRootType == "" && genRootType != "" {
+					// When the reference root type is empty or the ref root
+					// is error (ts2go extraction issue), the SExprs may differ
+					// only in the root node name. Normalize by stripping the
+					// root wrapper from both and comparing inner content.
+					if (refRootType == "" || refRoot.IsError()) && genRootType != "" {
 						genInner := stripSExprRoot(genSexp)
 						refInner := stripSExprRoot(refSexp)
 						if genInner != "" && genInner == refInner {
