@@ -31,12 +31,13 @@ type CTokenSource struct {
 	preprocParamLParen  gotreesitter.Symbol
 	preprocDirectiveSym gotreesitter.Symbol
 	preprocEndSymbol    gotreesitter.Symbol // preproc_include_token2: line terminator for preprocessor directives
+	newlineSymbol       gotreesitter.Symbol // newline token for #if/#elif conditional expressions
 	preprocArgSymbol    gotreesitter.Symbol
 	endifSymbol         gotreesitter.Symbol
 	rBraceSymbol        gotreesitter.Symbol
 
 	// Preprocessor state tracking
-	preprocState int // 0=normal, 1=afterDirective, 2=afterDefine, 3=afterDefineName, 4=afterDefineParams, 5=afterName, 6=afterInclude
+	preprocState int // 0=normal, 1=afterDirective, 2=afterDefine, 3=afterDefineName, 4=afterDefineParams, 5=afterName, 6=afterInclude, 7=conditionalExpr
 
 	parserState         gotreesitter.StateID
 	glrStates           []gotreesitter.StateID
@@ -68,6 +69,7 @@ const (
 	cPreprocAfterDefineParams
 	cPreprocAfterName
 	cPreprocAfterInclude
+	cPreprocConditionalExpr
 )
 
 func bytesToStringNoCopy(b []byte) string {
@@ -108,6 +110,7 @@ func NewCTokenSource(src []byte, lang *gotreesitter.Language) (*CTokenSource, er
 	ts.systemLibStringSym = tl.optional("system_lib_string")
 	ts.preprocDirectiveSym = tl.optional("preproc_directive")
 	ts.preprocEndSymbol = tl.optional("preproc_include_token2")
+	ts.newlineSymbol = tl.optional("\n")
 	ts.preprocArgSymbol = tl.optional("preproc_arg")
 	ts.endifSymbol = tl.optional("#endif")
 	ts.rBraceSymbol = tl.optional("}")
@@ -180,9 +183,13 @@ func (ts *CTokenSource) Next() gotreesitter.Token {
 
 		// Newline handling: in preprocessor context, emit as directive terminator
 		if b == '\n' {
+			if ts.preprocState == cPreprocConditionalExpr && ts.newlineSymbol != 0 {
+				ts.preprocState = 0
+				return ts.lineEndToken(ts.newlineSymbol)
+			}
 			if ts.preprocState > 0 && ts.preprocEndSymbol != 0 {
 				ts.preprocState = 0
-				return ts.preprocEndToken()
+				return ts.lineEndToken(ts.preprocEndSymbol)
 			}
 			ts.preprocState = 0
 			ts.cur.advanceByte()
@@ -344,13 +351,16 @@ func (ts *CTokenSource) scanDirective(offset int) (int, string, gotreesitter.Sym
 }
 
 func (ts *CTokenSource) shouldUseGenericDirective(specificSym gotreesitter.Symbol) bool {
-	if ts.preprocDirectiveSym == 0 || !ts.hasAction(ts.preprocDirectiveSym) {
+	if ts.preprocDirectiveSym == 0 {
 		return false
 	}
 	if specificSym == 0 {
 		return true
 	}
-	return !ts.hasAction(specificSym)
+	if ts.hasAction(specificSym) {
+		return false
+	}
+	return ts.hasAction(ts.preprocDirectiveSym)
 }
 
 func (ts *CTokenSource) emitGenericDirectiveLine(directiveEnd int) gotreesitter.Token {
@@ -873,13 +883,12 @@ func (ts *CTokenSource) eofToken() gotreesitter.Token {
 	}
 }
 
-// preprocEndToken emits a preprocessor line terminator token for \n.
-// The C grammar uses preproc_include_token2 as the directive delimiter.
-func (ts *CTokenSource) preprocEndToken() gotreesitter.Token {
+// lineEndToken emits a preprocessor line terminator token for \n.
+func (ts *CTokenSource) lineEndToken(sym gotreesitter.Symbol) gotreesitter.Token {
 	start := ts.cur.offset
 	startPt := ts.cur.point()
 	ts.cur.advanceByte() // consume '\n'
-	return makeToken(ts.preprocEndSymbol, ts.src, start, ts.cur.offset, startPt, ts.cur.point())
+	return makeToken(sym, ts.src, start, ts.cur.offset, startPt, ts.cur.point())
 }
 
 // preprocArgToken scans the rest of the line (until \n) as a preproc_arg token.
@@ -959,11 +968,10 @@ func (ts *CTokenSource) systemLibStringToken() (gotreesitter.Token, bool) {
 	return gotreesitter.Token{}, false
 }
 
-// isPreprocDirective returns true for "flat" preprocessor directives whose
-// grammar productions end with token.immediate(\n) — compiled as
-// preproc_include_token2. Conditional directives (#ifdef, #ifndef, #if,
-// #elif, #else, #endif) handle newlines through lex mode switching and
-// must NOT receive an explicit \n token.
+// updatePreprocStateForLiteral tracks directive-specific newline/argument
+// behavior for the token-source bridge. Flat directives use preproc_arg +
+// preproc_include_token2, while #if/#elif condition lines tokenize their
+// expression normally and terminate with the literal newline token.
 func (ts *CTokenSource) updatePreprocStateForLiteral(text string) {
 	if ts.preprocState == cPreprocAfterDefineParams {
 		if text == ")" {
@@ -977,6 +985,8 @@ func (ts *CTokenSource) updatePreprocStateForLiteral(text string) {
 		ts.preprocState = cPreprocAfterInclude
 	case "#define":
 		ts.preprocState = cPreprocAfterDefine
+	case "#if", "#elif":
+		ts.preprocState = cPreprocConditionalExpr
 	case "#pragma", "#undef", "#error", "#warning":
 		ts.preprocState = cPreprocAfterDirective
 	}

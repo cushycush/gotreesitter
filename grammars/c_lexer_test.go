@@ -321,6 +321,44 @@ func TestCTokenSourceInsertsMissingEndifBeforeBraceWrappedClose(t *testing.T) {
 	}
 }
 
+func TestCTokenSourceConditionalExprEmitsLineTerminator(t *testing.T) {
+	lang := CLanguage()
+	src := []byte("#elif defined(__GNUC__) || defined(__clang__)\n#pragma GCC diagnostic push\n")
+	ts, err := NewCTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewCTokenSource failed: %v", err)
+	}
+
+	var got []string
+	for {
+		tok := ts.Next()
+		if tok.Symbol == 0 {
+			break
+		}
+		got = append(got, lang.SymbolNames[tok.Symbol])
+	}
+
+	pragmaIndex := -1
+	lineTermIndex := -1
+	for i, sym := range got {
+		if sym == "\n" && lineTermIndex < 0 {
+			lineTermIndex = i
+		}
+		if (sym == "#pragma" || sym == "preproc_directive") && pragmaIndex < 0 {
+			pragmaIndex = i
+		}
+	}
+	if lineTermIndex < 0 {
+		t.Fatalf("missing conditional newline token in token stream: %v", got)
+	}
+	if pragmaIndex < 0 {
+		t.Fatalf("missing directive after conditional expression: %v", got)
+	}
+	if got, want := lineTermIndex, pragmaIndex-1; got != want {
+		t.Fatalf("line terminator index = %d, want %d; tokens=%v", got, want, got)
+	}
+}
+
 func TestParseCExternCWrapperWithTokenSource(t *testing.T) {
 	lang := CLanguage()
 	parser := gotreesitter.NewParser(lang)
@@ -355,6 +393,46 @@ func TestParseCExternCWrapperWithTokenSource(t *testing.T) {
 	})
 	if !foundLinkage {
 		t.Fatalf("expected linkage_specification in tree, got %s", root.SExpr(lang))
+	}
+}
+
+func TestParseCPreprocConditionalPragmasWithTokenSource(t *testing.T) {
+	lang := CLanguage()
+	parser := gotreesitter.NewParser(lang)
+	src := []byte("#ifdef _MSC_VER\n#pragma warning(push)\n#pragma warning(disable : 4101)\n#elif defined(__GNUC__) || defined(__clang__)\n#pragma GCC diagnostic push\n#pragma GCC diagnostic ignored \"-Wunused-variable\"\n#endif\n")
+	ts, err := NewCTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewCTokenSource failed: %v", err)
+	}
+
+	tree, err := parser.ParseWithTokenSource(src, ts)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	root := tree.RootNode()
+	if root == nil {
+		t.Fatal("nil root")
+	}
+	if root.HasError() {
+		t.Fatalf("conditional pragma parse has errors: %s", root.SExpr(lang))
+	}
+
+	preprocElifCount := 0
+	preprocCallCount := 0
+	gotreesitter.Walk(root, func(node *gotreesitter.Node, depth int) gotreesitter.WalkAction {
+		switch node.Type(lang) {
+		case "preproc_elif":
+			preprocElifCount++
+		case "preproc_call":
+			preprocCallCount++
+		}
+		return gotreesitter.WalkContinue
+	})
+	if got, want := preprocElifCount, 1; got != want {
+		t.Fatalf("preproc_elif count = %d, want %d: %s", got, want, root.SExpr(lang))
+	}
+	if got, want := preprocCallCount, 4; got != want {
+		t.Fatalf("preproc_call count = %d, want %d: %s", got, want, root.SExpr(lang))
 	}
 }
 
