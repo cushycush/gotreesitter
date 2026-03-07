@@ -118,6 +118,12 @@ func (d *dfaTokenSource) Next() Token {
 		if extTok, ok := d.nextExternalToken(); ok {
 			tok = extTok
 			tokenFromExternal = true
+		} else if d.language != nil && d.language.Name == "cpp" {
+			if unionTok, ok := d.nextGLRUnionDFAToken(); ok {
+				tok = unionTok
+			} else {
+				tok = d.nextDFAToken()
+			}
 		} else {
 			tok = d.nextDFAToken()
 		}
@@ -207,8 +213,20 @@ func (d *dfaTokenSource) nextDFAToken() Token {
 	if int(d.state) < len(d.language.LexModes) {
 		lexState = d.language.LexModes[d.state].LexState
 	}
-	tok := d.lexer.Next(lexState)
+	tok := d.nextTokenForLexState(lexState)
 	return d.promoteKeyword(tok)
+}
+
+func (d *dfaTokenSource) nextTokenForLexState(lexState uint16) Token {
+	if d == nil || d.lexer == nil {
+		return Token{}
+	}
+	if lexState == ^uint16(0) {
+		tok := d.eofTokenAtLexerPos()
+		tok.NoLookahead = true
+		return tok
+	}
+	return d.lexer.Next(lexState)
 }
 
 // nextGLRUnionDFAToken tries each unique GLR stack state's lex mode and
@@ -253,6 +271,7 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 	bestEndPos := startPos
 	bestEndRow := startRow
 	bestEndCol := startCol
+	bestOriginActions := 0
 
 	// Deduplicate lex states to avoid redundant scans.
 	seen := make(map[uint16]struct{}, len(d.glrStates))
@@ -272,7 +291,7 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 
 		prevState := d.state
 		d.state = st
-		candTok := d.lexer.Next(lexState)
+		candTok := d.nextTokenForLexState(lexState)
 		candTok = d.promoteKeyword(candTok)
 		d.state = prevState
 
@@ -282,7 +301,10 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 				score++
 			}
 		}
-
+		originActionCount := 0
+		if idx := d.lookupActionIndex(st, candTok.Symbol); idx != 0 && int(idx) < len(d.language.ParseActions) {
+			originActionCount = len(d.language.ParseActions[idx].Actions)
+		}
 		if score <= 0 {
 			continue
 		}
@@ -291,9 +313,11 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 		candEndRow := d.lexer.row
 		candEndCol := d.lexer.col
 		better := !bestFound ||
-			score > bestScore ||
-			(score == bestScore && candTok.EndByte > bestTok.EndByte) ||
-			(score == bestScore && candTok.EndByte == bestTok.EndByte && candEndPos > bestEndPos)
+			candTok.StartByte < bestTok.StartByte ||
+			(candTok.StartByte == bestTok.StartByte && originActionCount > bestOriginActions) ||
+			(candTok.StartByte == bestTok.StartByte && originActionCount == bestOriginActions && score > bestScore) ||
+			(candTok.StartByte == bestTok.StartByte && originActionCount == bestOriginActions && score == bestScore && candTok.EndByte > bestTok.EndByte) ||
+			(candTok.StartByte == bestTok.StartByte && originActionCount == bestOriginActions && score == bestScore && candTok.EndByte == bestTok.EndByte && candEndPos > bestEndPos)
 		if better {
 			bestFound = true
 			bestScore = score
@@ -301,6 +325,7 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 			bestEndPos = candEndPos
 			bestEndRow = candEndRow
 			bestEndCol = candEndCol
+			bestOriginActions = originActionCount
 		}
 	}
 
