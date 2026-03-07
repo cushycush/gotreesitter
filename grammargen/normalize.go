@@ -1515,22 +1515,14 @@ func expandInlineRules(g *Grammar) *Grammar {
 	}
 
 	// Build lookup for inline rule bodies.
-	// Skip inlining rules with many Choice alternatives (>4) — these cause
-	// a Cartesian product explosion during production extraction when they
-	// appear in sequences (e.g., 6^3 = 216 alternatives from a 6-way choice
-	// inlined at 3 positions). Keep such rules as hidden nonterminals instead.
+	// Tree-sitter expands ALL inline rules regardless of width. We must do the
+	// same to produce matching productions and LR tables. Grammar authors only
+	// list rules as inline when the resulting Cartesian product is manageable.
 	inlineBodies := make(map[string]*Rule)
-	// For inline rules too wide to expand, rename them to be hidden (prefix '_')
-	// so they don't create visible nodes in the parse tree.
 	hiddenRenames := make(map[string]string)
 	for _, name := range g.Inline {
 		if rule, ok := g.Rules[name]; ok {
-			if choiceWidth(rule) <= 4 {
-				inlineBodies[name] = rule
-			} else if !strings.HasPrefix(name, "_") {
-				// Too wide to inline but currently visible — make hidden.
-				hiddenRenames[name] = "_" + name
-			}
+			inlineBodies[name] = rule
 		}
 	}
 
@@ -1575,26 +1567,6 @@ func expandInlineRules(g *Grammar) *Grammar {
 	// Don't propagate Inline — they've been expanded.
 
 	return out
-}
-
-// choiceWidth returns the number of top-level Choice alternatives in a rule.
-// For non-Choice rules, returns 1.
-func choiceWidth(r *Rule) int {
-	if r == nil {
-		return 1
-	}
-	// Unwrap precedence wrappers.
-	for r.Kind == RulePrec || r.Kind == RulePrecLeft || r.Kind == RulePrecRight || r.Kind == RulePrecDynamic {
-		if len(r.Children) > 0 {
-			r = r.Children[0]
-		} else {
-			return 1
-		}
-	}
-	if r.Kind == RuleChoice {
-		return len(r.Children)
-	}
-	return 1
 }
 
 // substituteInlineRefs replaces RuleSymbol references to inline rules with

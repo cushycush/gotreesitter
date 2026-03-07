@@ -1046,18 +1046,13 @@ func resolveActionConflict(actions []lrAction, ng *NormalizedGrammar) ([]lrActio
 	}
 
 	// Reduce/reduce conflict.
+	// Tree-sitter resolves ALL R/R conflicts by picking the highest-prec
+	// production (then lowest prodIdx) unless they're in a declared conflict
+	// group (kept as GLR). The previous hasEpsilon guard only resolved
+	// epsilon R/R conflicts, leaving non-epsilon R/R as ambiguous table
+	// entries which caused type="" parse failures.
 	if len(reduces) > 1 {
-		hasEpsilon := false
-		for _, r := range reduces {
-			if len(ng.Productions[r.prodIdx].RHS) == 0 {
-				hasEpsilon = true
-				break
-			}
-		}
-		if hasEpsilon {
-			return resolveReduceReduceLegacy(reduces, ng)
-		}
-		return reduces, nil
+		return resolveReduceReduceLegacy(reduces, ng)
 	}
 
 	return actions, nil

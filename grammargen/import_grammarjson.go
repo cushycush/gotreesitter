@@ -79,24 +79,36 @@ func ImportGrammarJSON(data []byte) (*Grammar, error) {
 }
 
 // buildNamedPrecMap builds a mapping from named precedence strings to numeric
-// values. Each precedence level is an ordered list from highest to lowest.
-// Within a level of N entries, entry at index i gets value N-1-i.
-// If a name appears in multiple levels, the maximum value is used.
+// values. Levels are ordered from highest to lowest precedence; within each
+// level, earlier entries have higher precedence. Values are assigned globally
+// across all levels so that entries in earlier levels always outrank entries
+// in later levels.
 func buildNamedPrecMap(rawLevels []json.RawMessage) map[string]int {
-	m := make(map[string]int)
+	// First pass: collect all STRING entries across all levels in order.
+	type precEntry struct {
+		name     string
+		globalIdx int
+	}
+	var all []precEntry
 	for _, rawLevel := range rawLevels {
 		var entries []jsonPrecEntry
 		if err := json.Unmarshal(rawLevel, &entries); err != nil {
 			continue
 		}
-		n := len(entries)
-		for i, entry := range entries {
+		for _, entry := range entries {
 			if entry.Type == "STRING" && entry.Value != "" {
-				val := n - 1 - i
-				if existing, ok := m[entry.Value]; !ok || val > existing {
-					m[entry.Value] = val
-				}
+				all = append(all, precEntry{name: entry.Value, globalIdx: len(all)})
 			}
+		}
+	}
+
+	// Second pass: assign values so first entry gets highest value.
+	m := make(map[string]int, len(all))
+	total := len(all)
+	for _, e := range all {
+		val := total - 1 - e.globalIdx
+		if existing, ok := m[e.name]; !ok || val > existing {
+			m[e.name] = val
 		}
 	}
 	return m
