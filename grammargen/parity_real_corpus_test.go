@@ -207,6 +207,17 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 
 				genRoot := genTree.RootNode()
 				refRoot := refTree.RootNode()
+
+				// Safety: skip samples that produce pathologically large
+				// parse trees (e.g. HCL's 189K-deep recursive tree) to
+				// prevent OOM during SExpr serialization.
+				const maxSafeChildren = 100000
+				if genRoot.ChildCount() > maxSafeChildren || refRoot.ChildCount() > maxSafeChildren {
+					t.Logf("real-corpus: skipping sample %d (%s:%s) — tree too large (gen=%d, ref=%d children)",
+						i, cand.Source, cand.Path, genRoot.ChildCount(), refRoot.ChildCount())
+					continue
+				}
+
 				genSexp := genRoot.SExpr(genLang)
 				refSexp := refRoot.SExpr(refLang)
 

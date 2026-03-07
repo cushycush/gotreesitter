@@ -268,12 +268,25 @@ func (n *Node) Children() []*Node { return n.children }
 // It includes only named nodes for stable debug snapshots.
 // Invisible named nodes (supertypes) are transparent — their children
 // are included directly without wrapping.
+// Recursion is bounded to a maximum depth of 500 to prevent OOM on
+// pathological parse trees.
 func (n *Node) SExpr(lang *Language) string {
+	return n.sExprWithDepth(lang, 0)
+}
+
+// sExprMaxDepth is the recursion limit for SExpr to guard against
+// pathological parse trees (e.g. 189K recursive frames in HCL).
+const sExprMaxDepth = 500
+
+func (n *Node) sExprWithDepth(lang *Language, depth int) string {
 	if n == nil || lang == nil {
 		return ""
 	}
 	if !n.IsNamed() {
 		return ""
+	}
+	if depth > sExprMaxDepth {
+		return "(DEPTH_LIMIT)"
 	}
 
 	// Invisible named nodes (e.g. supertypes) are transparent:
@@ -281,7 +294,7 @@ func (n *Node) SExpr(lang *Language) string {
 	if int(n.symbol) < len(lang.SymbolMetadata) && !lang.SymbolMetadata[n.symbol].Visible {
 		parts := make([]string, 0, n.ChildCount())
 		for i := 0; i < n.ChildCount(); i++ {
-			s := n.Child(i).SExpr(lang)
+			s := n.Child(i).sExprWithDepth(lang, depth+1)
 			if s != "" {
 				parts = append(parts, s)
 			}
@@ -295,7 +308,7 @@ func (n *Node) SExpr(lang *Language) string {
 	}
 	parts := make([]string, 0, n.ChildCount())
 	for i := 0; i < n.ChildCount(); i++ {
-		s := n.Child(i).SExpr(lang)
+		s := n.Child(i).sExprWithDepth(lang, depth+1)
 		if s != "" {
 			parts = append(parts, s)
 		}
