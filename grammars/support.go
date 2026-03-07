@@ -115,6 +115,10 @@ func defaultTokenSourceFactory(name string) func(src []byte, lang *gotreesitter.
 		return func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource {
 			return NewCTokenSourceOrEOF(src, lang)
 		}
+	case "cpp":
+		return func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource {
+			return NewCTokenSourceOrEOF(src, lang)
+		}
 	case "go":
 		return func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource {
 			return NewGoTokenSourceOrEOF(src, lang)
