@@ -111,7 +111,9 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 		named := p.isNamedSymbol(tok.Symbol)
 		leaf := newLeafNodeInArena(arena, tok.Symbol, named,
 			tok.StartByte, tok.EndByte, tok.StartPoint, tok.EndPoint)
-		if tok.Missing {
+		if tok.Missing || (p != nil && p.language != nil &&
+			(p.language.Name == "c" || p.language.Name == "cpp" || p.language.Name == "objc") &&
+			tok.Symbol != 0 && tok.StartByte == tok.EndByte && tok.Text == "") {
 			leaf.isMissing = true
 			leaf.hasError = true
 			if trackChildErrors != nil {

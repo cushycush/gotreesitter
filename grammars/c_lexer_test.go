@@ -652,7 +652,6 @@ bool Rule::is<Blank>() const { return type == BlankType; }
 		)
 	}
 }
-
 func TestCTokenSourceEmitsGenericEndifInsideLinkageSpecification(t *testing.T) {
 	lang := CLanguage()
 	src := []byte("#ifdef __cplusplus\nextern \"C\" {\n#endif\n\nint x;\n\n#ifdef __cplusplus\n}\n#endif\n")
@@ -783,7 +782,6 @@ func TestParseCPreprocConditionalPragmasWithTokenSource(t *testing.T) {
 		t.Fatalf("preproc_call count = %d, want %d: %s", got, want, root.SExpr(lang))
 	}
 }
-
 func TestParseCExternCWrapperWithTokenSource(t *testing.T) {
 	lang := CLanguage()
 	parser := gotreesitter.NewParser(lang)
