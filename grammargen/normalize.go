@@ -1549,14 +1549,23 @@ func expandInlineRules(g *Grammar) *Grammar {
 	}
 
 	// Build lookup for inline rule bodies.
-	// Tree-sitter expands ALL inline rules regardless of width. We must do the
-	// same to produce matching productions and LR tables. Grammar authors only
-	// list rules as inline when the resulting Cartesian product is manageable.
+	// Expand inline rules with reasonable width. Very wide choices (>16
+	// alternatives) can cause Cartesian product explosion when the rule is used
+	// in multiple positions of a sequence. Tree-sitter handles this but some
+	// grammars' inline rules need the nonterminal wrapper for correct GLR
+	// conflict resolution in grammargen's current LR table builder.
 	inlineBodies := make(map[string]*Rule)
+	// For inline rules too wide to expand, rename them to be hidden (prefix '_')
+	// so they don't create visible nodes in the parse tree.
 	hiddenRenames := make(map[string]string)
 	for _, name := range g.Inline {
 		if rule, ok := g.Rules[name]; ok {
-			inlineBodies[name] = rule
+			if choiceWidth(rule) <= 16 {
+				inlineBodies[name] = rule
+			} else if !strings.HasPrefix(name, "_") {
+				// Too wide to inline but currently visible — make hidden.
+				hiddenRenames[name] = "_" + name
+			}
 		}
 	}
 
@@ -1601,6 +1610,26 @@ func expandInlineRules(g *Grammar) *Grammar {
 	// Don't propagate Inline — they've been expanded.
 
 	return out
+}
+
+// choiceWidth returns the number of top-level Choice alternatives in a rule.
+// For non-Choice rules, returns 1.
+func choiceWidth(r *Rule) int {
+	if r == nil {
+		return 1
+	}
+	// Unwrap precedence wrappers.
+	for r.Kind == RulePrec || r.Kind == RulePrecLeft || r.Kind == RulePrecRight || r.Kind == RulePrecDynamic {
+		if len(r.Children) > 0 {
+			r = r.Children[0]
+		} else {
+			return 1
+		}
+	}
+	if r.Kind == RuleChoice {
+		return len(r.Children)
+	}
+	return 1
 }
 
 // substituteInlineRefs replaces RuleSymbol references to inline rules with
