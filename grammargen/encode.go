@@ -46,7 +46,6 @@ func Generate(g *Grammar) ([]byte, error) {
 		keywordSet[ks] = true
 	}
 
-	extraFS := computeExtraFirstSets(ng)
 	lexModes, stateToMode := computeLexModes(
 		tables.StateCount,
 		tokenCount,
@@ -63,7 +62,6 @@ func Generate(g *Grammar) ([]byte, error) {
 		ng.ExternalSymbols,
 		ng.WordSymbolID,
 		keywordSet,
-		extraFS,
 	)
 
 	// Phase 5: Build lex DFA per mode.
@@ -139,7 +137,6 @@ func GenerateLanguage(g *Grammar) (*gotreesitter.Language, error) {
 		keywordSet[ks] = true
 	}
 
-	extraFS := computeExtraFirstSets(ng)
 	lexModes, stateToMode := computeLexModes(
 		tables.StateCount,
 		tokenCount,
@@ -156,7 +153,6 @@ func GenerateLanguage(g *Grammar) (*gotreesitter.Language, error) {
 		ng.ExternalSymbols,
 		ng.WordSymbolID,
 		keywordSet,
-		extraFS,
 	)
 
 	skipExtras := computeSkipExtras(ng)
@@ -200,56 +196,6 @@ func allSymbolsSet(patterns []TerminalPattern) map[int]bool {
 		s[p.SymbolID] = true
 	}
 	return s
-}
-
-// computeExtraFirstSets computes the first-set terminals for nonterminal extras.
-// When extras include nonterminal rules (like `comment`), the lexer needs to
-// recognize their constituent first-set terminals in every lex mode.
-func computeExtraFirstSets(ng *NormalizedGrammar) map[int]map[int]bool {
-	tokenCount := ng.TokenCount()
-	extraSet := make(map[int]bool)
-	for _, e := range ng.ExtraSymbols {
-		extraSet[e] = true
-	}
-
-	// Only compute for nonterminal extras.
-	result := make(map[int]map[int]bool)
-	for _, e := range ng.ExtraSymbols {
-		if e < tokenCount {
-			continue // terminal extra, no first-set needed
-		}
-		first := make(map[int]bool)
-		computeFirst(e, ng.Productions, tokenCount, first, make(map[int]bool))
-		if len(first) > 0 {
-			result[e] = first
-		}
-	}
-	return result
-}
-
-// computeFirst computes the first-set terminals for a nonterminal symbol.
-func computeFirst(sym int, prods []Production, tokenCount int, result map[int]bool, visited map[int]bool) {
-	if visited[sym] {
-		return
-	}
-	visited[sym] = true
-
-	for _, prod := range prods {
-		if prod.LHS != sym {
-			continue
-		}
-		for _, rhsSym := range prod.RHS {
-			if rhsSym < tokenCount {
-				result[rhsSym] = true
-				break // terminal — not nullable
-			}
-			// Nonterminal — recurse and check if nullable.
-			computeFirst(rhsSym, prods, tokenCount, result, visited)
-			// Simple approximation: stop at first symbol (not handling nullables).
-			// This is sufficient for typical extras like `comment → [;#] [^\n]*`.
-			break
-		}
-	}
 }
 
 // computeSkipExtras returns the set of extra symbol IDs that should be

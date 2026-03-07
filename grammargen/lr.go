@@ -268,6 +268,16 @@ func addNonterminalExtraChains(tables *LRTables, ng *NormalizedGrammar) {
 		}
 	}
 	mainValidTerminals[0] = true
+	// Include the first terminal of each nonterminal extra production.
+	// Without this, consecutive nonterminal extras (e.g., two comments in a
+	// row) fail because the chain's reduce state has no action for the start
+	// token of the next extra, preventing the reduce from firing.
+	for _, prodIdx := range extraProds {
+		prod := &ng.Productions[prodIdx]
+		if len(prod.RHS) > 0 && prod.RHS[0] < tokenCount {
+			mainValidTerminals[prod.RHS[0]] = true
+		}
+	}
 
 	for _, prodIdx := range extraProds {
 		prod := &ng.Productions[prodIdx]

@@ -503,7 +503,6 @@ func computeLexModes(
 	externalSymbols []int,
 	wordSymbolID int,
 	keywordSymbols map[int]bool,
-	extraFirstSets map[int]map[int]bool, // nonterminal extra → first-set terminals
 ) ([]lexModeSpec, []int) {
 	extraSet := make(map[int]bool)
 	hasTerminalExtras := false
@@ -557,16 +556,13 @@ func computeLexModes(
 				validSyms[e] = true
 			}
 		}
-		for e := range extraSet {
-			if e >= tokenCount {
-				// Nonterminal extra — add its first-set terminals.
-				if first := extraFirstSets[e]; first != nil {
-					for t := range first {
-						validSyms[t] = true
-					}
-				}
-			}
-		}
+		// Note: nonterminal extra first-set terminals are NOT unconditionally
+		// added here. They're already in main states' action tables via
+		// addNonterminalExtraChains chain shifts, so actionLookup picks them
+		// up naturally. Forcing them into every lex mode (including chain
+		// states) creates DFA conflicts — e.g., \r?\n from _blank competes
+		// with [^\r\n]* in comment chain states, and the longer match wins,
+		// producing the wrong token.
 
 		// When any keyword symbol is valid in this state, include the word
 		// token in the lex mode. Keywords are excluded from the main DFA
