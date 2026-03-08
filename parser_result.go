@@ -108,6 +108,7 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 
 	if len(nodes) == 1 {
 		candidate := nodes[0]
+		extendRootToChildSpans(candidate, source)
 		extendNodeToTrailingWhitespace(candidate, source)
 		p.normalizeRootSourceStart(candidate, source)
 		normalizeKnownSpanAttribution(candidate, source, p.language)
@@ -128,6 +129,7 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 			rootChildren[0] = candidate
 		}
 		root := newParentNodeInArena(arena, expectedRootSymbol, true, rootChildren, nil, 0)
+		extendRootToChildSpans(root, source)
 		extendNodeToTrailingWhitespace(root, source)
 		p.normalizeRootSourceStart(root, source)
 		normalizeKnownSpanAttribution(root, source, p.language)
@@ -234,6 +236,7 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 				realRoot.endPoint = e.endPoint
 			}
 		}
+		extendRootToChildSpans(realRoot, source)
 		extendNodeToTrailingWhitespace(realRoot, source)
 		p.normalizeRootSourceStart(realRoot, source)
 		normalizeKnownSpanAttribution(realRoot, source, p.language)

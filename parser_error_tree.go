@@ -35,6 +35,34 @@ func isWhitespaceOnlySource(source []byte) bool {
 	return true
 }
 
+// extendRootToChildSpans ensures a non-error root node's byte range covers
+// all of its children. When reductions produce a root whose raw span is empty
+// (e.g. all children are zero-width external scanner tokens), the root endByte
+// stays at 0 while children may have real spans from folded extras. C
+// tree-sitter's padding representation avoids this because size accumulates
+// through reduce; the Go runtime uses absolute offsets that must be explicit.
+func extendRootToChildSpans(root *Node, source []byte) {
+	if root == nil || root.hasError || len(source) == 0 {
+		return
+	}
+	// Only fix empty-span roots whose children have content.
+	if root.endByte > root.startByte {
+		return
+	}
+	maxEnd := root.endByte
+	var maxEndPt Point
+	for _, c := range root.children {
+		if c.endByte > maxEnd {
+			maxEnd = c.endByte
+			maxEndPt = c.endPoint
+		}
+	}
+	if maxEnd > root.endByte {
+		root.endByte = maxEnd
+		root.endPoint = maxEndPt
+	}
+}
+
 func extendNodeToTrailingWhitespace(n *Node, source []byte) {
 	if n == nil {
 		return
