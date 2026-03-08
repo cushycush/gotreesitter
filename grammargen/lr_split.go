@@ -305,11 +305,17 @@ type splitReport struct {
 	NewStatesAdded  int
 	ConflictsBefore int
 	ConflictsAfter  int
+	GLRBefore       int
+	GLRAfter        int
 	Error           error
 }
 
 func (r *splitReport) String() string {
-	return fmt.Sprintf("candidates=%d split=%d new_states=%d conflicts=%d→%d",
+	s := fmt.Sprintf("candidates=%d split=%d new_states=%d conflicts=%d→%d glr=%d→%d",
 		r.CandidatesFound, r.StatesSplit, r.NewStatesAdded,
-		r.ConflictsBefore, r.ConflictsAfter)
+		r.ConflictsBefore, r.ConflictsAfter, r.GLRBefore, r.GLRAfter)
+	if r.Error != nil {
+		s += fmt.Sprintf(" error=%v", r.Error)
+	}
+	return s
 }

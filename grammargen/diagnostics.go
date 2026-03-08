@@ -411,6 +411,8 @@ func GenerateWithReport(g *Grammar) (*GenerateReport, error) {
 				glrAfter++
 			}
 		}
+		sr.GLRBefore = glrBefore
+		sr.GLRAfter = glrAfter
 
 		if glrAfter >= glrBefore {
 			// Global rollback: splitting didn't reduce GLR conflicts.

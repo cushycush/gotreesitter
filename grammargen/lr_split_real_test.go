@@ -154,13 +154,13 @@ func TestSplitRebuildRealGrammars(t *testing.T) {
 				t.Skipf("read failed: %v", err)
 			}
 
-			g, err := ImportGrammarJSON(data)
+			g1, err := ImportGrammarJSON(data)
 			if err != nil {
 				t.Skipf("import failed: %v", err)
 			}
 
-			// Run WITHOUT splitting to get baseline.
-			reportBefore, err := GenerateWithReport(g)
+			// Run WITHOUT splitting to get baseline (fresh grammar).
+			reportBefore, err := GenerateWithReport(g1)
 			if err != nil {
 				t.Skipf("generate (no split) failed: %v", err)
 			}
@@ -173,9 +173,13 @@ func TestSplitRebuildRealGrammars(t *testing.T) {
 			}
 			candidatesBefore := len(reportBefore.SplitCandidates)
 
-			// Run WITH splitting.
-			g.EnableLRSplitting = true
-			reportAfter, err := GenerateWithReport(g)
+			// Run WITH splitting (fresh grammar to avoid mutation artifacts).
+			g2, err := ImportGrammarJSON(data)
+			if err != nil {
+				t.Skipf("import (split) failed: %v", err)
+			}
+			g2.EnableLRSplitting = true
+			reportAfter, err := GenerateWithReport(g2)
 			if err != nil {
 				t.Skipf("generate (with split) failed: %v", err)
 			}
