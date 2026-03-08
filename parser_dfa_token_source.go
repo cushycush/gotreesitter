@@ -629,6 +629,25 @@ func (d *dfaTokenSource) nextDFAToken() Token {
 	} else {
 		tok = d.lexer.Next(lexState)
 	}
+	// When the lexer matched an immediate token after consuming whitespace,
+	// probe alternative lex states for a non-immediate token that has a
+	// valid parse action. This implements tree-sitter's token.immediate()
+	// semantics: immediate tokens must match at the original position.
+	if d.lexer.ImmediateRejected {
+		if d.actionCoverage(tok.Symbol) == 0 && len(d.fallbackLexStates) > 1 {
+			savedPos, savedRow, savedCol := d.lexer.pos, d.lexer.row, d.lexer.col
+			d.lexer.pos, d.lexer.row, d.lexer.col = startPos, startRow, startCol
+			if alt, ok := d.probeAlternativeLexToken(startPos, startRow, startCol, lexState); ok && d.actionCoverage(alt.Symbol) > 0 {
+				tok = alt
+				tok.ImmediateReject = false
+			} else {
+				d.lexer.pos, d.lexer.row, d.lexer.col = savedPos, savedRow, savedCol
+				tok.ImmediateReject = true
+			}
+		} else {
+			tok.ImmediateReject = true
+		}
+	}
 	// eex-only: if we consumed a whitespace-only _code token, probe other
 	// lex states to see if a more specific token should win after skipping
 	// that whitespace.
@@ -845,11 +864,9 @@ func (d *dfaTokenSource) SkipToByteWithPoint(offset uint32, pt Point) Token {
 	if target > len(d.lexer.source) {
 		target = len(d.lexer.source)
 	}
-	if target >= d.lexer.pos {
-		d.lexer.pos = target
-		d.lexer.row = pt.Row
-		d.lexer.col = pt.Column
-	}
+	d.lexer.pos = target
+	d.lexer.row = pt.Row
+	d.lexer.col = pt.Column
 	return d.Next()
 }
 

@@ -882,6 +882,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		// We iterate by index because forks may append to `stacks`.
 		numStacks := len(stacks)
 		anyReduced := false
+		immRejectRewind := false // immediate reject rewound the lexer; don't reuse token
 
 		if p.glrTrace {
 			symName := "?"
@@ -914,6 +915,33 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				for ai, a := range actions {
 					fmt.Printf("    action[%d]: type=%d state=%d sym=%d cnt=%d prec=%d\n",
 						ai, a.Type, a.State, a.Symbol, a.ChildCount, a.DynamicPrecedence)
+				}
+			}
+
+			// --- Immediate reject: force reduce instead of shift ---
+			// When the lexer matched an immediate token after whitespace
+			// (violating tree-sitter's token.immediate() semantics), the
+			// shift action for this token is incorrect. Find a reduce action
+			// from any other lookahead symbol in the current state and apply
+			// it instead. This lets the parser end the current production
+			// (e.g. image_name's REPEAT) and re-lex in a new state where a
+			// non-immediate token (e.g. "AS") may be valid.
+			if tok.ImmediateReject && len(actions) == 1 && actions[0].Type == ParseActionShift && !actions[0].Extra {
+				if reduceAct, ok := p.findReduceInState(currentState, tok.Symbol); ok {
+					p.applyAction(s, reduceAct, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks, &trackChildErrors)
+					// Rewind the lexer to re-lex from the rejected
+					// token's start position. The reduce changed the
+					// parser state, so the outer loop will call
+					// SetParserState before re-lexing, producing a
+					// non-immediate token (e.g. "AS" keyword).
+					if dts, ok := ts.(*dfaTokenSource); ok {
+						dts.lexer.pos = int(tok.StartByte)
+						dts.lexer.row = tok.StartPoint.Row
+						dts.lexer.col = tok.StartPoint.Column
+					}
+					needToken = true
+					immRejectRewind = true
+					continue
 				}
 			}
 
@@ -1138,7 +1166,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		// token. If any stack reduced, reuse the same token (the reducing
 		// stacks have new top states and need to re-check the action for
 		// the current lookahead). Otherwise, advance to next token.
-		if anyReduced {
+		if anyReduced && !immRejectRewind {
 			needToken = tok.NoLookahead
 
 			// Infinite-reduce detection (for the primary stack).

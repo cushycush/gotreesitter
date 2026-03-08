@@ -1269,6 +1269,7 @@ var importParityGrammars = []importParityGrammar{
 		blobFunc: grammars.DockerfileLanguage,
 		samples: []string{
 			"FROM ubuntu\n",
+			"FROM ubuntu AS builder\n",
 			"RUN echo hello\n",
 			"COPY . /app\n",
 			"EXPOSE 8080\n",
@@ -1279,7 +1280,7 @@ var importParityGrammars = []importParityGrammar{
 			"HEALTHCHECK CMD curl -f http://localhost/ || exit 1\n",
 			"# just a comment\n",
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 10, expectParity: 10,
+		expectImport: true, expectGenerate: true, expectNoErrors: 11, expectParity: 11,
 	},
 	{
 		name: "gitattributes", jsonPath: "/tmp/grammar_parity/gitattributes/src/grammar.json",

@@ -257,3 +257,33 @@ func (p *Parser) buildDefaultReduceActions() ([]ParseAction, []bool) {
 
 	return actions, has
 }
+
+// findReduceInState scans the parse table for the given state and returns a
+// reduce action from any terminal symbol other than excludeSym. This is used
+// by the immediate-reject mechanism: when an immediate token matched after
+// whitespace, we want to reduce (ending the current production) instead of
+// shifting the invalid immediate token.
+func (p *Parser) findReduceInState(state StateID, excludeSym Symbol) (ParseAction, bool) {
+	if p == nil || p.language == nil || p.language.TokenCount == 0 {
+		return ParseAction{}, false
+	}
+	tokenCount := int(p.language.TokenCount)
+	for sym := 0; sym < tokenCount; sym++ {
+		if Symbol(sym) == excludeSym {
+			continue
+		}
+		idx := p.lookupActionIndex(state, Symbol(sym))
+		if idx == 0 || int(idx) >= len(p.language.ParseActions) {
+			continue
+		}
+		entry := p.language.ParseActions[idx]
+		if len(entry.Actions) != 1 {
+			continue
+		}
+		act := entry.Actions[0]
+		if act.Type == ParseActionReduce {
+			return act, true
+		}
+	}
+	return ParseAction{}, false
+}

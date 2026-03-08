@@ -22,6 +22,12 @@ type Token struct {
 	// NoLookahead marks a synthetic EOF used to force EOF-table reductions
 	// without consuming input, matching tree-sitter's lex_state = -1.
 	NoLookahead bool
+
+	// ImmediateReject is set when this token was matched as an immediate
+	// token after whitespace was consumed. Per tree-sitter semantics it
+	// should not have matched. The parser should prefer reduce over shift
+	// when this flag is set.
+	ImmediateReject bool
 }
 
 func bytesToStringNoCopy(b []byte) string {
@@ -39,6 +45,12 @@ type Lexer struct {
 	row             uint32
 	col             uint32
 	immediateTokens []bool // symbol ID → is immediate (nil = no immediate tokens)
+
+	// ImmediateRejected is set to true by Next() when the only DFA match
+	// was an immediate token that appeared after whitespace. The caller
+	// (e.g. dfaTokenSource) can check this to probe alternative lex modes
+	// where a non-immediate token might be valid.
+	ImmediateRejected bool
 }
 
 // NewLexer creates a new Lexer that will tokenize source using the given
@@ -62,6 +74,7 @@ func (l *Lexer) SetImmediateTokens(imm []bool) {
 // It automatically skips tokens from states where Skip=true (whitespace).
 // Returns a zero-Symbol token with StartByte==EndByte at EOF.
 func (l *Lexer) Next(startState uint16) Token {
+	l.ImmediateRejected = false
 	origPos := l.pos
 	for {
 		// EOF check.
@@ -110,6 +123,8 @@ func (l *Lexer) Next(startState uint16) Token {
 				// No non-immediate alternative — use the immediate token
 				// anyway. This is technically wrong per tree-sitter semantics
 				// but prevents total parse failure.
+				l.ImmediateRejected = true
+				tok.ImmediateReject = true
 				l.pos = savedPos
 				l.row = savedRow
 				l.col = savedCol
