@@ -61,7 +61,7 @@ const (
 	maxForkCloneDepth = 4 * 1024
 	// maxConsecutivePrimaryReduces prevents infinite reduce loops on the
 	// primary stack when no token advancement occurs.
-	maxConsecutivePrimaryReduces = 256
+	maxConsecutivePrimaryReduces = 10
 	// Allow a small temporary oversubscription on full parses before
 	// triggering expensive global stack culling, mirroring the C runtime's
 	// version overflow window.
