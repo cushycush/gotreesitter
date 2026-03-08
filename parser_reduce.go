@@ -502,6 +502,9 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 	symbolMeta := lang.SymbolMetadata
 
 	aliasSeq := p.reduceAliasSequence(productionID)
+	if len(aliasSeq) == 0 && !p.reduceProductionHasFields(productionID) {
+		return buildReduceChildrenNoAliasNoFields(entries, start, end, symbolMeta, arena), nil
+	}
 
 	normalizedCount := 0
 	structuralChildIndex := 0
@@ -630,6 +633,56 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 		}
 	}
 	return children, fieldIDs
+}
+
+func buildReduceChildrenNoAliasNoFields(entries []stackEntry, start, end int, symbolMeta []SymbolMetadata, arena *nodeArena) []*Node {
+	normalizedCount := 0
+	for i := start; i < end; i++ {
+		n := entries[i].node
+		if n == nil {
+			continue
+		}
+		visible := true
+		if idx := int(n.symbol); idx < len(symbolMeta) {
+			visible = symbolMeta[n.symbol].Visible
+		}
+		if visible {
+			normalizedCount++
+			continue
+		}
+		normalizedCount += len(n.children)
+	}
+	if normalizedCount == 0 {
+		return nil
+	}
+
+	children := arena.allocNodeSlice(normalizedCount)
+	out := 0
+	for i := start; i < end; i++ {
+		n := entries[i].node
+		if n == nil {
+			continue
+		}
+		visible := true
+		if idx := int(n.symbol); idx < len(symbolMeta) {
+			visible = symbolMeta[n.symbol].Visible
+		}
+		if visible {
+			children[out] = n
+			out++
+			continue
+		}
+		kids := n.children
+		if len(kids) == 0 {
+			continue
+		}
+		copy(children[out:], kids)
+		out += len(kids)
+	}
+	if out != len(children) {
+		return children[:out]
+	}
+	return children
 }
 
 func nodeHasDirectFieldID(n *Node, fid FieldID) bool {
@@ -813,6 +866,17 @@ func (p *Parser) reduceAliasSequence(productionID uint16) []Symbol {
 		return nil
 	}
 	return p.reduceAliasSeq[pid]
+}
+
+func (p *Parser) reduceProductionHasFields(productionID uint16) bool {
+	if p == nil {
+		return false
+	}
+	pid := int(productionID)
+	if pid < 0 || pid >= len(p.reduceHasFields) {
+		return false
+	}
+	return p.reduceHasFields[pid]
 }
 
 func aliasedNodeInArena(arena *nodeArena, lang *Language, n *Node, alias Symbol) *Node {
