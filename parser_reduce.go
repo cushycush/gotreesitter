@@ -465,19 +465,26 @@ func extendParentSpanToWindow(parent *Node, entries []stackEntry, start, reduced
 		if isNonSpanExtendingInvisibleSymbol(n.symbol, symbolNames) {
 			continue
 		}
-		// Invisible entries (with or without children) may have span that
-		// extends beyond their inlined children due to nested invisible leaf
-		// extensions. Apply contiguity check below.
+		// Zero-width invisible entries are typically position markers
+		// (like _automatic_semicolon) and should not extend the parent span.
+		// Exception: specific symbols like _implicit_end_tag that legitimately
+		// mark boundaries.
+		if n.startByte == n.endByte {
+			if n.startByte > parent.endByte &&
+				isSpanExtendingInvisibleSymbol(n.symbol, symbolNames) {
+				parent.endByte = n.endByte
+				parent.endPoint = n.endPoint
+			}
+			continue
+		}
+		// Non-zero-width invisible entries extend the parent span without
+		// a contiguity check, matching C tree-sitter's ts_subtree_set_children
+		// which includes all structural children in the parent span.
 		if n.endByte >= parent.startByte && n.startByte < parent.startByte {
 			parent.startByte = n.startByte
 			parent.startPoint = n.startPoint
 		}
-		if n.endByte > parent.endByte && n.startByte <= parent.endByte {
-			parent.endByte = n.endByte
-			parent.endPoint = n.endPoint
-		}
-		if n.startByte == n.endByte && n.startByte > parent.endByte &&
-			isSpanExtendingInvisibleSymbol(n.symbol, symbolNames) {
+		if n.endByte > parent.endByte {
 			parent.endByte = n.endByte
 			parent.endPoint = n.endPoint
 		}

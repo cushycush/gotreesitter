@@ -646,13 +646,38 @@ func (d *dfaTokenSource) nextDFAToken() Token {
 	// probe alternative lex states for a non-immediate token that has a
 	// valid parse action. This implements tree-sitter's token.immediate()
 	// semantics: immediate tokens must match at the original position.
+	//
+	// We use d.lexer.Next() (not scan()) so that whitespace is properly
+	// skipped in each alternative lex state — scan() would start at the
+	// whitespace position and fail to find content tokens.
 	if d.lexer.ImmediateRejected {
 		if d.actionCoverage(tok.Symbol) == 0 && len(d.fallbackLexStates) > 1 {
 			savedPos, savedRow, savedCol := d.lexer.pos, d.lexer.row, d.lexer.col
-			d.lexer.pos, d.lexer.row, d.lexer.col = startPos, startRow, startCol
-			if alt, ok := d.probeAlternativeLexToken(startPos, startRow, startCol, lexState); ok && d.actionCoverage(alt.Symbol) > 0 {
-				tok = alt
-				tok.ImmediateReject = false
+			bestFound := false
+			bestTok := tok
+			bestPos, bestRow, bestCol := savedPos, savedRow, savedCol
+			for _, ls := range d.fallbackLexStates {
+				if ls == lexState {
+					continue
+				}
+				d.lexer.pos, d.lexer.row, d.lexer.col = startPos, startRow, startCol
+				altTok := d.lexer.Next(ls)
+				altPos, altRow, altCol := d.lexer.pos, d.lexer.row, d.lexer.col
+				if altTok.Symbol == 0 || altTok.ImmediateReject {
+					continue
+				}
+				if d.actionCoverage(altTok.Symbol) == 0 {
+					continue
+				}
+				if !bestFound || altTok.StartByte < bestTok.StartByte {
+					bestFound = true
+					bestTok = altTok
+					bestPos, bestRow, bestCol = altPos, altRow, altCol
+				}
+			}
+			if bestFound {
+				d.lexer.pos, d.lexer.row, d.lexer.col = bestPos, bestRow, bestCol
+				tok = bestTok
 			} else {
 				d.lexer.pos, d.lexer.row, d.lexer.col = savedPos, savedRow, savedCol
 				tok.ImmediateReject = true
