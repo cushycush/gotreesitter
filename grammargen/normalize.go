@@ -1091,11 +1091,17 @@ func registerExternalSymbols(g *Grammar, st *symbolTable) []int {
 			continue
 		}
 		name := ""
+		named := true
 		switch ext.Kind {
 		case RuleSymbol:
 			name = ext.Value
 		case RuleString:
+			// External STRING tokens are anonymous structural delimiters
+			// (like "/>"), equivalent to inline string literals. They must
+			// be Named=false so the parser treats them as anonymous tokens
+			// that don't count as named children.
 			name = ext.Value
+			named = false
 		default:
 			continue
 		}
@@ -1103,7 +1109,7 @@ func registerExternalSymbols(g *Grammar, st *symbolTable) []int {
 		id := st.addSymbol(name, SymbolInfo{
 			Name:    name,
 			Visible: visible,
-			Named:   true,
+			Named:   named,
 			Kind:    SymbolExternal,
 		})
 		extSyms = append(extSyms, id)
