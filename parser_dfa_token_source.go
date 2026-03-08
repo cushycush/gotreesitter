@@ -576,6 +576,7 @@ func (d *dfaTokenSource) probeAlternativeLexToken(startPos int, startRow, startC
 	bestCol := startCol
 	bestLen := -1
 	bestSym := Symbol(^uint16(0))
+	bestHasAction := false
 
 	for _, st := range d.fallbackLexStates {
 		if st == skipState {
@@ -587,11 +588,23 @@ func (d *dfaTokenSource) probeAlternativeLexToken(startPos int, startRow, startC
 			continue
 		}
 		matchLen := int(tok.EndByte - tok.StartByte)
-		if !bestFound || matchLen > bestLen || (matchLen == bestLen && tok.Symbol < bestSym) {
+		hasAction := d.actionCoverage(tok.Symbol) > 0
+		// Prefer tokens with parser actions over those without.
+		// Among equal-action tokens, prefer longest match, then lowest symbol.
+		better := false
+		if !bestFound {
+			better = true
+		} else if hasAction && !bestHasAction {
+			better = true
+		} else if hasAction == bestHasAction {
+			better = matchLen > bestLen || (matchLen == bestLen && tok.Symbol < bestSym)
+		}
+		if better {
 			bestFound = true
 			bestTok = tok
 			bestLen = matchLen
 			bestSym = tok.Symbol
+			bestHasAction = hasAction
 			bestPos, bestRow, bestCol = d.lexer.pos, d.lexer.row, d.lexer.col
 		}
 	}
@@ -658,9 +671,9 @@ func (d *dfaTokenSource) nextDFAToken() Token {
 	}
 	// If this lex mode failed to produce any token at a non-EOF
 	// position, probe other known lex start states before falling back
-	// to rune-skipping error recovery.
-	if d.language.Name == "jsdoc" &&
-		tok.Symbol == 0 &&
+	// to rune-skipping error recovery. This is strictly better than
+	// failing — the alternative is rune-skipping which loses tokens.
+	if tok.Symbol == 0 &&
 		startPos < len(d.lexer.source) &&
 		len(d.fallbackLexStates) > 1 &&
 		!d.hasAnyActionForSymbol(0) {
