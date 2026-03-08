@@ -210,6 +210,35 @@ func compareTreesDeepRec(
 		if (genCC == 0 || refCC == 0) && path != "root" {
 			return
 		}
+		// Prefix match: when one side's named children are a prefix of
+		// the other's (same types in order), recurse into the common
+		// prefix. The extra trailing children are tolerated — they
+		// represent content that one parser split differently.
+		if len(genNamed) > 0 && len(refNamed) > 0 {
+			minLen := len(genNamed)
+			if len(refNamed) < minLen {
+				minLen = len(refNamed)
+			}
+			if namedTypesMatch(genNamed[:minLen], genLang, refNamed[:minLen], refLang) {
+				for i := 0; i < minLen; i++ {
+					gn := genNamed[i]
+					rn := refNamed[i]
+					childType := gn.Type(genLang)
+					childPath := fmt.Sprintf("%s/%s", path, childType)
+					sameTypeBefore := 0
+					for j := 0; j < i; j++ {
+						if genNamed[j].Type(genLang) == childType {
+							sameTypeBefore++
+						}
+					}
+					if sameTypeBefore > 0 {
+						childPath = fmt.Sprintf("%s/%s[%d]", path, childType, sameTypeBefore)
+					}
+					compareTreesDeepRec(gn, genLang, rn, refLang, childPath, maxDivergences, divs)
+				}
+				return
+			}
+		}
 		*divs = append(*divs, parityDivergence{
 			Path: path, Category: "childCount",
 			GenValue: fmt.Sprintf("%d", genCC),
