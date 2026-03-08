@@ -377,7 +377,7 @@ func (d *dfaTokenSource) nextTokenFromEEXGLRStates(startPos int, startRow, start
 	if d == nil || d.lexer == nil || d.language == nil || d.lookupActionIndex == nil {
 		return Token{}, false
 	}
-	if len(d.glrStates) <= 1 {
+	if d.language.Name != "eex" || len(d.glrStates) <= 1 {
 		return Token{}, false
 	}
 
@@ -1389,20 +1389,8 @@ func (d *dfaTokenSource) promoteKeyword(tok Token) Token {
 		return tok
 	}
 	if len(d.hasKeywordState) > 0 {
-		// In GLR mode, check ALL active stack states — any stack may need keyword promotion.
-		anyHasKeyword := false
-		statesToCheck := d.glrStates
-		if len(statesToCheck) == 0 {
-			statesToCheck = []StateID{d.state}
-		}
-		for _, st := range statesToCheck {
-			si := int(st)
-			if si >= 0 && si < len(d.hasKeywordState) && d.hasKeywordState[si] {
-				anyHasKeyword = true
-				break
-			}
-		}
-		if !anyHasKeyword {
+		state := int(d.state)
+		if state >= 0 && state < len(d.hasKeywordState) && !d.hasKeywordState[state] {
 			return tok
 		}
 	}
@@ -1451,27 +1439,15 @@ func (d *dfaTokenSource) promoteKeyword(tok Token) Token {
 		}
 	}
 
-	// Context-aware promotion: only use the keyword symbol if SOME parser
-	// state has a valid action for it. In GLR mode, different stacks may
-	// need different symbols — promote if ANY stack wants the keyword.
+	// Context-aware promotion: only use the keyword symbol if the current
+	// parser state has a valid action for it. This prevents contextual
+	// keywords like "get"/"set" from being promoted in positions where
+	// they should be treated as identifiers (e.g., obj.get(...)).
 	if d.lookupActionIndex != nil {
-		statesToCheck := d.glrStates
-		if len(statesToCheck) == 0 {
-			statesToCheck = []StateID{d.state}
-		}
-		anyKwAction := false
-		anyIdAction := false
-		for _, st := range statesToCheck {
-			if d.lookupActionIndex(st, kwTok.Symbol) != 0 {
-				anyKwAction = true
-				break
-			}
-			if d.lookupActionIndex(st, tok.Symbol) != 0 {
-				anyIdAction = true
-			}
-		}
-		if !anyKwAction && anyIdAction {
-			return tok // no stack expects keyword, but some expect identifier
+		kwHasAction := d.lookupActionIndex(d.state, kwTok.Symbol) != 0
+		idHasAction := d.lookupActionIndex(d.state, tok.Symbol) != 0
+		if !kwHasAction && idHasAction {
+			return tok // parser expects identifier, not keyword
 		}
 	}
 
