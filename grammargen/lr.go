@@ -999,6 +999,16 @@ func resolveActionConflict(actions []lrAction, ng *NormalizedGrammar) ([]lrActio
 		}
 	}
 
+	// Mixed S/R + R/R: resolve R/R among reduces first, then S/R.
+	// Tree-sitter resolves all R/R conflicts before considering shifts.
+	if len(shifts) > 0 && len(reduces) > 1 {
+		resolved, err := resolveReduceReduceLegacy(reduces, ng)
+		if err != nil {
+			return nil, err
+		}
+		reduces = resolved
+	}
+
 	// Shift/reduce conflict.
 	if len(shifts) > 0 && len(reduces) > 0 {
 		shift := shifts[0]
@@ -1010,13 +1020,17 @@ func resolveActionConflict(actions []lrAction, ng *NormalizedGrammar) ([]lrActio
 		// of precedence. This is critical for patterns like Go's
 		// qualified_type vs _expression where both have prec but need GLR.
 		if shiftMatchesConflictGroup(shift, reduce.lhsSym, ng) {
-			return actions, nil
+			// If R/R resolved to multiple (conflict group), keep all.
+			result := append(shifts, reduces...)
+			return result, nil
 		}
 		if reduceLHSInConflictGroup(reduce.prodIdx, ng) {
-			return actions, nil
+			result := append(shifts, reduces...)
+			return result, nil
 		}
 		if isTransitiveConflict(shift, reduce, ng) {
-			return actions, nil
+			result := append(shifts, reduces...)
+			return result, nil
 		}
 
 		shiftPrec := shift.prec
@@ -1028,14 +1042,14 @@ func resolveActionConflict(actions []lrAction, ng *NormalizedGrammar) ([]lrActio
 		// still be respected even though the precedence value is zero.
 		if reducePrec != 0 || shiftPrec != 0 || prod.Assoc != AssocNone {
 			if reducePrec > shiftPrec {
-				return []lrAction{reduce}, nil
+				return reduces, nil
 			}
 			if shiftPrec > reducePrec {
 				return []lrAction{shift}, nil
 			}
 			switch prod.Assoc {
 			case AssocLeft:
-				return []lrAction{reduce}, nil
+				return reduces, nil
 			case AssocRight:
 				return []lrAction{shift}, nil
 			case AssocNone:
@@ -1050,12 +1064,14 @@ func resolveActionConflict(actions []lrAction, ng *NormalizedGrammar) ([]lrActio
 				for _, s := range shifts {
 					if s.lhsSym > 0 && s.lhsSym < len(ng.Symbols) &&
 						strings.HasPrefix(ng.Symbols[s.lhsSym].Name, "_expression_repeat1_") {
-						return actions, nil
+						result := append(shifts, reduces...)
+						return result, nil
 					}
 					for _, lhs := range s.lhsSyms {
 						if lhs > 0 && lhs < len(ng.Symbols) &&
 							strings.HasPrefix(ng.Symbols[lhs].Name, "_expression_repeat1_") {
-							return actions, nil
+								result := append(shifts, reduces...)
+								return result, nil
 						}
 					}
 				}
