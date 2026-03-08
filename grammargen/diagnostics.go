@@ -365,6 +365,33 @@ func GenerateWithReport(g *Grammar) (*GenerateReport, error) {
 
 	// Apply local LR(1) rebuild if enabled and candidates exist.
 	if g.EnableLRSplitting && len(report.SplitCandidates) > 0 {
+		// Snapshot tables for global rollback.
+		origActionTable := make(map[int]map[int][]lrAction, len(tables.ActionTable))
+		for s, acts := range tables.ActionTable {
+			m := make(map[int][]lrAction, len(acts))
+			for sym, a := range acts {
+				m[sym] = append([]lrAction{}, a...)
+			}
+			origActionTable[s] = m
+		}
+		origGotoTable := make(map[int]map[int]int, len(tables.GotoTable))
+		for s, gotos := range tables.GotoTable {
+			m := make(map[int]int, len(gotos))
+			for sym, t := range gotos {
+				m[sym] = t
+			}
+			origGotoTable[s] = m
+		}
+		origStateCount := tables.StateCount
+
+		// Count pre-split GLR conflicts.
+		glrBefore := 0
+		for _, d := range diags {
+			if d.Resolution == "GLR (multiple actions kept)" {
+				glrBefore++
+			}
+		}
+
 		sr := &splitReport{CandidatesFound: len(report.SplitCandidates)}
 		sr.ConflictsBefore = len(diags)
 		statesBefore := tables.StateCount
@@ -372,14 +399,35 @@ func GenerateWithReport(g *Grammar) (*GenerateReport, error) {
 		sr.StatesSplit = splitCount
 		sr.NewStatesAdded = tables.StateCount - statesBefore
 		sr.Error = splitErr
+
 		// Re-resolve conflicts after splitting.
 		diagsAfter, _ := resolveConflictsWithDiag(tables, ng, prov)
 		sr.ConflictsAfter = len(diagsAfter)
+
+		// Count post-split GLR conflicts.
+		glrAfter := 0
+		for _, d := range diagsAfter {
+			if d.Resolution == "GLR (multiple actions kept)" {
+				glrAfter++
+			}
+		}
+
+		if glrAfter >= glrBefore {
+			// Global rollback: splitting didn't reduce GLR conflicts.
+			tables.ActionTable = origActionTable
+			tables.GotoTable = origGotoTable
+			tables.StateCount = origStateCount
+			sr.StatesSplit = 0
+			sr.NewStatesAdded = 0
+			sr.ConflictsAfter = sr.ConflictsBefore
+			sr.Error = fmt.Errorf("rollback: GLR conflicts %d → %d (not reduced)", glrBefore, glrAfter)
+		} else {
+			report.Conflicts = diagsAfter
+			// Re-run oracle on new conflicts.
+			oracleAfter := newSplitOracle(diagsAfter, prov)
+			report.SplitCandidates = oracleAfter.candidates()
+		}
 		report.SplitResult = sr
-		report.Conflicts = diagsAfter
-		// Re-run oracle on new conflicts.
-		oracleAfter := newSplitOracle(diagsAfter, prov)
-		report.SplitCandidates = oracleAfter.candidates()
 	}
 
 	// Build lex DFA.
