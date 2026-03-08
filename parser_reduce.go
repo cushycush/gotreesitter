@@ -406,9 +406,6 @@ func shouldUseRawSpanForReduction(sym Symbol, children []*Node, symbolMeta []Sym
 	if int(sym) < len(forceRawSpanTable) && forceRawSpanTable[sym] {
 		return true
 	}
-	if int(sym) < len(symbolMeta) && !symbolMeta[sym].Visible {
-		return true
-	}
 	return false
 }
 

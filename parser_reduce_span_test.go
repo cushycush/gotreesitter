@@ -202,24 +202,6 @@ func TestExtendParentSpanSkipsInvisibleLineEnding(t *testing.T) {
 	}
 }
 
-func TestShouldUseRawSpanForInvisibleReduction(t *testing.T) {
-	meta := []SymbolMetadata{
-		{},
-		{Visible: true},
-		{Visible: false},
-	}
-	children := []*Node{
-		NewLeafNode(1, true, 38, 45, Point{Row: 0, Column: 38}, Point{Row: 0, Column: 45}),
-	}
-
-	if !shouldUseRawSpanForReduction(2, children, meta, false, nil) {
-		t.Fatalf("expected invisible reduction to preserve raw span")
-	}
-	if shouldUseRawSpanForReduction(1, children, meta, false, nil) {
-		t.Fatalf("expected visible reduction with visible children to keep child-derived span")
-	}
-}
-
 func TestComputeReduceRawSpanKeepsDroppedInvisiblePrefix(t *testing.T) {
 	visibleTail := NewLeafNode(1, true, 38, 45, Point{Row: 0, Column: 38}, Point{Row: 0, Column: 45})
 	invisibleReduced := NewParentNode(2, false, []*Node{visibleTail}, nil, 0)
