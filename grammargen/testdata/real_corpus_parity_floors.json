@@ -1,7 +1,7 @@
 {
-  "version": 13,
-  "generated_at": "2026-03-08T07:30:00Z",
-  "commit_sha": "b8b427e",
+  "version": 14,
+  "generated_at": "2026-03-08T08:15:00Z",
+  "commit_sha": "279f617",
   "corpus_root": "/tmp/grammar_parity",
   "profile": "aggressive",
   "max_cases": 25,
@@ -9,8 +9,8 @@
   "grammar_count": 49,
   "total_eligible": 915,
   "total_no_error": 915,
-  "total_sexpr_parity": 675,
-  "total_deep_parity": 668,
+  "total_sexpr_parity": 685,
+  "total_deep_parity": 682,
   "metrics": {
     "bash": {
       "eligible": 25,
@@ -57,8 +57,8 @@
     "dockerfile": {
       "eligible": 25,
       "no_error": 25,
-      "sexpr_parity": 16,
-      "deep_parity": 16
+      "sexpr_parity": 22,
+      "deep_parity": 22
     },
     "dot": {
       "eligible": 11,
@@ -129,8 +129,8 @@
     "graphql": {
       "eligible": 6,
       "no_error": 6,
-      "sexpr_parity": 5,
-      "deep_parity": 5
+      "sexpr_parity": 6,
+      "deep_parity": 6
     },
     "haskell": {
       "eligible": 25,
@@ -141,8 +141,8 @@
     "hcl": {
       "eligible": 25,
       "no_error": 25,
-      "sexpr_parity": 23,
-      "deep_parity": 23
+      "sexpr_parity": 24,
+      "deep_parity": 24
     },
     "html": {
       "eligible": 25,
@@ -159,8 +159,8 @@
     "javascript": {
       "eligible": 25,
       "no_error": 25,
-      "sexpr_parity": 7,
-      "deep_parity": 7
+      "sexpr_parity": 8,
+      "deep_parity": 8
     },
     "jsdoc": {
       "eligible": 16,
@@ -195,8 +195,8 @@
     "nix": {
       "eligible": 25,
       "no_error": 25,
-      "sexpr_parity": 22,
-      "deep_parity": 22
+      "sexpr_parity": 23,
+      "deep_parity": 23
     },
     "ocaml": {
       "eligible": 25,
@@ -243,8 +243,8 @@
     "regex": {
       "eligible": 25,
       "no_error": 25,
-      "sexpr_parity": 22,
-      "deep_parity": 22
+      "sexpr_parity": 23,
+      "deep_parity": 23
     },
     "requirements": {
       "eligible": 10,
