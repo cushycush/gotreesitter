@@ -1169,6 +1169,41 @@ func extractTerminals(g *Grammar, st *symbolTable, stringLits []string, namedTok
 		priority++
 	}
 
+	// Named tokens: split into string-only and non-string groups.
+	// String-only named tokens get string-tier priority (right after inline
+	// string literals), matching tree-sitter C where string terminals always
+	// have lower symbol IDs and thus higher lexer priority than patterns.
+	var stringNamedTokens, patternNamedTokens []string
+	for _, name := range namedTokens {
+		rule := g.Rules[name]
+		if isStringOnlyToken(rule) {
+			stringNamedTokens = append(stringNamedTokens, name)
+		} else {
+			patternNamedTokens = append(patternNamedTokens, name)
+		}
+	}
+
+	// String-only named tokens (string-tier priority, right after inline strings).
+	for _, name := range stringNamedTokens {
+		id, ok := st.lookup(name)
+		if !ok {
+			continue
+		}
+		rule := g.Rules[name]
+		expanded, imm, prec, err := expandTokenRule(rule)
+		if err != nil {
+			return nil, fmt.Errorf("expand token %q: %w", name, err)
+		}
+		adjustedPriority := priority - prec*1000
+		patterns = append(patterns, TerminalPattern{
+			SymbolID:  id,
+			Rule:      expanded,
+			Priority:  adjustedPriority,
+			Immediate: imm,
+		})
+		priority++
+	}
+
 	// Inline patterns (regex appearing directly in non-terminal rules, not in token()).
 	for _, pat := range inlinePatterns {
 		id, ok := st.lookup(pat)
@@ -1187,8 +1222,8 @@ func extractTerminals(g *Grammar, st *symbolTable, stringLits []string, namedTok
 		priority++
 	}
 
-	// Named tokens (rules that are token/pattern/string-literal rules).
-	for _, name := range namedTokens {
+	// Non-string named tokens (after inline patterns).
+	for _, name := range patternNamedTokens {
 		id, ok := st.lookup(name)
 		if !ok {
 			continue
@@ -1198,8 +1233,6 @@ func extractTerminals(g *Grammar, st *symbolTable, stringLits []string, namedTok
 		if err != nil {
 			return nil, fmt.Errorf("expand token %q: %w", name, err)
 		}
-		// Apply lexer precedence bias: negative prec → higher priority number
-		// (lower DFA priority), positive prec → lower priority number (higher DFA priority).
 		adjustedPriority := priority - prec*1000
 		patterns = append(patterns, TerminalPattern{
 			SymbolID:  id,
