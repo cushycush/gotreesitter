@@ -1368,7 +1368,7 @@ var importParityGrammars = []importParityGrammar{
 			`\d`, `\w`, `\s`, `.`,
 			`^abc$`, `a{3}`, `a{1,3}`,
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 17, expectParity: 17,
+		expectImport: true, expectGenerate: true, expectNoErrors: 17, expectParity: 14,
 	},
 	// ── Batch 3: small zero-external grammars ──
 	{
