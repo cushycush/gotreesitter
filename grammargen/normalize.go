@@ -67,7 +67,7 @@ type AliasInfo struct {
 type TerminalPattern struct {
 	SymbolID  int
 	Rule      *Rule // the flattened rule tree for NFA construction
-	Priority  int   // higher = preferred on tie
+	Priority  int   // lower = higher priority (wins on tie)
 	Immediate bool  // token.immediate
 }
 
