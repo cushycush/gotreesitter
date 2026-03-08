@@ -764,6 +764,35 @@ func preferOverflowCandidate(candidate, incumbent *glrStack, candidateHash, incu
 	return candidateHash > incumbentHash
 }
 
+func mergeStacksSmallForLanguage(alive []glrStack, lang *Language) []glrStack {
+	if len(alive) <= 1 {
+		return alive
+	}
+	result := alive[:0]
+	for i := range alive {
+		stack := alive[i]
+		key := mergeKeyForStack(stack)
+		duplicateIndex := -1
+		for j := range result {
+			if mergeKeyForStack(result[j]) != key {
+				continue
+			}
+			if stackEquivalentForLanguage(lang, result[j], stack) {
+				duplicateIndex = j
+				break
+			}
+		}
+		if duplicateIndex < 0 {
+			result = append(result, stack)
+			continue
+		}
+		if stackCompareMerge(&stack, &result[duplicateIndex]) >= 0 {
+			result[duplicateIndex] = stack
+		}
+	}
+	return result
+}
+
 // mergeStacksWithScratch performs bounded merge/pruning in three phases:
 //  1. drop dead stacks
 //  2. group by (state, byteOffset) merge key
@@ -796,6 +825,13 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 	if scratch == nil {
 		local := glrMergeScratch{}
 		scratch = &local
+	}
+	if len(alive) <= 4 {
+		result := mergeStacksSmallForLanguage(alive, scratch.language)
+		if perfCountersEnabled {
+			perfRecordMergeOut(len(result))
+		}
+		return result
 	}
 
 	perKeyCap := maxStacksPerMergeKey

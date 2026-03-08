@@ -58,6 +58,49 @@ func TestMergeStacksSameStateDifferentEntries(t *testing.T) {
 	}
 }
 
+func TestMergeStacksSmallPathKeepsBestDuplicateAndDistinctKeys(t *testing.T) {
+	s1 := newGLRStack(StateID(5))
+	s1.score = 10
+	s1.push(5, NewLeafNode(1, true, 0, 3, Point{}, Point{Column: 3}), nil, nil)
+
+	s2 := newGLRStack(StateID(5))
+	s2.score = 20
+	s2.push(5, NewLeafNode(1, true, 0, 3, Point{}, Point{Column: 3}), nil, nil)
+
+	s3 := newGLRStack(StateID(5))
+	s3.score = 15
+	s3.push(5, NewLeafNode(1, true, 0, 7, Point{}, Point{Column: 7}), nil, nil)
+
+	s4 := newGLRStack(StateID(6))
+	s4.score = 5
+
+	result := mergeStacks([]glrStack{s1, s2, s3, s4})
+	if len(result) != 3 {
+		t.Fatalf("expected 3 stacks after small-path merge, got %d", len(result))
+	}
+
+	foundBestDuplicate := false
+	foundOffsetSeven := false
+	foundStateSix := false
+	for i := range result {
+		top := result[i].top()
+		switch {
+		case top.state == 5 && result[i].byteOffset == 3:
+			if result[i].score != 20 {
+				t.Fatalf("best duplicate score = %d, want 20", result[i].score)
+			}
+			foundBestDuplicate = true
+		case top.state == 5 && result[i].byteOffset == 7:
+			foundOffsetSeven = true
+		case top.state == 6:
+			foundStateSix = true
+		}
+	}
+	if !foundBestDuplicate || !foundOffsetSeven || !foundStateSix {
+		t.Fatalf("missing expected survivors: duplicate=%v offset7=%v state6=%v", foundBestDuplicate, foundOffsetSeven, foundStateSix)
+	}
+}
+
 func TestGLRStackClone(t *testing.T) {
 	s := newGLRStack(StateID(1))
 	s.push(2, nil, nil, nil)
