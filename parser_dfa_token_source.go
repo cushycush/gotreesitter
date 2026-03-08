@@ -16,9 +16,8 @@ type dfaTokenSource struct {
 	hasKeywordState   []bool
 	externalPayload   any
 	externalValid     []bool
-	fallbackLexStates  []uint16
-	glrStates          []StateID // all active GLR stack states
-	noRecoverEntries   bool      // true for grammargen grammars (no RECOVER parse actions)
+	fallbackLexStates []uint16
+	glrStates         []StateID // all active GLR stack states
 
 	// Zero-width external token loop prevention.
 	// Tracks which external token indices have been produced as zero-width
@@ -61,7 +60,7 @@ var dfaTokenSourcePool = sync.Pool{
 	},
 }
 
-func acquireDFATokenSource(lexer *Lexer, language *Language, lookupActionIndex func(state StateID, sym Symbol) uint16, hasKeywordState []bool, noRecoverEntries bool) *dfaTokenSource {
+func acquireDFATokenSource(lexer *Lexer, language *Language, lookupActionIndex func(state StateID, sym Symbol) uint16, hasKeywordState []bool) *dfaTokenSource {
 	ts := dfaTokenSourcePool.Get().(*dfaTokenSource)
 	ts.lexer = lexer
 	ts.language = language
@@ -70,7 +69,6 @@ func acquireDFATokenSource(lexer *Lexer, language *Language, lookupActionIndex f
 	ts.hasKeywordState = hasKeywordState
 	ts.externalPayload = nil
 	ts.glrStates = nil
-	ts.noRecoverEntries = noRecoverEntries
 	if len(ts.fallbackLexStates) > 0 {
 		ts.fallbackLexStates = ts.fallbackLexStates[:0]
 	}
@@ -688,28 +686,6 @@ func (d *dfaTokenSource) nextDFAToken() Token {
 		} else {
 			d.lexer.pos, d.lexer.row, d.lexer.col = startPos, startRow, startCol
 			tok = d.lexer.Next(lexState)
-		}
-	}
-	// If the primary lex state produced a token that the parser
-	// cannot use (no action in any GLR state), try alternative
-	// lex states to find a token the parser CAN handle. This
-	// only applies to grammargen grammars (no RECOVER entries)
-	// where the parser has no error recovery to fall back on.
-	if d.noRecoverEntries &&
-		tok.Symbol != 0 &&
-		startPos < len(d.lexer.source) &&
-		len(d.fallbackLexStates) > 1 &&
-		!d.hasAnyActionForSymbol(tok.Symbol) {
-		savedPos2, savedRow2, savedCol2 := d.lexer.pos, d.lexer.row, d.lexer.col
-		d.lexer.pos, d.lexer.row, d.lexer.col = startPos, startRow, startCol
-		if alt, ok := d.probeAlternativeLexToken(startPos, startRow, startCol, lexState); ok {
-			if d.hasAnyActionForSymbol(alt.Symbol) {
-				tok = alt
-			} else {
-				d.lexer.pos, d.lexer.row, d.lexer.col = savedPos2, savedRow2, savedCol2
-			}
-		} else {
-			d.lexer.pos, d.lexer.row, d.lexer.col = savedPos2, savedRow2, savedCol2
 		}
 	}
 	return d.promoteKeyword(tok)

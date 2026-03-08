@@ -278,7 +278,7 @@ func (p *Parser) retryFullParseWithDFA(source []byte, initialMaxStacks int, dete
 	}
 	runRetry := func(maxMergePerKeyOverride int, maxNodes int) *Tree {
 		retryLexer := NewLexer(p.language.LexStates, source)
-		retryTS := acquireDFATokenSource(retryLexer, p.language, p.lookupActionIndex, p.hasKeywordState, p.recoverByState == nil)
+		retryTS := acquireDFATokenSource(retryLexer, p.language, p.lookupActionIndex, p.hasKeywordState)
 		return p.parseInternal(
 			source,
 			p.wrapIncludedRanges(retryTS),
@@ -560,7 +560,7 @@ func (p *Parser) Parse(source []byte) (*Tree, error) {
 		return nil, err
 	}
 	lexer := NewLexer(p.language.LexStates, source)
-	ts := acquireDFATokenSource(lexer, p.language, p.lookupActionIndex, p.hasKeywordState, p.recoverByState == nil)
+	ts := acquireDFATokenSource(lexer, p.language, p.lookupActionIndex, p.hasKeywordState)
 	deterministicExternalConflicts := p.language != nil &&
 		p.language.ExternalScanner != nil &&
 		(p.language.Name == "yaml" || p.language.Name == "scala")
@@ -614,7 +614,7 @@ func (p *Parser) ParseIncremental(source []byte, oldTree *Tree) (*Tree, error) {
 		return nil, err
 	}
 	lexer := NewLexer(p.language.LexStates, source)
-	ts := acquireDFATokenSource(lexer, p.language, p.lookupActionIndex, p.hasKeywordState, p.recoverByState == nil)
+	ts := acquireDFATokenSource(lexer, p.language, p.lookupActionIndex, p.hasKeywordState)
 	return p.parseIncrementalInternal(source, oldTree, p.wrapIncludedRanges(ts), nil), nil
 }
 
@@ -643,7 +643,7 @@ func (p *Parser) ParseIncrementalProfiled(source []byte, oldTree *Tree) (*Tree, 
 		return nil, IncrementalParseProfile{}, err
 	}
 	lexer := NewLexer(p.language.LexStates, source)
-	ts := acquireDFATokenSource(lexer, p.language, p.lookupActionIndex, p.hasKeywordState, p.recoverByState == nil)
+	ts := acquireDFATokenSource(lexer, p.language, p.lookupActionIndex, p.hasKeywordState)
 	timing := &incrementalParseTiming{}
 	tree := p.parseIncrementalInternal(source, oldTree, p.wrapIncludedRanges(ts), timing)
 	return tree, timing.toProfile(), nil
