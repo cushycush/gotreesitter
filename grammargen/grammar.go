@@ -54,7 +54,8 @@ type Grammar struct {
 	Inline    []string
 	Word      string
 	Supertypes []string
-	Tests      []TestCase // embedded test cases
+	Tests             []TestCase // embedded test cases
+	EnableLRSplitting bool       // opt-in: attempt LR(1) state splitting for merge pathology
 }
 
 // NewGrammar creates a new grammar with the given name.

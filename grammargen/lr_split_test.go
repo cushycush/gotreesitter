@@ -72,3 +72,22 @@ func TestLocalLR1Rebuild(t *testing.T) {
 		t.Errorf("splitting should not increase GLR conflicts")
 	}
 }
+
+func TestGenerateWithReportSplitting(t *testing.T) {
+	g := NewGrammar("split_gen_test")
+	g.Define("start", Choice(Sym("a_rule"), Sym("b_rule")))
+	g.Define("a_rule", Seq(Str("a"), Str("b"), Str("c"), Str("d")))
+	g.Define("b_rule", Seq(Str("a"), Str("b"), Str("c"), Str("e")))
+
+	// Enable splitting.
+	g.EnableLRSplitting = true
+
+	report, err := GenerateWithReport(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Logf("states=%d, conflicts=%d, candidates=%d, splitResult=%v",
+		report.StateCount, len(report.Conflicts),
+		len(report.SplitCandidates), report.SplitResult)
+}

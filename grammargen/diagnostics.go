@@ -84,6 +84,7 @@ type GenerateReport struct {
 	Blob            []byte
 	Conflicts       []ConflictDiag
 	SplitCandidates []splitCandidate
+	SplitResult     *splitReport
 	Warnings        []string
 	SymbolCount     int
 	StateCount      int
@@ -360,6 +361,25 @@ func GenerateWithReport(g *Grammar) (*GenerateReport, error) {
 	// Run split oracle.
 	oracle := newSplitOracle(diags, prov)
 	report.SplitCandidates = oracle.candidates()
+
+	// Apply local LR(1) rebuild if enabled and candidates exist.
+	if g.EnableLRSplitting && len(report.SplitCandidates) > 0 {
+		sr := &splitReport{CandidatesFound: len(report.SplitCandidates)}
+		sr.ConflictsBefore = len(diags)
+		statesBefore := tables.StateCount
+		splitCount, splitErr := localLR1Rebuild(tables, ng, prov, report.SplitCandidates, 200)
+		sr.StatesSplit = splitCount
+		sr.NewStatesAdded = tables.StateCount - statesBefore
+		sr.Error = splitErr
+		// Re-resolve conflicts after splitting.
+		diagsAfter, _ := resolveConflictsWithDiag(tables, ng, prov)
+		sr.ConflictsAfter = len(diagsAfter)
+		report.SplitResult = sr
+		report.Conflicts = diagsAfter
+		// Re-run oracle on new conflicts.
+		oracleAfter := newSplitOracle(diagsAfter, prov)
+		report.SplitCandidates = oracleAfter.candidates()
+	}
 
 	// Build lex DFA.
 	tokenCount := ng.TokenCount()
