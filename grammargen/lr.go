@@ -1010,17 +1010,42 @@ func resolveActionConflict(actions []lrAction, ng *NormalizedGrammar) ([]lrActio
 	}
 
 	// Shift/reduce conflict.
+	// Resolution order matches tree-sitter (generate/build_parse_table.rs):
+	//  1. Precedence comparison (shift prec vs reduce prec)
+	//  2. Associativity (only when precs are equal)
+	//  3. Declared conflict groups (fallback for unresolved conflicts)
+	//  4. Default: prefer shift
 	if len(shifts) > 0 && len(reduces) > 0 {
 		shift := shifts[0]
 		reduce := reduces[0]
 		prod := &ng.Productions[reduce.prodIdx]
 
-		// Check declared conflict groups FIRST — tree-sitter keeps conflicts
-		// as GLR when both sides are in the same conflict group, regardless
-		// of precedence. This is critical for patterns like Go's
-		// qualified_type vs _expression where both have prec but need GLR.
+		shiftPrec := shift.prec
+		reducePrec := prod.Prec
+
+		// Step 1: Precedence comparison.
+		if reducePrec != 0 || shiftPrec != 0 {
+			if reducePrec > shiftPrec {
+				return reduces, nil
+			}
+			if shiftPrec > reducePrec {
+				return []lrAction{shift}, nil
+			}
+		}
+
+		// Step 2: Associativity (when precs are equal or both zero with explicit assoc).
+		if (reducePrec == shiftPrec) && prod.Assoc != AssocNone {
+			switch prod.Assoc {
+			case AssocLeft:
+				return reduces, nil
+			case AssocRight:
+				return []lrAction{shift}, nil
+			}
+		}
+
+		// Step 3: Declared conflict groups — keep as GLR if both sides
+		// are in the same conflict group.
 		if shiftMatchesConflictGroup(shift, reduce.lhsSym, ng) {
-			// If R/R resolved to multiple (conflict group), keep all.
 			result := append(shifts, reduces...)
 			return result, nil
 		}
@@ -1031,30 +1056,6 @@ func resolveActionConflict(actions []lrAction, ng *NormalizedGrammar) ([]lrActio
 		if isTransitiveConflict(shift, reduce, ng) {
 			result := append(shifts, reduces...)
 			return result, nil
-		}
-
-		shiftPrec := shift.prec
-		reducePrec := prod.Prec
-
-		// Apply precedence/associativity resolution when either side has a
-		// non-zero precedence OR the production declares explicit associativity.
-		// PREC_LEFT(0) sets Assoc=AssocLeft with Prec=0; the associativity must
-		// still be respected even though the precedence value is zero.
-		if reducePrec != 0 || shiftPrec != 0 || prod.Assoc != AssocNone {
-			if reducePrec > shiftPrec {
-				return reduces, nil
-			}
-			if shiftPrec > reducePrec {
-				return []lrAction{shift}, nil
-			}
-			switch prod.Assoc {
-			case AssocLeft:
-				return reduces, nil
-			case AssocRight:
-				return []lrAction{shift}, nil
-			case AssocNone:
-				return nil, nil
-			}
 		}
 
 		// Targeted eex ambiguity.
