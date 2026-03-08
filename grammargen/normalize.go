@@ -772,7 +772,7 @@ func writeCanonicalInner(r *Rule, sb *strings.Builder) {
 		if len(r.Children) > 0 {
 			writeCanonicalInner(r.Children[len(r.Children)-1], sb)
 		}
-	case RuleField:
+	case RuleField, RuleAlias:
 		if len(r.Children) > 0 {
 			writeCanonicalInner(r.Children[0], sb)
 		}
@@ -911,8 +911,8 @@ func isStringOnlyToken(r *Rule) bool {
 		}
 		return false
 	}
-	// Unwrap precedence wrappers
-	if r.Kind == RulePrec || r.Kind == RulePrecLeft || r.Kind == RulePrecRight || r.Kind == RulePrecDynamic {
+	// Unwrap precedence and alias wrappers
+	if r.Kind == RulePrec || r.Kind == RulePrecLeft || r.Kind == RulePrecRight || r.Kind == RulePrecDynamic || r.Kind == RuleAlias {
 		if len(r.Children) > 0 {
 			return isStringOnlyToken(r.Children[0])
 		}
@@ -928,7 +928,8 @@ func extractTokenStringValue(r *Rule) string {
 		return ""
 	}
 	if r.Kind == RuleToken || r.Kind == RuleImmToken ||
-		r.Kind == RulePrec || r.Kind == RulePrecLeft || r.Kind == RulePrecRight || r.Kind == RulePrecDynamic {
+		r.Kind == RulePrec || r.Kind == RulePrecLeft || r.Kind == RulePrecRight || r.Kind == RulePrecDynamic ||
+		r.Kind == RuleAlias {
 		if len(r.Children) > 0 {
 			return extractTokenStringValue(r.Children[0])
 		}
@@ -1091,17 +1092,11 @@ func registerExternalSymbols(g *Grammar, st *symbolTable) []int {
 			continue
 		}
 		name := ""
-		named := true
 		switch ext.Kind {
 		case RuleSymbol:
 			name = ext.Value
 		case RuleString:
-			// External STRING tokens are anonymous structural delimiters
-			// (like "/>"), equivalent to inline string literals. They must
-			// be Named=false so the parser treats them as anonymous tokens
-			// that don't count as named children.
 			name = ext.Value
-			named = false
 		default:
 			continue
 		}
@@ -1109,7 +1104,7 @@ func registerExternalSymbols(g *Grammar, st *symbolTable) []int {
 		id := st.addSymbol(name, SymbolInfo{
 			Name:    name,
 			Visible: visible,
-			Named:   named,
+			Named:   true,
 			Kind:    SymbolExternal,
 		})
 		extSyms = append(extSyms, id)
