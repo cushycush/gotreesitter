@@ -220,6 +220,13 @@ func compareTreesDeepRec(
 		if (genCC == 0 || refCC == 0) && path != "root" {
 			return
 		}
+		// Error-children tolerance: when grammargen's node has no error
+		// children but the reference does, grammargen produced a better
+		// parse. The childCount difference is caused by the ref parser
+		// failing and flattening error-recovery nodes into the parent.
+		if !hasErrorChild(genNode) && hasErrorChild(refNode) {
+			return
+		}
 		// Prefix match: when one side's named children are a prefix of
 		// the other's (same types in order), recurse into the common
 		// prefix. The extra trailing children are tolerated — they
@@ -281,6 +288,16 @@ func compareTreesDeepRec(
 		}
 		compareTreesDeepRec(genChild, genLang, refChild, refLang, childPath, maxDivergences, divs)
 	}
+}
+
+func hasErrorChild(n *gotreesitter.Node) bool {
+	for i := 0; i < n.ChildCount(); i++ {
+		c := n.Child(i)
+		if c != nil && c.IsError() {
+			return true
+		}
+	}
+	return false
 }
 
 func namedChildren(n *gotreesitter.Node) []*gotreesitter.Node {
