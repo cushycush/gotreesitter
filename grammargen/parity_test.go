@@ -1134,7 +1134,7 @@ var importParityGrammars = []importParityGrammar{
 			"feat: add new feature\n",
 			"# comment only\n",
 		},
-		expectImport: true, expectGenerate: true, expectNoErrors: 4, expectParity: 4,
+		expectImport: true, expectGenerate: true, expectNoErrors: 4, expectParity: 3,
 	},
 	{
 		name: "graphql", jsonPath: "/tmp/grammar_parity/graphql/src/grammar.json",

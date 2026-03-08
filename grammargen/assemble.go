@@ -487,6 +487,21 @@ func buildExternalLexStates(lang *gotreesitter.Language, tables *LRTables, ng *N
 		extSymSet[symID] = i
 	}
 
+	// Build set of external symbols that are also extras. These terminal
+	// extras (e.g. HTML's comment token from the external scanner) are
+	// valid in every parser state. The LR action table doesn't contain
+	// entries for them because their shift-extra actions are added later
+	// in the assembly step, so we must mark them explicitly here.
+	extraExtSet := make(map[int]bool, len(ng.ExtraSymbols))
+	tokenCount := ng.TokenCount()
+	for _, extraSym := range ng.ExtraSymbols {
+		if extraSym < tokenCount {
+			if _, isExt := extSymSet[extraSym]; isExt {
+				extraExtSet[extSymSet[extraSym]] = true
+			}
+		}
+	}
+
 	// Row 0: all-false (no external tokens valid).
 	rows := [][]bool{make([]bool, extCount)}
 	rowMap := make(map[string]int) // serialized row → row index
@@ -498,6 +513,12 @@ func buildExternalLexStates(lang *gotreesitter.Language, tables *LRTables, ng *N
 	for state := 0; state < stateCount; state++ {
 		row := make([]bool, extCount)
 		anyValid := false
+
+		// External extras are valid in every state.
+		for extIdx := range extraExtSet {
+			row[extIdx] = true
+			anyValid = true
+		}
 
 		// Check which external symbols have actions in this state.
 		// State 0 is the error recovery state (added by buildParseTables).
