@@ -60,6 +60,14 @@ func localLR1Rebuild(
 			continue
 		}
 
+		// Cap predecessors per candidate to avoid state explosion.
+		// With N predecessors we create N-1 new states; for states with
+		// hundreds of predecessors this would bloat the table pointlessly.
+		const maxPredsPerCandidate = 10
+		if len(preds) > maxPredsPerCandidate {
+			preds = preds[:maxPredsPerCandidate]
+		}
+
 		// For each predecessor, extract the kernel items that would form
 		// this state from that predecessor's perspective alone.
 		type predPartition struct {
