@@ -1,6 +1,6 @@
 {
-  "version": 10,
-  "generated_at": "2026-03-08T01:30:00Z",
+  "version": 11,
+  "generated_at": "2026-03-08T02:30:00Z",
   "commit_sha": "b9c9f55",
   "corpus_root": "/tmp/grammar_parity",
   "profile": "aggressive",
@@ -9,8 +9,8 @@
   "grammar_count": 49,
   "total_eligible": 915,
   "total_no_error": 915,
-  "total_sexpr_parity": 646,
-  "total_deep_parity": 639,
+  "total_sexpr_parity": 663,
+  "total_deep_parity": 656,
   "metrics": {
     "bash": {
       "eligible": 25,
@@ -57,8 +57,8 @@
     "dockerfile": {
       "eligible": 25,
       "no_error": 25,
-      "sexpr_parity": 11,
-      "deep_parity": 11
+      "sexpr_parity": 16,
+      "deep_parity": 16
     },
     "dot": {
       "eligible": 11,
@@ -147,8 +147,8 @@
     "html": {
       "eligible": 25,
       "no_error": 25,
-      "sexpr_parity": 17,
-      "deep_parity": 17
+      "sexpr_parity": 20,
+      "deep_parity": 20
     },
     "ini": {
       "eligible": 11,
@@ -159,14 +159,14 @@
     "javascript": {
       "eligible": 25,
       "no_error": 25,
-      "sexpr_parity": 6,
-      "deep_parity": 6
+      "sexpr_parity": 7,
+      "deep_parity": 7
     },
     "jsdoc": {
       "eligible": 16,
       "no_error": 16,
-      "sexpr_parity": 12,
-      "deep_parity": 12
+      "sexpr_parity": 13,
+      "deep_parity": 13
     },
     "json": {
       "eligible": 6,
@@ -201,8 +201,8 @@
     "ocaml": {
       "eligible": 25,
       "no_error": 25,
-      "sexpr_parity": 11,
-      "deep_parity": 11
+      "sexpr_parity": 16,
+      "deep_parity": 16
     },
     "pem": {
       "eligible": 5,
@@ -255,8 +255,8 @@
     "ron": {
       "eligible": 16,
       "no_error": 16,
-      "sexpr_parity": 14,
-      "deep_parity": 14
+      "sexpr_parity": 16,
+      "deep_parity": 16
     },
     "scala": {
       "eligible": 25,
