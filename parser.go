@@ -716,10 +716,50 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 			return finalize(stacks, ParseStopNodeLimit)
 		}
 
-		// Default pre-lex reduces are disabled pending parity investigation.
-		// When enabled, single-stack default reductions run before lexing,
-		// which can cause different tokens to be recognized because the parser
-		// enters a different state before the DFA scan.
+		// In a single-stack parse, reduce-only states can safely perform
+		// default reductions before requesting lookahead. This mirrors
+		// tree-sitter's behavior and avoids over-lexing broad tokens (e.g. .*).
+		if needToken && len(stacks) == 1 && !stacks[0].dead {
+			if _, dfaSource := ts.(*dfaTokenSource); dfaSource {
+				reduceSteps := 0
+				for reduceSteps < maxDefaultPreLexReduces {
+					act, ok := p.defaultReduceAction(stacks[0].top().state)
+					if !ok {
+						break
+					}
+					anyReduced := false
+					p.applyAction(
+						&stacks[0],
+						act,
+						Token{},
+						&anyReduced,
+						&nodeCount,
+						arena,
+						&scratch.entries,
+						&scratch.gss,
+						&scratch.tmpEntries,
+						deferParentLinks,
+						&trackChildErrors,
+					)
+					if !anyReduced || stacks[0].dead {
+						break
+					}
+					reduceSteps++
+					if stacks[0].accepted {
+						return finalize(stacks[:1], ParseStopAccepted)
+					}
+					if stacks[0].depth() > maxDepth {
+						return finalize(stacks, ParseStopStackDepthLimit)
+					}
+					if nodeCount > maxNodes {
+						return finalize(stacks, ParseStopNodeLimit)
+					}
+				}
+				if stacks[0].dead {
+					return finalizeErrorTree(ParseStopNoStacksAlive)
+				}
+			}
+		}
 
 		// Use the primary (first) stack's state for DFA lex mode selection.
 		// Pass all active GLR stack states so external scanner valid symbols

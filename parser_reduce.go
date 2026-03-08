@@ -291,8 +291,6 @@ func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, tok Toke
 	if act.Extra {
 		parent.isExtra = true
 		targetState = topState
-	} else if tok.NoLookahead && targetState == topState {
-		parent.isExtra = true
 	}
 	parent.preGotoState = topState
 	parent.parseState = targetState
@@ -829,8 +827,6 @@ func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, tok Token, anyR
 	if act.Extra {
 		parent.isExtra = true
 		targetState = window.topState
-	} else if tok.NoLookahead && targetState == window.topState {
-		parent.isExtra = true
 	}
 	parent.preGotoState = window.topState
 	parent.parseState = targetState
