@@ -145,20 +145,31 @@ func localLR1Rebuild(
 		}
 
 		// Check if splitting would resolve the conflict.
-		// Compare the conflict symbol's action count across partitions.
+		// ALL partitions must have strictly fewer actions on the conflict symbol
+		// than the original. If any partition still has the same (or more), splitting
+		// just moves the conflict around without resolving it.
 		conflictSym := cand.lookaheadSym
 		origConflictCount := len(tables.ActionTable[stateIdx][conflictSym])
-		wouldHelp := false
+		if origConflictCount <= 1 {
+			continue // no actual conflict to resolve
+		}
+
+		allHelp := true
 		for _, p := range partitions {
-			if len(p.actions[conflictSym]) < origConflictCount {
-				wouldHelp = true
+			if len(p.actions[conflictSym]) >= origConflictCount {
+				allHelp = false
 				break
 			}
 		}
 
-		if !wouldHelp {
+		if !allHelp {
 			continue
 		}
+
+		// Snapshot original state for rollback.
+		origActions := tables.ActionTable[stateIdx]
+		origGoto := tables.GotoTable[stateIdx]
+		origStateCount := tables.StateCount
 
 		// Create new states. First partition keeps the original state index.
 		// Subsequent partitions get new state indices.
@@ -168,15 +179,23 @@ func localLR1Rebuild(
 			tables.ActionTable[stateIdx][sym] = acts
 		}
 
+		splitStates := []int{stateIdx} // track all states for rollback
+		var rewrites []struct {
+			predState int
+			transSym  int
+			oldTarget int
+		}
+
 		for i := 1; i < len(partitions); i++ {
-			if totalSplit >= maxNewStates {
+			if totalSplit+(i) > maxNewStates {
 				break
 			}
 
 			p := partitions[i]
 			newStateIdx := tables.StateCount
 			tables.StateCount++
-			totalSplit++
+
+			splitStates = append(splitStates, newStateIdx)
 
 			// Set up action table for new state.
 			tables.ActionTable[newStateIdx] = make(map[int][]lrAction)
@@ -186,28 +205,80 @@ func localLR1Rebuild(
 
 			// Copy goto table from original state.
 			tables.GotoTable[newStateIdx] = make(map[int]int)
-			for sym, target := range tables.GotoTable[stateIdx] {
+			for sym, target := range origGoto {
 				tables.GotoTable[newStateIdx][sym] = target
 			}
 
 			// Rewrite predecessor's transition to point to new state.
 			if p.pred.transSym < tokenCount {
-				// Rewrite shift action in predecessor.
 				predActs := tables.ActionTable[p.pred.predState][p.pred.transSym]
 				for j := range predActs {
 					if predActs[j].kind == lrShift && predActs[j].state == stateIdx {
+						rewrites = append(rewrites, struct {
+							predState int
+							transSym  int
+							oldTarget int
+						}{p.pred.predState, p.pred.transSym, stateIdx})
 						predActs[j].state = newStateIdx
 						break
 					}
 				}
 			} else {
-				// Rewrite goto in predecessor.
 				if tables.GotoTable[p.pred.predState] != nil &&
 					tables.GotoTable[p.pred.predState][p.pred.transSym] == stateIdx {
+					rewrites = append(rewrites, struct {
+						predState int
+						transSym  int
+						oldTarget int
+					}{p.pred.predState, p.pred.transSym, stateIdx})
 					tables.GotoTable[p.pred.predState][p.pred.transSym] = newStateIdx
 				}
 			}
 		}
+
+		// Verify the split didn't introduce more total conflicts across all
+		// affected states than we had before.
+		newTotalConflicts := 0
+		for _, si := range splitStates {
+			for _, acts := range tables.ActionTable[si] {
+				if len(acts) > 1 {
+					newTotalConflicts++
+				}
+			}
+		}
+		origTotalConflicts := 0
+		for _, acts := range origActions {
+			if len(acts) > 1 {
+				origTotalConflicts++
+			}
+		}
+
+		if newTotalConflicts > origTotalConflicts {
+			// Rollback: splitting made things worse.
+			tables.ActionTable[stateIdx] = origActions
+			tables.GotoTable[stateIdx] = origGoto
+			for _, si := range splitStates[1:] {
+				delete(tables.ActionTable, si)
+				delete(tables.GotoTable, si)
+			}
+			for _, rw := range rewrites {
+				if rw.transSym < tokenCount {
+					predActs := tables.ActionTable[rw.predState][rw.transSym]
+					for j := range predActs {
+						if predActs[j].kind == lrShift && predActs[j].state != rw.oldTarget {
+							predActs[j].state = rw.oldTarget
+							break
+						}
+					}
+				} else if tables.GotoTable[rw.predState] != nil {
+					tables.GotoTable[rw.predState][rw.transSym] = rw.oldTarget
+				}
+			}
+			tables.StateCount = origStateCount
+			continue
+		}
+
+		totalSplit += len(splitStates) - 1
 	}
 
 	return totalSplit, nil
