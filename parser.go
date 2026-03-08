@@ -1150,6 +1150,24 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 					needToken = true
 					lastReduceDepth = -1
 					consecutiveReduces = 0
+					// Kill non-shifted stacks that lag behind the furthest-
+					// advanced stack. They are stuck in a reduce loop that
+					// will never converge and crowd out correct shifted paths.
+					if len(stacks) > 1 {
+						maxByte := uint32(0)
+						for si := range stacks {
+							if stacks[si].byteOffset > maxByte {
+								maxByte = stacks[si].byteOffset
+							}
+						}
+						if maxByte > 0 {
+							for si := range stacks {
+								if !stacks[si].dead && !stacks[si].shifted && stacks[si].byteOffset < maxByte {
+									stacks[si].dead = true
+								}
+							}
+						}
+					}
 				}
 			} else if tok.NoLookahead {
 				lastReduceDepth = -1

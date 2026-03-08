@@ -64,3 +64,47 @@ func TestRetainTopStacksKeepsDistinctTopStateRepresentative(t *testing.T) {
 		}
 	}
 }
+
+// TestInfiniteReduceLoopKillsLaggingStacks verifies the logic that prunes
+// non-shifted stacks whose byteOffset trails the furthest-advanced stack
+// when an infinite reduce loop is detected. Without this, a reduce/shift
+// conflict looping back to the same state accumulates stacks that never
+// consumed the token, crowding out correct shifted alternatives.
+func TestInfiniteReduceLoopKillsLaggingStacks(t *testing.T) {
+	stacks := []glrStack{
+		{byteOffset: 0, shifted: false},  // stuck reducer
+		{byteOffset: 2, shifted: true},   // shifted past token
+		{byteOffset: 2, shifted: false},  // reduced but up to date
+		{byteOffset: 0, shifted: true},   // shifted but lagging (edge case)
+	}
+
+	maxByte := uint32(0)
+	for si := range stacks {
+		if stacks[si].byteOffset > maxByte {
+			maxByte = stacks[si].byteOffset
+		}
+	}
+	if maxByte != 2 {
+		t.Fatalf("maxByte = %d, want 2", maxByte)
+	}
+
+	// Apply the lagging-stack kill logic (mirrors parser.go)
+	for si := range stacks {
+		if !stacks[si].dead && !stacks[si].shifted && stacks[si].byteOffset < maxByte {
+			stacks[si].dead = true
+		}
+	}
+
+	if !stacks[0].dead {
+		t.Error("lagging non-shifted stack at byte 0 should be dead")
+	}
+	if stacks[1].dead {
+		t.Error("shifted stack at byte 2 should be alive")
+	}
+	if stacks[2].dead {
+		t.Error("non-shifted stack at maxByte should be alive")
+	}
+	if stacks[3].dead {
+		t.Error("shifted stack should not be killed even if lagging")
+	}
+}
