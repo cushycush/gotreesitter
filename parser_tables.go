@@ -258,6 +258,18 @@ func (p *Parser) buildDefaultReduceActions() ([]ParseAction, []bool) {
 	return actions, has
 }
 
+// hasOnlyShift returns true when the action list contains only shift actions
+// (including extra shifts like comments). Used by the immediate reject check
+// to determine if the token would only be shifted, never reduced.
+func hasOnlyShift(actions []ParseAction) bool {
+	for i := range actions {
+		if actions[i].Type != ParseActionShift {
+			return false
+		}
+	}
+	return true
+}
+
 // findReduceInState scans the parse table for the given state and returns a
 // reduce action from any terminal symbol other than excludeSym. This is used
 // by the immediate-reject mechanism: when an immediate token matched after

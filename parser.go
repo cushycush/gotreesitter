@@ -926,7 +926,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 			// it instead. This lets the parser end the current production
 			// (e.g. image_name's REPEAT) and re-lex in a new state where a
 			// non-immediate token (e.g. "AS") may be valid.
-			if tok.ImmediateReject && len(actions) == 1 && actions[0].Type == ParseActionShift && !actions[0].Extra {
+			if tok.ImmediateReject && len(actions) > 0 && hasOnlyShift(actions) {
 				if reduceAct, ok := p.findReduceInState(currentState, tok.Symbol); ok {
 					p.applyAction(s, reduceAct, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks, &trackChildErrors)
 					// Rewind the lexer to re-lex from the rejected
