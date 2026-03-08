@@ -305,58 +305,24 @@ func (p *Parser) canFinalizeNoActionEOF(s *glrStack) bool {
 		tokenCount = p.language.TokenCount
 	}
 
-	// Without an inferred root, the legacy behavior is still appropriate:
-	// a single nonterminal at the top can serve as the final tree root.
-	if p == nil || !p.hasRootSymbol {
-		return p != nil && p.language != nil && uint32(top.node.symbol) >= tokenCount
-	}
-
-	// Preserve permissive EOF wrapping for embedded blob grammars, whose
-	// language ABI version is typically unspecified (0). Generated
-	// grammargen languages use a concrete ABI version and benefit from the
-	// stricter checks below.
-	if p.language != nil && (p.language.LanguageVersion == 0 || p.language.Name == "requirements" || p.language.Name == "jsdoc") {
-		// Still apply the non-extra counting logic for ts2go blobs.
-		nonExtraCount := 0
-		onlyNonExtra := (*Node)(nil)
-		countNode := func(n *Node) bool {
-			if n == nil || n.isExtra {
-				return false
-			}
-			nonExtraCount++
-			onlyNonExtra = n
-			return nonExtraCount > 1
-		}
-
-		if len(s.entries) > 0 {
-			for i := range s.entries {
-				if countNode(s.entries[i].node) {
-					return false
-				}
-			}
-		} else {
-			for n := s.gss.head; n != nil; n = n.prev {
-				if countNode(n.entry.node) {
-					return false
-				}
-			}
-		}
-
-		if nonExtraCount == 0 {
+	if p != nil && p.hasRootSymbol {
+		// Preserve permissive EOF wrapping for embedded blob grammars, whose
+		// language ABI version is typically unspecified (0). Generated
+		// grammargen languages use a concrete ABI version and benefit from the
+		// stricter checks below.
+		if p.language != nil && (p.language.LanguageVersion == 0 || p.language.Name == "requirements" || p.language.Name == "jsdoc") {
 			return true
 		}
-		if onlyNonExtra == nil || onlyNonExtra.symbol == errorSymbol {
-			return false
+		if top.node.symbol == p.rootSymbol {
+			return true
 		}
-		return uint32(onlyNonExtra.symbol) >= tokenCount
+		// Conservative fallback: allow wrapping a lone nonterminal at EOF.
+		if s.depth() == 1 && p.language != nil && uint32(top.node.symbol) >= p.language.TokenCount {
+			return true
+		}
+		return false
 	}
-
-	// Grammargen grammars: stricter checks.
-	if top.node.symbol == p.rootSymbol {
-		return true
-	}
-	// Conservative fallback: allow wrapping a lone nonterminal at EOF.
-	if s.depth() == 1 && p.language != nil && uint32(top.node.symbol) >= p.language.TokenCount {
+	if p != nil && p.language != nil && uint32(top.node.symbol) >= tokenCount {
 		return true
 	}
 	return false
