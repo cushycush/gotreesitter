@@ -1389,18 +1389,17 @@ func (d *dfaTokenSource) promoteKeyword(tok Token) Token {
 		return tok
 	}
 	if len(d.hasKeywordState) > 0 {
+		// In GLR mode, check ALL active stack states — any stack may need keyword promotion.
 		anyHasKeyword := false
-		state := int(d.state)
-		if state >= 0 && state < len(d.hasKeywordState) && d.hasKeywordState[state] {
-			anyHasKeyword = true
+		statesToCheck := d.glrStates
+		if len(statesToCheck) == 0 {
+			statesToCheck = []StateID{d.state}
 		}
-		if !anyHasKeyword {
-			for _, st := range d.glrStates {
-				si := int(st)
-				if si >= 0 && si < len(d.hasKeywordState) && d.hasKeywordState[si] {
-					anyHasKeyword = true
-					break
-				}
+		for _, st := range statesToCheck {
+			si := int(st)
+			if si >= 0 && si < len(d.hasKeywordState) && d.hasKeywordState[si] {
+				anyHasKeyword = true
+				break
 			}
 		}
 		if !anyHasKeyword {
@@ -1452,34 +1451,27 @@ func (d *dfaTokenSource) promoteKeyword(tok Token) Token {
 		}
 	}
 
-	// Context-aware promotion: only use the keyword symbol if any active
-	// parser state has a valid action for it. This prevents contextual
-	// keywords like "get"/"set" from being promoted in positions where
-	// they should be treated as identifiers (e.g., obj.get(...)).
-	// When multiple GLR stacks exist, check ALL stack states — different
-	// forks may need different tokenizations, and demoting a keyword based
-	// only on the primary stack's state can kill the correct fork.
+	// Context-aware promotion: only use the keyword symbol if SOME parser
+	// state has a valid action for it. In GLR mode, different stacks may
+	// need different symbols — promote if ANY stack wants the keyword.
 	if d.lookupActionIndex != nil {
-		kwHasAction := d.lookupActionIndex(d.state, kwTok.Symbol) != 0
-		if !kwHasAction && len(d.glrStates) > 0 {
-			for _, st := range d.glrStates {
-				if d.lookupActionIndex(st, kwTok.Symbol) != 0 {
-					kwHasAction = true
-					break
-				}
+		statesToCheck := d.glrStates
+		if len(statesToCheck) == 0 {
+			statesToCheck = []StateID{d.state}
+		}
+		anyKwAction := false
+		anyIdAction := false
+		for _, st := range statesToCheck {
+			if d.lookupActionIndex(st, kwTok.Symbol) != 0 {
+				anyKwAction = true
+				break
+			}
+			if d.lookupActionIndex(st, tok.Symbol) != 0 {
+				anyIdAction = true
 			}
 		}
-		idHasAction := d.lookupActionIndex(d.state, tok.Symbol) != 0
-		if !idHasAction && len(d.glrStates) > 0 {
-			for _, st := range d.glrStates {
-				if d.lookupActionIndex(st, tok.Symbol) != 0 {
-					idHasAction = true
-					break
-				}
-			}
-		}
-		if !kwHasAction && idHasAction {
-			return tok // no active stack needs the keyword
+		if !anyKwAction && anyIdAction {
+			return tok // no stack expects keyword, but some expect identifier
 		}
 	}
 
