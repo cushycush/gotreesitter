@@ -346,10 +346,11 @@ func GenerateWithReport(g *Grammar) (*GenerateReport, error) {
 		return nil, fmt.Errorf("normalize: %w", err)
 	}
 
-	tables, prov, err := buildLRTablesWithProvenance(ng)
+	tables, ctx, err := buildLRTablesWithProvenance(ng)
 	if err != nil {
 		return nil, fmt.Errorf("build LR tables: %w", err)
 	}
+	prov := ctx.provenance
 
 	// Resolve conflicts with diagnostics.
 	diags, err := resolveConflictsWithDiag(tables, ng, prov)
@@ -367,7 +368,7 @@ func GenerateWithReport(g *Grammar) (*GenerateReport, error) {
 		sr := &splitReport{CandidatesFound: len(report.SplitCandidates)}
 		sr.ConflictsBefore = len(diags)
 		statesBefore := tables.StateCount
-		splitCount, splitErr := localLR1Rebuild(tables, ng, prov, report.SplitCandidates, 200)
+		splitCount, splitErr := localLR1Rebuild(tables, ng, ctx, report.SplitCandidates, 200)
 		sr.StatesSplit = splitCount
 		sr.NewStatesAdded = tables.StateCount - statesBefore
 		sr.Error = splitErr

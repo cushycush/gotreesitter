@@ -63,7 +63,7 @@ func buildLRTables(ng *NormalizedGrammar) (*LRTables, error) {
 
 // buildLRTablesWithProvenance constructs LR(1) parse tables and returns
 // the merge provenance alongside the tables for diagnostic use.
-func buildLRTablesWithProvenance(ng *NormalizedGrammar) (*LRTables, *mergeProvenance, error) {
+func buildLRTablesWithProvenance(ng *NormalizedGrammar) (*LRTables, *lrContext, error) {
 	ctx := &lrContext{
 		ng:         ng,
 		firstSets:  make([]bitset, len(ng.Symbols)),
@@ -174,7 +174,7 @@ func buildLRTablesWithProvenance(ng *NormalizedGrammar) (*LRTables, *mergeProven
 		}
 	}
 
-	return tables, ctx.provenance, nil
+	return tables, ctx, nil
 }
 
 func (t *LRTables) addAction(state, sym int, action lrAction) {

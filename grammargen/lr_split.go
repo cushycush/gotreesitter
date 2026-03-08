@@ -7,9 +7,10 @@ import "fmt"
 //
 // Algorithm:
 //  1. For each candidate state S, find all predecessor states (states with
-//     transitions into S).
-//  2. For each predecessor P, recompute GOTO(P, sym) → S using full LR(1)
-//     closure with P's exact lookaheads (not the merged ones).
+//     transitions into S) using ctx.transitions.
+//  2. For each predecessor P, extract the kernel items that would form S
+//     from P's perspective alone, then compute LR(1) closure to get the
+//     exact action table for this split.
 //  3. If the resulting states have different action tables (the conflict
 //     disappears when lookaheads are separated), create new states and
 //     rewrite transitions.
@@ -19,7 +20,7 @@ import "fmt"
 func localLR1Rebuild(
 	tables *LRTables,
 	ng *NormalizedGrammar,
-	prov *mergeProvenance,
+	ctx *lrContext,
 	candidates []splitCandidate,
 	maxNewStates int,
 ) (int, error) {
@@ -30,79 +31,126 @@ func localLR1Rebuild(
 	tokenCount := ng.TokenCount()
 	totalSplit := 0
 
-	// Build reverse transition index: target → [(source, symbol)].
-	reverseTrans := make(map[int][]struct{ src, sym int })
-	for state, actions := range tables.ActionTable {
-		for sym, acts := range actions {
-			for _, a := range acts {
-				if a.kind == lrShift {
-					reverseTrans[a.state] = append(reverseTrans[a.state], struct{ src, sym int }{state, sym})
-				}
-			}
-		}
-	}
-	for state, gotos := range tables.GotoTable {
-		for sym, target := range gotos {
-			reverseTrans[target] = append(reverseTrans[target], struct{ src, sym int }{state, sym})
-		}
-	}
-
 	for _, cand := range candidates {
 		if totalSplit >= maxNewStates {
 			break
 		}
 
 		stateIdx := cand.stateIdx
-		preds := reverseTrans[stateIdx]
-		if len(preds) < 2 {
-			// Need at least 2 predecessors to split meaningfully.
+		if stateIdx >= len(ctx.itemSets) {
 			continue
 		}
 
-		// For each predecessor, compute what the action table at stateIdx
-		// would look like if we had separate LR(1) states per predecessor.
-		type predActions struct {
-			src     int
-			sym     int
-			actions map[int][]lrAction // symbol → actions
+		// Find all predecessor states with transitions into this state.
+		trans := ctx.transitions
+		type predInfo struct {
+			predState int
+			transSym  int
+		}
+		var preds []predInfo
+		for srcState, syms := range trans {
+			for sym, target := range syms {
+				if target == stateIdx {
+					preds = append(preds, predInfo{srcState, sym})
+				}
+			}
 		}
 
-		var perPred []predActions
+		if len(preds) < 2 {
+			continue
+		}
+
+		// For each predecessor, extract the kernel items that would form
+		// this state from that predecessor's perspective alone.
+		type predPartition struct {
+			pred    predInfo
+			kernel  []coreEntry
+			actions map[int][]lrAction // lookahead → actions
+		}
+
+		var partitions []predPartition
 
 		for _, pred := range preds {
-			origActions := tables.ActionTable[stateIdx]
-			if origActions == nil {
+			if pred.predState >= len(ctx.itemSets) {
+				continue
+			}
+			predItemSet := &ctx.itemSets[pred.predState]
+
+			// Find items in predecessor where dot is before the transition symbol.
+			var kernel []coreEntry
+			for _, ce := range predItemSet.cores {
+				prod := &ng.Productions[ce.prodIdx]
+				if ce.dot < len(prod.RHS) && prod.RHS[ce.dot] == pred.transSym {
+					// Advance dot past the transition symbol.
+					kernel = append(kernel, coreEntry{
+						prodIdx:    ce.prodIdx,
+						dot:        ce.dot + 1,
+						lookaheads: ce.lookaheads.clone(),
+					})
+				}
+			}
+
+			if len(kernel) == 0 {
 				continue
 			}
 
-			pa := predActions{
-				src:     pred.src,
-				sym:     pred.sym,
-				actions: make(map[int][]lrAction),
-			}
+			// Close the kernel with full LR(1) closure.
+			closedSet := ctx.closureToSet(kernel)
 
-			for sym, acts := range origActions {
-				for _, a := range acts {
-					if a.kind == lrReduce {
-						contribs := prov.lookaheadContributors(stateIdx, sym)
-						if len(contribs) == 0 {
-							pa.actions[sym] = append(pa.actions[sym], a)
-						} else {
-							pa.actions[sym] = append(pa.actions[sym], a)
-						}
+			// Build action table from the closed set.
+			actions := make(map[int][]lrAction)
+			for _, ce := range closedSet.cores {
+				prod := &ng.Productions[ce.prodIdx]
+				if ce.dot >= len(prod.RHS) {
+					// Reduce item.
+					if ce.prodIdx == ng.AugmentProdID {
+						actions[0] = append(actions[0], lrAction{kind: lrAccept})
 					} else {
-						pa.actions[sym] = append(pa.actions[sym], a)
+						ce.lookaheads.forEach(func(la int) {
+							actions[la] = append(actions[la], lrAction{
+								kind:    lrReduce,
+								prodIdx: ce.prodIdx,
+								lhsSym:  prod.LHS,
+								isExtra: prod.IsExtra,
+							})
+						})
+					}
+				} else {
+					// Shift item — look up target from original transitions.
+					nextSym := prod.RHS[ce.dot]
+					if nextSym < tokenCount {
+						if target, ok := ctx.transitions[stateIdx][nextSym]; ok {
+							actions[nextSym] = append(actions[nextSym], lrAction{
+								kind:    lrShift,
+								state:   target,
+								prec:    prod.Prec,
+								assoc:   prod.Assoc,
+								lhsSym:  prod.LHS,
+								isExtra: prod.IsExtra,
+							})
+						}
 					}
 				}
 			}
-			perPred = append(perPred, pa)
+
+			partitions = append(partitions, predPartition{
+				pred:    pred,
+				kernel:  kernel,
+				actions: actions,
+			})
 		}
 
-		// Check if splitting would actually resolve conflicts.
+		if len(partitions) < 2 {
+			continue
+		}
+
+		// Check if splitting would resolve the conflict.
+		// Compare the conflict symbol's action count across partitions.
+		conflictSym := cand.lookaheadSym
+		origConflictCount := len(tables.ActionTable[stateIdx][conflictSym])
 		wouldHelp := false
-		for _, pa := range perPred {
-			conflictActs := pa.actions[cand.lookaheadSym]
-			if len(conflictActs) < len(tables.ActionTable[stateIdx][cand.lookaheadSym]) {
+		for _, p := range partitions {
+			if len(p.actions[conflictSym]) < origConflictCount {
 				wouldHelp = true
 				break
 			}
@@ -112,22 +160,28 @@ func localLR1Rebuild(
 			continue
 		}
 
-		// Create new states for each predecessor.
-		// The first predecessor keeps the original state; subsequent ones get new states.
-		for i := 1; i < len(perPred); i++ {
+		// Create new states. First partition keeps the original state index.
+		// Subsequent partitions get new state indices.
+		// Overwrite original state's actions with first partition's.
+		tables.ActionTable[stateIdx] = make(map[int][]lrAction)
+		for sym, acts := range partitions[0].actions {
+			tables.ActionTable[stateIdx][sym] = acts
+		}
+
+		for i := 1; i < len(partitions); i++ {
 			if totalSplit >= maxNewStates {
 				break
 			}
 
-			pa := perPred[i]
+			p := partitions[i]
 			newStateIdx := tables.StateCount
 			tables.StateCount++
 			totalSplit++
 
-			// Copy actions from original state, filtered by this predecessor's partition.
+			// Set up action table for new state.
 			tables.ActionTable[newStateIdx] = make(map[int][]lrAction)
-			for sym, acts := range pa.actions {
-				tables.ActionTable[newStateIdx][sym] = append([]lrAction{}, acts...)
+			for sym, acts := range p.actions {
+				tables.ActionTable[newStateIdx][sym] = acts
 			}
 
 			// Copy goto table from original state.
@@ -136,10 +190,10 @@ func localLR1Rebuild(
 				tables.GotoTable[newStateIdx][sym] = target
 			}
 
-			// Rewrite the predecessor's transition to point to the new state.
-			if pa.sym < tokenCount {
+			// Rewrite predecessor's transition to point to new state.
+			if p.pred.transSym < tokenCount {
 				// Rewrite shift action in predecessor.
-				predActs := tables.ActionTable[pa.src][pa.sym]
+				predActs := tables.ActionTable[p.pred.predState][p.pred.transSym]
 				for j := range predActs {
 					if predActs[j].kind == lrShift && predActs[j].state == stateIdx {
 						predActs[j].state = newStateIdx
@@ -148,8 +202,9 @@ func localLR1Rebuild(
 				}
 			} else {
 				// Rewrite goto in predecessor.
-				if tables.GotoTable[pa.src][pa.sym] == stateIdx {
-					tables.GotoTable[pa.src][pa.sym] = newStateIdx
+				if tables.GotoTable[p.pred.predState] != nil &&
+					tables.GotoTable[p.pred.predState][p.pred.transSym] == stateIdx {
+					tables.GotoTable[p.pred.predState][p.pred.transSym] = newStateIdx
 				}
 			}
 		}

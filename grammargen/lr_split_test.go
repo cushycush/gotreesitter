@@ -19,10 +19,11 @@ func TestLocalLR1Rebuild(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tables, prov, err := buildLRTablesWithProvenance(ng)
+	tables, ctx, err := buildLRTablesWithProvenance(ng)
 	if err != nil {
 		t.Fatal(err)
 	}
+	prov := ctx.provenance
 
 	// Run conflict resolution with diagnostics.
 	diags, err := resolveConflictsWithDiag(tables, ng, prov)
@@ -41,7 +42,7 @@ func TestLocalLR1Rebuild(t *testing.T) {
 	}
 
 	// Apply local rebuild.
-	splitCount, err := localLR1Rebuild(tables, ng, prov, candidates, 100)
+	splitCount, err := localLR1Rebuild(tables, ng, ctx, candidates, 100)
 	if err != nil {
 		t.Fatalf("localLR1Rebuild failed: %v", err)
 	}
