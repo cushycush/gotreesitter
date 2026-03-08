@@ -236,22 +236,28 @@ func localLR1Rebuild(
 			}
 		}
 
-		// Verify the split didn't introduce more total conflicts across all
-		// affected states than we had before.
-		newTotalConflicts := 0
-		for _, si := range splitStates {
-			for _, acts := range tables.ActionTable[si] {
+		// Verify the split didn't introduce more unresolvable (GLR) conflicts
+		// than we had before. We must try conflict resolution, not just count
+		// raw multi-action entries, because some multi-action entries resolve
+		// via precedence/associativity and don't become GLR entries.
+		countGLR := func(actionTable map[int][]lrAction) int {
+			glr := 0
+			for _, acts := range actionTable {
 				if len(acts) > 1 {
-					newTotalConflicts++
+					resolved, err := resolveActionConflict(acts, ng)
+					if err == nil && len(resolved) > 1 {
+						glr++
+					}
 				}
 			}
+			return glr
 		}
-		origTotalConflicts := 0
-		for _, acts := range origActions {
-			if len(acts) > 1 {
-				origTotalConflicts++
-			}
+
+		newTotalConflicts := 0
+		for _, si := range splitStates {
+			newTotalConflicts += countGLR(tables.ActionTable[si])
 		}
+		origTotalConflicts := countGLR(origActions)
 
 		if newTotalConflicts > origTotalConflicts {
 			// Rollback: splitting made things worse.
