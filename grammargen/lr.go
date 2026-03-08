@@ -1101,23 +1101,46 @@ func resolveReduceReduceLegacy(reduces []lrAction, ng *NormalizedGrammar) ([]lrA
 		return reduces, nil
 	}
 
-	best := reduces[0]
-	bestProd := &ng.Productions[best.prodIdx]
+	// Tree-sitter resolves R/R by precedence: higher-prec reduce wins.
+	// When precs are EQUAL, both reduces are kept (GLR).
+	// Find the maximum precedence among all reduces.
+	maxPrec := ng.Productions[reduces[0].prodIdx].Prec
 	for _, r := range reduces[1:] {
+		if p := ng.Productions[r.prodIdx].Prec; p > maxPrec {
+			maxPrec = p
+		}
+	}
+
+	// Keep only reduces with the maximum precedence.
+	kept := reduces[:0]
+	for _, r := range reduces {
+		if ng.Productions[r.prodIdx].Prec == maxPrec {
+			kept = append(kept, r)
+		}
+	}
+
+	if len(kept) == 1 {
+		return kept, nil
+	}
+
+	// Multiple reduces at the same precedence — check conflict groups.
+	if allInDeclaredConflict(kept, ng) {
+		return kept, nil
+	}
+
+	// Not in a declared conflict group: tree-sitter would error here.
+	// We pick the best by DynPrec then prodIdx as a fallback, since
+	// we don't have a grammar error mechanism.
+	best := kept[0]
+	bestProd := &ng.Productions[best.prodIdx]
+	for _, r := range kept[1:] {
 		rProd := &ng.Productions[r.prodIdx]
-		if rProd.Prec > bestProd.Prec {
+		if rProd.DynPrec > bestProd.DynPrec {
 			best = r
 			bestProd = rProd
-		} else if rProd.Prec == bestProd.Prec {
-			// Tree-sitter uses dynamic precedence as the next tiebreaker,
-			// then falls back to production index (earlier declaration wins).
-			if rProd.DynPrec > bestProd.DynPrec {
-				best = r
-				bestProd = rProd
-			} else if rProd.DynPrec == bestProd.DynPrec && r.prodIdx < best.prodIdx {
-				best = r
-				bestProd = rProd
-			}
+		} else if rProd.DynPrec == bestProd.DynPrec && r.prodIdx < best.prodIdx {
+			best = r
+			bestProd = rProd
 		}
 	}
 	return []lrAction{best}, nil
