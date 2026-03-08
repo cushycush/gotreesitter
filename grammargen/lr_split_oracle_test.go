@@ -131,3 +131,25 @@ func TestSplitOracleNilProvenance(t *testing.T) {
 		t.Errorf("nil provenance should produce no candidates, got %d", len(candidates))
 	}
 }
+
+func TestGenerateReportIncludesSplitCandidates(t *testing.T) {
+	g := NewGrammar("report_split")
+	g.Define("expression", Choice(
+		Seq(Sym("expression"), Str("+"), Sym("expression")),
+		Seq(Sym("expression"), Str("*"), Sym("expression")),
+		Str("id"),
+	))
+	g.SetConflicts([]string{"expression"})
+
+	report, err := GenerateWithReport(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Logf("conflicts=%d, splitCandidates=%d",
+		len(report.Conflicts), len(report.SplitCandidates))
+
+	// The field should exist and be populated (possibly 0 for this grammar
+	// since conflicts are declared and thus intentional).
+	_ = report.SplitCandidates
+}

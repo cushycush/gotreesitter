@@ -80,13 +80,14 @@ func (d *ConflictDiag) String(ng *NormalizedGrammar) string {
 
 // GenerateReport holds the result of grammar generation with diagnostics.
 type GenerateReport struct {
-	Language    *gotreesitter.Language
-	Blob        []byte
-	Conflicts   []ConflictDiag
-	Warnings    []string
-	SymbolCount int
-	StateCount  int
-	TokenCount  int
+	Language        *gotreesitter.Language
+	Blob            []byte
+	Conflicts       []ConflictDiag
+	SplitCandidates []splitCandidate
+	Warnings        []string
+	SymbolCount     int
+	StateCount      int
+	TokenCount      int
 }
 
 // resolveConflictsWithDiag is like resolveConflicts but collects diagnostics.
@@ -355,6 +356,10 @@ func GenerateWithReport(g *Grammar) (*GenerateReport, error) {
 		return nil, fmt.Errorf("resolve conflicts: %w", err)
 	}
 	report.Conflicts = diags
+
+	// Run split oracle.
+	oracle := newSplitOracle(diags, prov)
+	report.SplitCandidates = oracle.candidates()
 
 	// Build lex DFA.
 	tokenCount := ng.TokenCount()
