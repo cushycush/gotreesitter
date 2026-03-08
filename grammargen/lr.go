@@ -1010,41 +1010,16 @@ func resolveActionConflict(actions []lrAction, ng *NormalizedGrammar) ([]lrActio
 	}
 
 	// Shift/reduce conflict.
-	// Resolution order matches tree-sitter (generate/build_parse_table.rs):
-	//  1. Precedence comparison (shift prec vs reduce prec)
-	//  2. Associativity (only when precs are equal)
-	//  3. Declared conflict groups (fallback for unresolved conflicts)
-	//  4. Default: prefer shift
+	// Check declared conflict groups FIRST — our LALR construction produces
+	// different items than tree-sitter's, so conflicts that tree-sitter would
+	// never see can appear here. The broad conflict group check protects
+	// against incorrectly resolving these by prec/assoc.
 	if len(shifts) > 0 && len(reduces) > 0 {
 		shift := shifts[0]
 		reduce := reduces[0]
 		prod := &ng.Productions[reduce.prodIdx]
 
-		shiftPrec := shift.prec
-		reducePrec := prod.Prec
-
-		// Step 1: Precedence comparison.
-		if reducePrec != 0 || shiftPrec != 0 {
-			if reducePrec > shiftPrec {
-				return reduces, nil
-			}
-			if shiftPrec > reducePrec {
-				return []lrAction{shift}, nil
-			}
-		}
-
-		// Step 2: Associativity (when precs are equal or both zero with explicit assoc).
-		if (reducePrec == shiftPrec) && prod.Assoc != AssocNone {
-			switch prod.Assoc {
-			case AssocLeft:
-				return reduces, nil
-			case AssocRight:
-				return []lrAction{shift}, nil
-			}
-		}
-
-		// Step 3: Declared conflict groups — keep as GLR if both sides
-		// are in the same conflict group.
+		// Step 1: Declared conflict groups — keep as GLR.
 		if shiftMatchesConflictGroup(shift, reduce.lhsSym, ng) {
 			result := append(shifts, reduces...)
 			return result, nil
@@ -1056,6 +1031,27 @@ func resolveActionConflict(actions []lrAction, ng *NormalizedGrammar) ([]lrActio
 		if isTransitiveConflict(shift, reduce, ng) {
 			result := append(shifts, reduces...)
 			return result, nil
+		}
+
+		shiftPrec := shift.prec
+		reducePrec := prod.Prec
+
+		// Step 2: Precedence/associativity resolution.
+		if reducePrec != 0 || shiftPrec != 0 || prod.Assoc != AssocNone {
+			if reducePrec > shiftPrec {
+				return reduces, nil
+			}
+			if shiftPrec > reducePrec {
+				return []lrAction{shift}, nil
+			}
+			switch prod.Assoc {
+			case AssocLeft:
+				return reduces, nil
+			case AssocRight:
+				return []lrAction{shift}, nil
+			case AssocNone:
+				// Equal precs with explicit AssocNone — fall through to default.
+			}
 		}
 
 		// Targeted eex ambiguity.
