@@ -72,3 +72,98 @@ func TestMergeProvenanceNoContributors(t *testing.T) {
 		t.Fatalf("expected 0 contributors for unknown state, got %d", len(contribs))
 	}
 }
+
+func TestLALRProvenanceEndToEnd(t *testing.T) {
+	g := NewGrammar("prov_test")
+	g.Define("start", Seq(Sym("a"), Sym("b")))
+	g.Define("a", Choice(Str("x"), Str("y")))
+	g.Define("b", Choice(Str("x"), Str("z")))
+
+	ng, err := Normalize(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := &lrContext{
+		ng:         ng,
+		firstSets:  make([]bitset, len(ng.Symbols)),
+		nullables:  make([]bool, len(ng.Symbols)),
+		prodsByLHS: make(map[int][]int),
+		betaCache:  make(map[uint32]*betaResult),
+		dot0Index:  make([]int, len(ng.Productions)),
+		tokenCount: ng.TokenCount(),
+	}
+	for i := range ctx.dot0Index {
+		ctx.dot0Index[i] = -1
+	}
+	for i := range ng.Productions {
+		ctx.prodsByLHS[ng.Productions[i].LHS] = append(ctx.prodsByLHS[ng.Productions[i].LHS], i)
+	}
+	ctx.computeFirstSets()
+
+	// Force LALR path.
+	ctx.buildLR0()
+	ctx.computeLALRLookaheads()
+
+	if ctx.provenance == nil {
+		t.Fatal("provenance should be initialized after LALR build")
+	}
+
+	if !ctx.provenance.fresh[0] {
+		t.Error("state 0 should be fresh")
+	}
+
+	t.Logf("states=%d, merged=%d", len(ctx.itemSets), ctx.provenance.mergedStateCount())
+}
+
+func TestFullLRProvenanceEndToEnd(t *testing.T) {
+	// Small grammar uses full LR(1) path (<=400 productions).
+	g := NewGrammar("lr_prov_test")
+	g.Define("start", Seq(Sym("a"), Sym("b")))
+	g.Define("a", Choice(Str("x"), Str("y")))
+	g.Define("b", Choice(Str("x"), Str("z")))
+
+	ng, err := Normalize(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tables, err := buildLRTables(ng)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = tables
+
+	// Verify the lrContext path also sets provenance.
+	// Since buildLRTables doesn't expose lrContext, we test via
+	// the full LR path by constructing lrContext directly.
+	ctx := &lrContext{
+		ng:         ng,
+		firstSets:  make([]bitset, len(ng.Symbols)),
+		nullables:  make([]bool, len(ng.Symbols)),
+		prodsByLHS: make(map[int][]int),
+		betaCache:  make(map[uint32]*betaResult),
+		dot0Index:  make([]int, len(ng.Productions)),
+		tokenCount: ng.TokenCount(),
+	}
+	for i := range ctx.dot0Index {
+		ctx.dot0Index[i] = -1
+	}
+	for i := range ng.Productions {
+		ctx.prodsByLHS[ng.Productions[i].LHS] = append(ctx.prodsByLHS[ng.Productions[i].LHS], i)
+	}
+	ctx.computeFirstSets()
+
+	// Use full LR(1) path.
+	ctx.buildItemSets()
+
+	if ctx.provenance == nil {
+		t.Fatal("provenance should be initialized after full LR build")
+	}
+
+	if !ctx.provenance.fresh[0] {
+		t.Error("state 0 should be fresh")
+	}
+
+	t.Logf("states=%d, merged=%d", len(ctx.itemSets), ctx.provenance.mergedStateCount())
+}

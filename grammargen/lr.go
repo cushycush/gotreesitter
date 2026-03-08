@@ -227,6 +227,9 @@ type lrContext struct {
 	itemSets    []lrItemSet
 	transitions map[int]map[int]int
 
+	// Merge provenance tracking (diagnostic metadata, does not affect construction)
+	provenance *mergeProvenance
+
 	// Fast dot-0 lookup: prodIdx → cores slice index (-1 = absent).
 	// Allocated once, reused across closureToSet calls.
 	dot0Index []int
@@ -755,6 +758,7 @@ type stateHashEntry struct {
 // with bitset lookaheads for performance on large grammars.
 func (ctx *lrContext) buildItemSets() []lrItemSet {
 	ctx.transitions = make(map[int]map[int]int)
+	ctx.provenance = newMergeProvenance()
 
 	tokenCount := ctx.tokenCount
 
@@ -782,6 +786,7 @@ func (ctx *lrContext) buildItemSets() []lrItemSet {
 	addToHashMap(fullMap, initialSet.fullHash, 0)
 	addToHashMap(coreMap, initialSet.coreHash, 0)
 	addToHashMap(extMap, initialSet.reduceLAHash, 0)
+	ctx.provenance.recordFresh(0)
 
 	worklist := []int{0}
 	inWorklist := map[int]bool{0: true}
@@ -889,6 +894,7 @@ func (ctx *lrContext) findOrCreateState(
 	addToHashMap(fullMap, closedSet.fullHash, newIdx)
 	addToHashMap(coreMap, closedSet.coreHash, newIdx)
 	addToHashMap(extMap, closedSet.reduceLAHash, newIdx)
+	ctx.provenance.recordFresh(newIdx)
 	*worklist = append(*worklist, newIdx)
 	(*inWorklist)[newIdx] = true
 	return newIdx
@@ -928,6 +934,10 @@ func (ctx *lrContext) mergeInto(
 
 	if len(newEntries) > 0 {
 		ctx.closureIncremental(existing, newEntries)
+		ctx.provenance.recordMerge(idx, mergeOrigin{
+			kernelHash:  closedSet.coreHash,
+			sourceState: -1,
+		})
 		// Update hash maps with new hashes.
 		addToHashMap(fullMap, existing.fullHash, idx)
 		addToHashMap(extMap, existing.reduceLAHash, idx)
