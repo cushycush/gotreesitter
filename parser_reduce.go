@@ -441,16 +441,20 @@ func extendParentSpanToWindow(parent *Node, entries []stackEntry, start, reduced
 			parent.startPoint = n.startPoint
 		}
 	}
-	// Invisible non-extra children: extend parent span for entries that
-	// buildReduceChildren drops or inlines away.
-	//
-	// Scan from the end toward the beginning so backward extension can chain
-	// across adjacent hidden leaves. A forward-only pass misses prefixes like
-	// markdown plain-text runs because the earlier hidden tokens become
-	// contiguous only after a later sibling has already pulled startByte back.
-	// The same reverse scan is still safe for endByte growth because the
-	// contiguity checks below prevent phantom gaps from inflating the span.
-	for i := reducedEnd - 1; i >= start; i-- {
+
+	// Predecessor boundary: no child can genuinely start before the
+	// predecessor node's end position. Used to safely extend backward
+	// without being fooled by stale startByte=0 entries.
+	var predEnd uint32
+	if start > 0 {
+		if pred := entries[start-1].node; pred != nil {
+			predEnd = pred.endByte
+		}
+	}
+
+	// Invisible non-extra structural children: extend parent span for entries
+	// that buildReduceChildren drops (invisible symbol, no children to inline).
+	for i := start; i < reducedEnd; i++ {
 		n := entries[i].node
 		if n == nil || n.isExtra {
 			continue
@@ -460,7 +464,7 @@ func extendParentSpanToWindow(parent *Node, entries []stackEntry, start, reduced
 			visible = symbolMeta[n.symbol].Visible
 		}
 		if visible {
-			continue // visible children are already represented in parent's children
+			continue
 		}
 		if isNonSpanExtendingInvisibleSymbol(n.symbol, symbolNames) {
 			continue
@@ -477,16 +481,13 @@ func extendParentSpanToWindow(parent *Node, entries []stackEntry, start, reduced
 			}
 			continue
 		}
-		// Non-zero-width invisible entries extend the parent span without
-		// a contiguity check, matching C tree-sitter's ts_subtree_set_children
-		// which includes all structural children in the parent span.
-		if n.endByte >= parent.startByte && n.startByte < parent.startByte {
-			parent.startByte = n.startByte
-			parent.startPoint = n.startPoint
-		}
 		if n.endByte > parent.endByte {
 			parent.endByte = n.endByte
 			parent.endPoint = n.endPoint
+		}
+		if n.startByte < parent.startByte && n.startByte >= predEnd {
+			parent.startByte = n.startByte
+			parent.startPoint = n.startPoint
 		}
 	}
 }
