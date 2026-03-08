@@ -377,7 +377,7 @@ func (d *dfaTokenSource) nextTokenFromEEXGLRStates(startPos int, startRow, start
 	if d == nil || d.lexer == nil || d.language == nil || d.lookupActionIndex == nil {
 		return Token{}, false
 	}
-	if d.language.Name != "eex" || len(d.glrStates) <= 1 {
+	if len(d.glrStates) <= 1 {
 		return Token{}, false
 	}
 

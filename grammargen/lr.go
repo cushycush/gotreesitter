@@ -1005,6 +1005,20 @@ func resolveActionConflict(actions []lrAction, ng *NormalizedGrammar) ([]lrActio
 		reduce := reduces[0]
 		prod := &ng.Productions[reduce.prodIdx]
 
+		// Check declared conflict groups FIRST — tree-sitter keeps conflicts
+		// as GLR when both sides are in the same conflict group, regardless
+		// of precedence. This is critical for patterns like Go's
+		// qualified_type vs _expression where both have prec but need GLR.
+		if shiftMatchesConflictGroup(shift, reduce.lhsSym, ng) {
+			return actions, nil
+		}
+		if reduceLHSInConflictGroup(reduce.prodIdx, ng) {
+			return actions, nil
+		}
+		if isTransitiveConflict(shift, reduce, ng) {
+			return actions, nil
+		}
+
 		shiftPrec := shift.prec
 		reducePrec := prod.Prec
 
@@ -1027,16 +1041,6 @@ func resolveActionConflict(actions []lrAction, ng *NormalizedGrammar) ([]lrActio
 			case AssocNone:
 				return nil, nil
 			}
-		}
-
-		if shiftMatchesConflictGroup(shift, reduce.lhsSym, ng) {
-			return actions, nil
-		}
-		if reduceLHSInConflictGroup(reduce.prodIdx, ng) {
-			return actions, nil
-		}
-		if isTransitiveConflict(shift, reduce, ng) {
-			return actions, nil
 		}
 
 		// Targeted eex ambiguity.
