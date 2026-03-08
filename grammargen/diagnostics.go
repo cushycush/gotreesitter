@@ -17,11 +17,13 @@ const (
 
 // ConflictDiag describes a conflict encountered during LR table construction.
 type ConflictDiag struct {
-	Kind       ConflictKind
-	State      int
+	Kind         ConflictKind
+	State        int
 	LookaheadSym int
-	Actions    []lrAction // the conflicting actions
-	Resolution string     // how it was resolved (or "GLR" if kept)
+	Actions      []lrAction // the conflicting actions
+	Resolution   string     // how it was resolved (or "GLR" if kept)
+	IsMergedState bool      // was this state produced by LALR merging?
+	MergeCount    int       // how many merge origins this state has
 }
 
 func (d *ConflictDiag) String(ng *NormalizedGrammar) string {
@@ -88,7 +90,7 @@ type GenerateReport struct {
 }
 
 // resolveConflictsWithDiag is like resolveConflicts but collects diagnostics.
-func resolveConflictsWithDiag(tables *LRTables, ng *NormalizedGrammar) ([]ConflictDiag, error) {
+func resolveConflictsWithDiag(tables *LRTables, ng *NormalizedGrammar, prov *mergeProvenance) ([]ConflictDiag, error) {
 	var diags []ConflictDiag
 	for state, actions := range tables.ActionTable {
 		for sym, acts := range actions {
@@ -100,6 +102,11 @@ func resolveConflictsWithDiag(tables *LRTables, ng *NormalizedGrammar) ([]Confli
 				State:        state,
 				LookaheadSym: sym,
 				Actions:      append([]lrAction{}, acts...),
+			}
+
+			if prov != nil {
+				diag.IsMergedState = prov.isMerged(state)
+				diag.MergeCount = len(prov.origins(state))
 			}
 
 			// Classify conflict.
@@ -337,13 +344,13 @@ func GenerateWithReport(g *Grammar) (*GenerateReport, error) {
 		return nil, fmt.Errorf("normalize: %w", err)
 	}
 
-	tables, err := buildLRTables(ng)
+	tables, prov, err := buildLRTablesWithProvenance(ng)
 	if err != nil {
 		return nil, fmt.Errorf("build LR tables: %w", err)
 	}
 
 	// Resolve conflicts with diagnostics.
-	diags, err := resolveConflictsWithDiag(tables, ng)
+	diags, err := resolveConflictsWithDiag(tables, ng, prov)
 	if err != nil {
 		return nil, fmt.Errorf("resolve conflicts: %w", err)
 	}

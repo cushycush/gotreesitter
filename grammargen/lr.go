@@ -57,6 +57,13 @@ type LRTables struct {
 
 // buildLRTables constructs LR(1) parse tables from a normalized grammar.
 func buildLRTables(ng *NormalizedGrammar) (*LRTables, error) {
+	tables, _, err := buildLRTablesWithProvenance(ng)
+	return tables, err
+}
+
+// buildLRTablesWithProvenance constructs LR(1) parse tables and returns
+// the merge provenance alongside the tables for diagnostic use.
+func buildLRTablesWithProvenance(ng *NormalizedGrammar) (*LRTables, *mergeProvenance, error) {
 	ctx := &lrContext{
 		ng:         ng,
 		firstSets:  make([]bitset, len(ng.Symbols)),
@@ -167,7 +174,7 @@ func buildLRTables(ng *NormalizedGrammar) (*LRTables, error) {
 		}
 	}
 
-	return tables, nil
+	return tables, ctx.provenance, nil
 }
 
 func (t *LRTables) addAction(state, sym int, action lrAction) {

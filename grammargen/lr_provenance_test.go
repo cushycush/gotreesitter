@@ -167,3 +167,27 @@ func TestFullLRProvenanceEndToEnd(t *testing.T) {
 
 	t.Logf("states=%d, merged=%d", len(ctx.itemSets), ctx.provenance.mergedStateCount())
 }
+
+func TestConflictDiagHasProvenance(t *testing.T) {
+	g := NewGrammar("conflict_prov")
+	g.Define("expression", Choice(
+		PrecLeft(1, Seq(Sym("expression"), Str("+"), Sym("expression"))),
+		PrecLeft(2, Seq(Sym("expression"), Str("*"), Sym("expression"))),
+		Str("id"),
+	))
+	g.SetConflicts([]string{"expression"})
+
+	report, err := GenerateWithReport(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(report.Conflicts) == 0 {
+		t.Skip("no conflicts generated")
+	}
+
+	for _, c := range report.Conflicts {
+		t.Logf("conflict: state=%d, sym=%d, merged=%v, mergeCount=%d, resolution=%s",
+			c.State, c.LookaheadSym, c.IsMergedState, c.MergeCount, c.Resolution)
+	}
+}
