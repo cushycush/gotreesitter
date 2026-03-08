@@ -1047,7 +1047,11 @@ func materializeHiddenNodeForAlias(arena *nodeArena, lang *Language, n *Node) *N
 }
 
 func hiddenTreeHasFieldIDs(n *Node) bool {
-	if n == nil {
+	return hiddenTreeHasFieldIDsDepth(n, 0)
+}
+
+func hiddenTreeHasFieldIDsDepth(n *Node, depth int) bool {
+	if n == nil || depth > 64 {
 		return false
 	}
 	for _, fid := range n.fieldIDs {
@@ -1056,7 +1060,7 @@ func hiddenTreeHasFieldIDs(n *Node) bool {
 		}
 	}
 	for _, child := range n.children {
-		if hiddenTreeHasFieldIDs(child) {
+		if hiddenTreeHasFieldIDsDepth(child, depth+1) {
 			return true
 		}
 	}
