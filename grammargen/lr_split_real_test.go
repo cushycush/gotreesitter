@@ -220,3 +220,70 @@ func TestSplitRebuildRealGrammars(t *testing.T) {
 		})
 	}
 }
+
+// TestSplitGenerateLanguageRealGrammars measures the full GenerateLanguage path
+// with LR splitting enabled on selected large grammars. ENV-GATED: only runs
+// when GTS_GRAMMARGEN_SPLIT_LANG_EVAL=1 (should only be set in Docker).
+func TestSplitGenerateLanguageRealGrammars(t *testing.T) {
+	if os.Getenv("GTS_GRAMMARGEN_SPLIT_LANG_EVAL") != "1" {
+		t.Skip("set GTS_GRAMMARGEN_SPLIT_LANG_EVAL=1 to run (Docker only)")
+	}
+
+	root := os.Getenv("GTS_GRAMMARGEN_REAL_CORPUS_ROOT")
+	if root == "" {
+		root = "/tmp/grammar_parity"
+	}
+
+	targets := []string{"c", "scala"}
+
+	for _, lang := range targets {
+		t.Run(lang, func(t *testing.T) {
+			grammarDir := filepath.Join(root, lang)
+			jsPath := filepath.Join(grammarDir, "src", "grammar.json")
+			if _, err := os.Stat(jsPath); err != nil {
+				alts := []string{
+					filepath.Join(grammarDir, "grammars", lang, "src", "grammar.json"),
+				}
+				found := false
+				for _, alt := range alts {
+					if _, err := os.Stat(alt); err == nil {
+						jsPath = alt
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Skipf("grammar not available at %s", grammarDir)
+				}
+			}
+
+			data, err := os.ReadFile(jsPath)
+			if err != nil {
+				t.Skipf("read failed: %v", err)
+			}
+
+			g, err := ImportGrammarJSON(data)
+			if err != nil {
+				t.Skipf("import failed: %v", err)
+			}
+			g.EnableLRSplitting = true
+
+			langOut, err := GenerateLanguage(g)
+			if err != nil {
+				t.Skipf("generate language failed: %v", err)
+			}
+
+			t.Logf("SPLIT GENERATE LANGUAGE: %s", lang)
+			t.Logf("  states=%d symbols=%d tokens=%d",
+				langOut.StateCount, langOut.SymbolCount, langOut.TokenCount)
+
+			summaryPath := fmt.Sprintf("/tmp/split_generate_language_%s.txt", lang)
+			f, err := os.Create(summaryPath)
+			if err == nil {
+				fmt.Fprintf(f, "lang=%s states=%d symbols=%d tokens=%d\n",
+					lang, langOut.StateCount, langOut.SymbolCount, langOut.TokenCount)
+				f.Close()
+			}
+		})
+	}
+}

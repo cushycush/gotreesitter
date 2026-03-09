@@ -110,7 +110,9 @@ func Generate(g *Grammar) ([]byte, error) {
 func GenerateLanguage(g *Grammar) (*gotreesitter.Language, error) {
 	// LR splitting requires provenance/item-set data from the full pipeline.
 	if g.EnableLRSplitting {
-		report, err := GenerateWithReport(g)
+		report, err := generateWithReport(g, reportBuildOptions{
+			includeLanguage: true,
+		})
 		if err != nil {
 			return nil, err
 		}

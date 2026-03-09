@@ -334,7 +334,12 @@ func RunTests(g *Grammar) error {
 	return nil
 }
 
-func generateWithReport(g *Grammar, includeArtifacts bool) (*GenerateReport, error) {
+type reportBuildOptions struct {
+	includeLanguage bool
+	includeBlob     bool
+}
+
+func generateWithReport(g *Grammar, opts reportBuildOptions) (*GenerateReport, error) {
 	report := &GenerateReport{}
 
 	// Validate first.
@@ -447,7 +452,7 @@ func generateWithReport(g *Grammar, includeArtifacts bool) (*GenerateReport, err
 	report.StateCount = tables.StateCount + 1 // buildParseTables inserts error state 0
 	report.TokenCount = ng.TokenCount()
 
-	if !includeArtifacts {
+	if !opts.includeLanguage {
 		return report, nil
 	}
 
@@ -517,6 +522,10 @@ func generateWithReport(g *Grammar, includeArtifacts bool) (*GenerateReport, err
 	report.StateCount = int(lang.StateCount)
 	report.TokenCount = int(lang.TokenCount)
 
+	if !opts.includeBlob {
+		return report, nil
+	}
+
 	blob, err := encodeLanguageBlob(lang)
 	if err != nil {
 		return nil, fmt.Errorf("encode: %w", err)
@@ -528,12 +537,15 @@ func generateWithReport(g *Grammar, includeArtifacts bool) (*GenerateReport, err
 
 // GenerateWithReport compiles a grammar and returns a full diagnostic report.
 func GenerateWithReport(g *Grammar) (*GenerateReport, error) {
-	return generateWithReport(g, true)
+	return generateWithReport(g, reportBuildOptions{
+		includeLanguage: true,
+		includeBlob:     true,
+	})
 }
 
 // generateDiagnosticsReport runs the report pipeline but skips lex/assemble/blob
 // work. It is intended for large-grammar diagnostic/perf tests that only need
 // conflicts, split metadata, warnings, and final table counts.
 func generateDiagnosticsReport(g *Grammar) (*GenerateReport, error) {
-	return generateWithReport(g, false)
+	return generateWithReport(g, reportBuildOptions{})
 }
