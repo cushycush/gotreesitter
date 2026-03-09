@@ -378,6 +378,7 @@ func (p *Parser) normalizeRootSourceStart(root *Node, source []byte) {
 // currently drops it during child normalization.
 func normalizeKnownSpanAttribution(root *Node, source []byte, lang *Language) {
 	normalizeTargetedTrailingTriviaSpans(root, source, lang)
+	normalizeCooklangRecipeSpan(root, source, lang)
 	normalizeHaskellImportsSpan(root, source, lang)
 }
 
@@ -465,6 +466,40 @@ func trimTrailingTriviaGap(gap []byte) []byte {
 		}
 	}
 	return gap
+}
+
+func normalizeCooklangRecipeSpan(root *Node, source []byte, lang *Language) {
+	if root == nil || len(source) == 0 || lang == nil || lang.Name != "cooklang" {
+		return
+	}
+	if root.Type(lang) != "recipe" || len(root.children) == 0 {
+		return
+	}
+	last := root.children[len(root.children)-1]
+	if last == nil || last.Type(lang) != "step" {
+		return
+	}
+	if int(last.endByte) >= len(source) || source[last.endByte] != '.' {
+		return
+	}
+	tail := source[last.endByte+1:]
+	if !bytesAreTrivia(tail) {
+		return
+	}
+
+	last.endByte++
+	last.endPoint = advancePointByBytes(last.endPoint, []byte{'.'})
+
+	if root.endByte < last.endByte {
+		root.endByte = last.endByte
+		root.endPoint = last.endPoint
+	}
+	if len(tail) == 0 {
+		return
+	}
+	trimmed := trimTrailingTriviaGap(tail)
+	root.endByte += uint32(len(trimmed))
+	root.endPoint = advancePointByBytes(root.endPoint, trimmed)
 }
 
 func normalizeHaskellImportsSpan(root *Node, source []byte, lang *Language) {

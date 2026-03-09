@@ -90,6 +90,31 @@ func TestNormalizeKnownSpanAttributionDoesNotExtendNonTargetedNestedNode(t *test
 	}
 }
 
+func TestNormalizeKnownSpanAttributionCooklangExtendsStepPunctuationAndRecipeNewline(t *testing.T) {
+	step := NewLeafNode(1, true, 0, 16, Point{Row: 0, Column: 0}, Point{Row: 0, Column: 16})
+	root := NewParentNode(2, true, []*Node{step}, nil, 0)
+	root.endByte = 16
+	root.endPoint = Point{Row: 0, Column: 16}
+
+	normalizeKnownSpanAttribution(root, []byte("Add @salt{1%tsp}.\n"), &Language{
+		Name:        "cooklang",
+		SymbolNames: []string{"", "step", "recipe"},
+	})
+
+	if got, want := step.endByte, uint32(17); got != want {
+		t.Fatalf("step endByte = %d, want %d", got, want)
+	}
+	if got, want := step.endPoint, (Point{Row: 0, Column: 17}); got != want {
+		t.Fatalf("step endPoint = %+v, want %+v", got, want)
+	}
+	if got, want := root.endByte, uint32(18); got != want {
+		t.Fatalf("root endByte = %d, want %d", got, want)
+	}
+	if got, want := root.endPoint, (Point{Row: 1, Column: 0}); got != want {
+		t.Fatalf("root endPoint = %+v, want %+v", got, want)
+	}
+}
+
 func TestNormalizeRootSourceStartLeavesCobolAreaAOffset(t *testing.T) {
 	root := NewLeafNode(1, true, 7, 58, Point{Row: 0, Column: 7}, Point{Row: 2, Column: 0})
 	parser := &Parser{language: &Language{Name: "cobol"}}
