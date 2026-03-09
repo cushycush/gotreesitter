@@ -19,12 +19,33 @@ type lrItemSet struct {
 	cores []coreEntry
 	// coreIndex maps (prodIdx, dot) → index in cores for fast lookup.
 	coreIndex map[coreItem]int
+	// packedCoreIndex is the same lookup keyed by packed (prodIdx,dot).
+	// LALR LR(0) construction uses this directly so it can retain the dedup map
+	// from closure building instead of allocating a second coreIndex map.
+	packedCoreIndex map[uint64]int
 	// coreHash is a hash of the core items only (without lookaheads).
 	coreHash uint64
 	// fullHash is a hash of core items + all lookaheads.
 	fullHash uint64
 	// reduceLAHash is a hash of only the reduce-item lookaheads (for extended merging).
 	reduceLAHash uint64
+}
+
+func (set *lrItemSet) coreLookup(prodIdx, dot int) (int, bool) {
+	if set.packedCoreIndex != nil {
+		idx, ok := set.packedCoreIndex[packCoreItemKey(prodIdx, dot)]
+		return idx, ok
+	}
+	idx, ok := set.coreIndex[coreItem{prodIdx: prodIdx, dot: dot}]
+	return idx, ok
+}
+
+func (set *lrItemSet) setCoreIndex(prodIdx, dot, idx int) {
+	if set.packedCoreIndex != nil {
+		set.packedCoreIndex[packCoreItemKey(prodIdx, dot)] = idx
+		return
+	}
+	set.coreIndex[coreItem{prodIdx: prodIdx, dot: dot}] = idx
 }
 
 // lrAction is a parse table action.
@@ -602,8 +623,7 @@ func (ctx *lrContext) closureIncremental(set *lrItemSet, newEntries []coreEntry)
 	inWorklist := make([]bool, len(set.cores)+len(newEntries))
 
 	for _, ne := range newEntries {
-		c := coreItem{ne.prodIdx, ne.dot}
-		if idx, ok := set.coreIndex[c]; ok {
+		if idx, ok := set.coreLookup(ne.prodIdx, ne.dot); ok {
 			if set.cores[idx].lookaheads.unionWith(&ne.lookaheads) {
 				if !inWorklist[idx] {
 					worklist = append(worklist, idx)
@@ -612,7 +632,7 @@ func (ctx *lrContext) closureIncremental(set *lrItemSet, newEntries []coreEntry)
 			}
 		} else {
 			idx = len(set.cores)
-			set.coreIndex[c] = idx
+			set.setCoreIndex(ne.prodIdx, ne.dot, idx)
 			set.cores = append(set.cores, coreEntry{
 				prodIdx:    ne.prodIdx,
 				dot:        ne.dot,
@@ -647,12 +667,11 @@ func (ctx *lrContext) closureIncremental(set *lrItemSet, newEntries []coreEntry)
 		br := ctx.getBetaFirst(ce.prodIdx, ce.dot)
 
 		for _, prodIdx := range ctx.prodsByLHS[nextSym] {
-			target := coreItem{prodIdx, 0}
-			tidx, exists := set.coreIndex[target]
+			tidx, exists := set.coreLookup(prodIdx, 0)
 
 			if !exists {
 				tidx = len(set.cores)
-				set.coreIndex[target] = tidx
+				set.setCoreIndex(prodIdx, 0, tidx)
 				set.cores = append(set.cores, coreEntry{
 					prodIdx:    prodIdx,
 					dot:        0,
@@ -750,8 +769,7 @@ func sameCores(a, b *lrItemSet) bool {
 		return false
 	}
 	for _, ac := range a.cores {
-		c := coreItem{ac.prodIdx, ac.dot}
-		if _, ok := b.coreIndex[c]; !ok {
+		if _, ok := b.coreLookup(ac.prodIdx, ac.dot); !ok {
 			return false
 		}
 	}
@@ -764,8 +782,7 @@ func sameFullItems(a, b *lrItemSet) bool {
 		return false
 	}
 	for _, ac := range a.cores {
-		c := coreItem{ac.prodIdx, ac.dot}
-		bidx, ok := b.coreIndex[c]
+		bidx, ok := b.coreLookup(ac.prodIdx, ac.dot)
 		if !ok {
 			return false
 		}
@@ -783,8 +800,7 @@ func sameReduceLookaheads(a, b *lrItemSet, prods []Production) bool {
 		if ac.dot < len(prods[ac.prodIdx].RHS) {
 			continue // not a reduce item
 		}
-		c := coreItem{ac.prodIdx, ac.dot}
-		bidx, ok := b.coreIndex[c]
+		bidx, ok := b.coreLookup(ac.prodIdx, ac.dot)
 		if !ok {
 			return false
 		}
@@ -797,8 +813,7 @@ func sameReduceLookaheads(a, b *lrItemSet, prods []Production) bool {
 		if bc.dot < len(prods[bc.prodIdx].RHS) {
 			continue
 		}
-		c := coreItem{bc.prodIdx, bc.dot}
-		if _, ok := a.coreIndex[c]; !ok {
+		if _, ok := a.coreLookup(bc.prodIdx, bc.dot); !ok {
 			return false
 		}
 	}
@@ -971,8 +986,7 @@ func (ctx *lrContext) mergeInto(
 	var newEntries []coreEntry
 	existing := &ctx.itemSets[idx]
 	for _, ce := range closedSet.cores {
-		c := coreItem{ce.prodIdx, ce.dot}
-		if eidx, ok := existing.coreIndex[c]; ok {
+		if eidx, ok := existing.coreLookup(ce.prodIdx, ce.dot); ok {
 			// Check if any new lookaheads.
 			ec := &existing.cores[eidx]
 			for wi, w := range ce.lookaheads.words {

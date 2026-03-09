@@ -169,14 +169,9 @@ func (ctx *lrContext) lr0Closure(kernel []coreItem) lrItemSet {
 		}
 	}
 
-	coreIdx := make(map[coreItem]int, len(cores))
-	for i, c := range cores {
-		coreIdx[coreItem{prodIdx: c.prodIdx, dot: c.dot}] = i
-	}
-
 	set := lrItemSet{
-		cores:     cores,
-		coreIndex: coreIdx,
+		cores:           cores,
+		packedCoreIndex: seen,
 	}
 	// Compute only coreHash (fullHash and reduceLAHash will be set after lookaheads).
 	var ch uint64
@@ -300,7 +295,7 @@ func (ctx *lrContext) computeLALRLookaheads() {
 		// These are all states p' where production pi appears with dot=0.
 		for stateIdx := range ctx.itemSets {
 			itemSet := &ctx.itemSets[stateIdx]
-			if _, ok := itemSet.coreIndex[coreItem{pi, 0}]; !ok {
+			if _, ok := itemSet.coreLookup(pi, 0); !ok {
 				continue
 			}
 
@@ -385,8 +380,7 @@ func (ctx *lrContext) computeLALRLookaheads() {
 	for _, lb := range lookbacks {
 		itemSet := &ctx.itemSets[lb.stateIdx]
 		prod := &ng.Productions[lb.prodIdx]
-		reduceCore := coreItem{lb.prodIdx, len(prod.RHS)}
-		if idx, ok := itemSet.coreIndex[reduceCore]; ok {
+		if idx, ok := itemSet.coreLookup(lb.prodIdx, len(prod.RHS)); ok {
 			itemSet.cores[idx].lookaheads.unionWith(&followSets[lb.ntIdx])
 			followSets[lb.ntIdx].forEach(func(la int) {
 				ctx.recordLookaheadContributor(lb.stateIdx, la, lb.ntIdx)
@@ -402,8 +396,7 @@ func (ctx *lrContext) computeLALRLookaheads() {
 		if trans, ok := ctx.transitions[0]; ok {
 			if targetState, ok := trans[augProd.RHS[0]]; ok {
 				augSet := &ctx.itemSets[targetState]
-				augCore := coreItem{ng.AugmentProdID, len(augProd.RHS)}
-				if idx, ok := augSet.coreIndex[augCore]; ok {
+				if idx, ok := augSet.coreLookup(ng.AugmentProdID, len(augProd.RHS)); ok {
 					augSet.cores[idx].lookaheads.add(0) // $end
 				}
 			}
