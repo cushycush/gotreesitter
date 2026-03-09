@@ -209,12 +209,26 @@ func scaledNodeLimit(limit, scale int) int {
 	return limit * scale
 }
 
+func effectiveFullParseInitialMaxStacks(lang *Language, initialMaxStacks int) int {
+	if initialMaxStacks <= 0 {
+		initialMaxStacks = maxGLRStacks
+	}
+	if lang != nil && lang.Name == "bash" && initialMaxStacks < 256 {
+		initialMaxStacks = 256
+	}
+	return initialMaxStacks
+}
+
 func fullParseRetryMaxStacksOverride(tree *Tree, sourceLen int, initialMaxStacks int) int {
-	if parseMaxGLRStacksValue() >= fullParseRetryMaxGLRStacks {
+	retryMaxStacks := fullParseRetryMaxGLRStacks
+	if initialMaxStacks > retryMaxStacks {
+		retryMaxStacks = initialMaxStacks * 2
+	}
+	if parseMaxGLRStacksValue() >= retryMaxStacks {
 		return 0
 	}
 	if shouldRetryFullParse(tree, sourceLen) || shouldRetryAcceptedErrorParse(tree, sourceLen, initialMaxStacks) {
-		return fullParseRetryMaxGLRStacks
+		return retryMaxStacks
 	}
 	return 0
 }
@@ -564,7 +578,7 @@ func (p *Parser) Parse(source []byte) (*Tree, error) {
 	deterministicExternalConflicts := p.language != nil &&
 		p.language.ExternalScanner != nil &&
 		(p.language.Name == "yaml" || p.language.Name == "scala")
-	initialMaxStacks := parseMaxGLRStacksValue()
+	initialMaxStacks := effectiveFullParseInitialMaxStacks(p.language, parseMaxGLRStacksValue())
 	if p.maxConflictWidth > initialMaxStacks {
 		initialMaxStacks = p.maxConflictWidth
 	}
@@ -587,7 +601,7 @@ func (p *Parser) ParseWithTokenSource(source []byte, ts TokenSource) (*Tree, err
 	deterministicExternalConflicts := p.language != nil &&
 		p.language.ExternalScanner != nil &&
 		(p.language.Name == "yaml" || p.language.Name == "scala")
-	initialMaxStacks := parseMaxGLRStacksValue()
+	initialMaxStacks := effectiveFullParseInitialMaxStacks(p.language, parseMaxGLRStacksValue())
 	if p.maxConflictWidth > initialMaxStacks {
 		initialMaxStacks = p.maxConflictWidth
 	}
