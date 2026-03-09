@@ -372,6 +372,7 @@ func (p *Parser) normalizeRootSourceStart(root *Node, source []byte) {
 // C tree-sitter attributes trailing trivia to a grouped node but this runtime
 // currently drops it during child normalization.
 func normalizeKnownSpanAttribution(root *Node, source []byte, lang *Language) {
+	normalizeTargetedTrailingTriviaSpans(root, source, lang)
 	normalizeHaskellImportsSpan(root, source, lang)
 }
 
@@ -385,6 +386,80 @@ func bytesAreTrivia(b []byte) bool {
 		}
 	}
 	return true
+}
+
+var trailingTriviaSpanTargets = map[string]map[string]struct{}{
+	"caddy": {
+		"server": {},
+	},
+	"fortran": {
+		"program":           {},
+		"program_statement": {},
+	},
+	"just": {
+		"recipe":      {},
+		"recipe_body": {},
+	},
+	"nginx": {
+		"attribute": {},
+	},
+	"pug": {
+		"tag": {},
+	},
+}
+
+func normalizeTargetedTrailingTriviaSpans(root *Node, source []byte, lang *Language) {
+	if root == nil || len(source) == 0 || lang == nil {
+		return
+	}
+	targets, ok := trailingTriviaSpanTargets[lang.Name]
+	if !ok {
+		return
+	}
+	normalizeTargetedTrailingTriviaSpansRecursive(root, source, lang, targets)
+}
+
+func normalizeTargetedTrailingTriviaSpansRecursive(parent *Node, source []byte, lang *Language, targets map[string]struct{}) {
+	if parent == nil || len(parent.children) == 0 {
+		return
+	}
+	for i, child := range parent.children {
+		if child == nil {
+			continue
+		}
+		if child.isNamed {
+			if _, ok := targets[child.Type(lang)]; ok {
+				boundaryByte := parent.endByte
+				if i+1 < len(parent.children) && parent.children[i+1] != nil {
+					boundaryByte = parent.children[i+1].startByte
+				}
+				if child.endByte < boundaryByte && boundaryByte <= uint32(len(source)) {
+					gap := source[child.endByte:boundaryByte]
+					if bytesAreTrivia(gap) {
+						trimmed := trimTrailingTriviaGap(gap)
+						child.endByte += uint32(len(trimmed))
+						child.endPoint = advancePointByBytes(child.endPoint, trimmed)
+					}
+				}
+			}
+		}
+		normalizeTargetedTrailingTriviaSpansRecursive(child, source, lang, targets)
+	}
+}
+
+func trimTrailingTriviaGap(gap []byte) []byte {
+	for i := 0; i < len(gap); i++ {
+		switch gap[i] {
+		case '\n':
+			return gap[:i+1]
+		case '\r':
+			if i+1 < len(gap) && gap[i+1] == '\n' {
+				return gap[:i+2]
+			}
+			return gap[:i+1]
+		}
+	}
+	return gap
 }
 
 func normalizeHaskellImportsSpan(root *Node, source []byte, lang *Language) {

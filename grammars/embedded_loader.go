@@ -85,6 +85,7 @@ func loadEmbeddedLanguage(blobName string) *gotreesitter.Language {
 		if entry.err == nil {
 			// Attach external scanner and lex states if registered.
 			name := strings.TrimSuffix(blobName, ".bin")
+			entry.lang.Name = name
 			if s, ok := externalScannerRegistry[name]; ok {
 				entry.lang.ExternalScanner = s
 			}
