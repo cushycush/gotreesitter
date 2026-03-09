@@ -364,6 +364,11 @@ func (p *Parser) normalizeRootSourceStart(root *Node, source []byte) {
 	if p != nil && len(p.included) > 0 {
 		return
 	}
+	// COBOL's fixed-format scanner treats columns 1-6 as a line prefix area,
+	// and C tree-sitter preserves the first significant token as the root start.
+	if p != nil && p.language != nil && p.language.Name == "cobol" {
+		return
+	}
 	root.startByte = 0
 	root.startPoint = Point{}
 }

@@ -89,3 +89,17 @@ func TestNormalizeKnownSpanAttributionDoesNotExtendNonTargetedNestedNode(t *test
 		t.Fatalf("line endByte = %d, want %d", got, want)
 	}
 }
+
+func TestNormalizeRootSourceStartLeavesCobolAreaAOffset(t *testing.T) {
+	root := NewLeafNode(1, true, 7, 58, Point{Row: 0, Column: 7}, Point{Row: 2, Column: 0})
+	parser := &Parser{language: &Language{Name: "cobol"}}
+
+	parser.normalizeRootSourceStart(root, []byte("       IDENTIFICATION DIVISION.\n"))
+
+	if got, want := root.startByte, uint32(7); got != want {
+		t.Fatalf("root startByte = %d, want %d", got, want)
+	}
+	if got, want := root.startPoint, (Point{Row: 0, Column: 7}); got != want {
+		t.Fatalf("root startPoint = %+v, want %+v", got, want)
+	}
+}
