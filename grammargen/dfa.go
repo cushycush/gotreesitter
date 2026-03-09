@@ -361,6 +361,17 @@ func moveAndClose(n *nfa, states []int, lo, hi rune) []int {
 // convertDFAToLexStates converts internal DFA states to gotreesitter LexState format.
 func convertDFAToLexStates(dfa []dfaState, addSkipTransitions bool) []gotreesitter.LexState {
 	states := make([]gotreesitter.LexState, len(dfa))
+	totalTransitions := 0
+	for i := range dfa {
+		totalTransitions += len(dfa[i].transitions)
+	}
+	// Reserve room for up to three whitespace skip transitions on the mode's
+	// start state so addWhitespaceSkip can grow in place.
+	if addSkipTransitions && len(dfa) > 0 {
+		totalTransitions += 3
+	}
+	transitionBuf := make([]gotreesitter.LexTransition, totalTransitions)
+	bufPos := 0
 	for i := range dfa {
 		ds := &dfa[i]
 		prio := int16(0)
@@ -383,17 +394,25 @@ func convertDFAToLexStates(dfa []dfaState, addSkipTransitions bool) []gotreesitt
 		}
 
 		if len(ds.transitions) > 0 {
-			ls.Transitions = make([]gotreesitter.LexTransition, len(ds.transitions))
+			extraCap := 0
+			if addSkipTransitions && i == 0 {
+				extraCap = 3
+			}
+			ls.Transitions = transitionBuf[bufPos : bufPos+len(ds.transitions) : bufPos+len(ds.transitions)+extraCap]
 			for j, t := range ds.transitions {
 				ls.Transitions[j] = gotreesitter.LexTransition{
-				Lo:        t.lo,
-				Hi:        t.hi,
-				NextState: t.nextState,
+					Lo:        t.lo,
+					Hi:        t.hi,
+					NextState: t.nextState,
 				}
 			}
+			bufPos += len(ds.transitions) + extraCap
 			// Release the source edge slice once it has been copied so the DFA
 			// graph does not stay fully duplicated through the rest of conversion.
 			ds.transitions = nil
+		} else if addSkipTransitions && i == 0 {
+			ls.Transitions = transitionBuf[bufPos:bufPos:bufPos+3]
+			bufPos += 3
 		}
 
 		states[i] = ls
