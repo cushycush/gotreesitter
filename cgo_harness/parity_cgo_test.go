@@ -43,7 +43,6 @@ var knownDegradedStructural = map[string]string{
 	"elsa":     "smoke sample parse shape diverges from C",
 	"fortran":  "smoke sample parse shape diverges from C",
 	"hlsl":     "smoke sample parse shape diverges from C",
-	"just":     "smoke sample parse shape diverges from C",
 	"less":     "smoke sample parse shape diverges from C",
 	"nginx":    "smoke sample parse shape diverges from C",
 	"wolfram":  "smoke sample parse shape diverges from C",
