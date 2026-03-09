@@ -217,6 +217,14 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 		g = expandInlineRules(g)
 	}
 
+	// Phase 0b: Flatten hidden rule pass-through alternatives.
+	// Tree-sitter C's flatten_grammar.cc auto-inlines single-symbol alternatives
+	// of hidden nonterminals into parent rules' choice contexts. This removes
+	// cc=1 productions from hidden rules and distributes them as direct children
+	// in parent rules. Without this, grammargen generates extra cc=1 reduce
+	// actions that tree-sitter C doesn't have (~10 grammars affected).
+	g = flattenHiddenChoiceAlts(g)
+
 	st := newSymbolTable()
 	ng := &NormalizedGrammar{}
 
@@ -441,6 +449,9 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 	// alternatives overlap after expansion. Tree-sitter deduplicates these.
 	// Extra duplicates cause spurious reduce-reduce conflicts.
 	productions = deduplicateProductions(productions)
+
+	// (Phase 7c was removed — hidden pass-through flattening is now at
+	//  the rule-tree level in Phase 0b before symbol registration.)
 
 	// Phase 8: Resolve conflicts.
 	var conflicts [][]int
@@ -1861,6 +1872,240 @@ func deduplicateProductions(prods []Production) []Production {
 		result[i].ProductionID = i
 	}
 	return result
+}
+
+// flattenHiddenChoiceAlts inlines single-symbol (pass-through) alternatives
+// of hidden nonterminals into parent rules at the rule-tree level.
+//
+// For example, if hidden rule _H has:
+//
+//	_H → Choice(X, Y, Seq(P, Q))
+//
+// And parent rule A has:
+//
+//	A → Choice(_H, Z)
+//
+// After flattening:
+//
+//	_H → Seq(P, Q)                   (only compound alts kept)
+//	A → Choice(_H, X, Y, Z)          (pass-through alts inlined)
+//
+// This matches tree-sitter C's flatten_grammar.cc behavior.
+func flattenHiddenChoiceAlts(g *Grammar) *Grammar {
+	// 1. Identify hidden nonterminals with mixed pass-through and compound alts.
+	flattenMap := make(map[string]*flattenInfo)
+
+	for _, name := range g.RuleOrder {
+		if !strings.HasPrefix(name, "_") {
+			continue // only hidden rules
+		}
+		// Skip supertypes.
+		isSupertype := false
+		for _, s := range g.Supertypes {
+			if s == name {
+				isSupertype = true
+				break
+			}
+		}
+		if isSupertype {
+			continue
+		}
+
+		rule := g.Rules[name]
+		if rule == nil {
+			continue
+		}
+
+		alts := getTopLevelChoiceAlts(rule)
+		if len(alts) <= 1 {
+			continue
+		}
+
+		var pt, compound []*Rule
+		for _, alt := range alts {
+			if isSingleSymRef(alt) {
+				pt = append(pt, alt)
+			} else {
+				compound = append(compound, alt)
+			}
+		}
+
+		if len(pt) == 0 || len(compound) == 0 {
+			continue // nothing to split, or all pass-through
+		}
+
+		// Cap pass-through count to avoid Cartesian product explosion.
+		// When a hidden rule with N pass-through alts is referenced in a Seq
+		// with another such rule, production extraction creates N*M alternatives.
+		if len(pt) > 8 {
+			continue
+		}
+
+		// Skip if the hidden rule is directly self-referencing in compound alts.
+		selfRef := false
+		for _, c := range compound {
+			if ruleReferencesSym(c, name) {
+				selfRef = true
+				break
+			}
+		}
+		if selfRef {
+			continue
+		}
+
+		flattenMap[name] = &flattenInfo{
+			passThrough: pt,
+			compound:    compound,
+		}
+	}
+
+	if len(flattenMap) == 0 {
+		return g
+	}
+
+	// 2. Build new grammar with flattened rules.
+	out := NewGrammar(g.Name)
+	for _, name := range g.RuleOrder {
+		rule := g.Rules[name]
+		if rule == nil {
+			continue
+		}
+
+		// If this IS a flattened hidden rule, replace with compound-only CHOICE.
+		if fi, ok := flattenMap[name]; ok {
+			var newRule *Rule
+			if len(fi.compound) == 1 {
+				newRule = fi.compound[0]
+			} else {
+				newRule = Choice(fi.compound...)
+			}
+			out.Define(name, newRule)
+			continue
+		}
+
+		// For all other rules, inline pass-through alternatives at reference sites.
+		out.Define(name, inlinePassthroughRefs(rule, flattenMap))
+	}
+
+	// Copy other fields.
+	for _, extra := range g.Extras {
+		out.Extras = append(out.Extras, inlinePassthroughRefs(extra, flattenMap))
+	}
+	for _, group := range g.Conflicts {
+		out.Conflicts = append(out.Conflicts, group)
+	}
+	for _, ext := range g.Externals {
+		out.Externals = append(out.Externals, ext)
+	}
+	out.Word = g.Word
+	out.Supertypes = g.Supertypes
+	out.Inline = g.Inline
+	return out
+}
+
+// getTopLevelChoiceAlts unwraps precedence and returns the top-level CHOICE
+// alternatives. If the rule is not a choice, returns nil.
+func getTopLevelChoiceAlts(r *Rule) []*Rule {
+	if r == nil {
+		return nil
+	}
+	// Unwrap precedence wrappers.
+	for r.Kind == RulePrec || r.Kind == RulePrecLeft || r.Kind == RulePrecRight || r.Kind == RulePrecDynamic {
+		if len(r.Children) > 0 {
+			r = r.Children[0]
+		} else {
+			return nil
+		}
+	}
+	if r.Kind == RuleChoice {
+		return r.Children
+	}
+	return nil
+}
+
+// isSingleSymRef returns true if the rule is a plain symbol reference,
+// possibly wrapped in precedence.
+func isSingleSymRef(r *Rule) bool {
+	if r == nil {
+		return false
+	}
+	// Unwrap precedence wrappers.
+	for r.Kind == RulePrec || r.Kind == RulePrecLeft || r.Kind == RulePrecRight || r.Kind == RulePrecDynamic {
+		if len(r.Children) > 0 {
+			r = r.Children[0]
+		} else {
+			return false
+		}
+	}
+	// A single symbol, pattern, or string literal all produce cc=1 productions.
+	return r.Kind == RuleSymbol || r.Kind == RulePattern || r.Kind == RuleString
+}
+
+// ruleReferencesSym returns true if the rule tree contains a Sym reference
+// to the named symbol.
+func ruleReferencesSym(r *Rule, name string) bool {
+	if r == nil {
+		return false
+	}
+	if r.Kind == RuleSymbol {
+		return r.Value == name
+	}
+	for _, c := range r.Children {
+		if ruleReferencesSym(c, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// inlinePassthroughRefs walks a rule tree and, at every Sym reference to a
+// flattened hidden rule, wraps it in a Choice that includes the pass-through
+// alternatives alongside the original reference. This preserves the original
+// reference for compound alternatives while adding direct paths for cc=1 targets.
+func inlinePassthroughRefs(r *Rule, flattenMap map[string]*flattenInfo) *Rule {
+	if r == nil {
+		return nil
+	}
+
+	// If this is a symbol reference to a flattened hidden rule, expand it.
+	if r.Kind == RuleSymbol {
+		fi, ok := flattenMap[r.Value]
+		if !ok {
+			return r
+		}
+		// Create Choice(original_ref, passthrough_alt1, passthrough_alt2, ...)
+		alts := make([]*Rule, 0, len(fi.passThrough)+1)
+		alts = append(alts, r) // keep original ref for compound alts
+		for _, pt := range fi.passThrough {
+			alts = append(alts, cloneRule(pt))
+		}
+		return Choice(alts...)
+	}
+
+	// Recurse into children.
+	if len(r.Children) == 0 {
+		return r
+	}
+	changed := false
+	newChildren := make([]*Rule, len(r.Children))
+	for i, c := range r.Children {
+		nc := inlinePassthroughRefs(c, flattenMap)
+		if nc != c {
+			changed = true
+		}
+		newChildren[i] = nc
+	}
+	if !changed {
+		return r
+	}
+	out := *r
+	out.Children = newChildren
+	return &out
+}
+
+type flattenInfo struct {
+	passThrough []*Rule
+	compound    []*Rule
 }
 
 // expandInlineRules returns a copy of the grammar with all inline rule
