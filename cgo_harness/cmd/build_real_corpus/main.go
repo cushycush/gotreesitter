@@ -179,7 +179,8 @@ func main() {
 			continue
 		}
 
-		candidates, err := collectCandidates(repoDir, entry.Exts, maxBytes, includeFixtures)
+		candidateExts, candidateNames := candidateMatchersForLanguage(lang, entry.Exts)
+		candidates, err := collectCandidatesWithNames(repoDir, candidateExts, candidateNames, maxBytes, includeFixtures)
 		if err != nil {
 			manifest.Missing = append(manifest.Missing, lang)
 			fmt.Fprintf(os.Stderr, "[warn] collect candidates failed for %q: %v\n", lang, err)
@@ -471,20 +472,40 @@ func checkoutRepoAtCommit(repoURL, commit, dstDir string) error {
 }
 
 func collectCandidates(repoDir string, exts []string, maxBytes int, includeFixtures bool) ([]corpusFile, error) {
+	return collectCandidatesWithNames(repoDir, exts, nil, maxBytes, includeFixtures)
+}
+
+func collectCandidatesWithNames(repoDir string, exts, names []string, maxBytes int, includeFixtures bool) ([]corpusFile, error) {
 	seen := map[string]struct{}{}
 	out := make([]corpusFile, 0, 256)
 	extSet := map[string]struct{}{}
 	for _, ext := range exts {
 		extSet[strings.ToLower(strings.TrimSpace(ext))] = struct{}{}
 	}
+	nameSet := map[string]struct{}{}
+	for _, name := range names {
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name == "" {
+			continue
+		}
+		nameSet[name] = struct{}{}
+	}
 
 	addFile := func(absPath string, d fs.DirEntry, requireKnownExt bool) {
 		if d.IsDir() {
 			return
 		}
+		base := strings.ToLower(filepath.Base(absPath))
 		if requireKnownExt && len(extSet) > 0 {
 			ext := strings.ToLower(filepath.Ext(absPath))
 			if _, ok := extSet[ext]; !ok {
+				if _, ok := nameSet[base]; !ok {
+					return
+				}
+			}
+		}
+		if requireKnownExt && len(extSet) == 0 && len(nameSet) > 0 {
+			if _, ok := nameSet[base]; !ok {
 				return
 			}
 		}
@@ -492,7 +513,7 @@ func collectCandidates(repoDir string, exts []string, maxBytes int, includeFixtu
 		if err != nil {
 			return
 		}
-		if !looksCorpusCandidatePath(rel, includeFixtures) {
+		if !looksCorpusCandidatePath(rel, includeFixtures, nameSet) {
 			return
 		}
 		if _, ok := seen[rel]; ok {
@@ -569,6 +590,14 @@ func collectCandidates(repoDir string, exts []string, maxBytes int, includeFixtu
 		if len(extSet) > 0 {
 			ext := strings.ToLower(filepath.Ext(path))
 			if _, ok := extSet[ext]; !ok {
+				base := strings.ToLower(filepath.Base(path))
+				if _, ok := nameSet[base]; !ok {
+					return nil
+				}
+			}
+		} else if len(nameSet) > 0 {
+			base := strings.ToLower(filepath.Base(path))
+			if _, ok := nameSet[base]; !ok {
 				return nil
 			}
 		} else {
@@ -591,6 +620,33 @@ func collectCandidates(repoDir string, exts []string, maxBytes int, includeFixtu
 		return out[i].RelPath < out[j].RelPath
 	})
 	return out, nil
+}
+
+func candidateMatchersForLanguage(lang string, exts []string) ([]string, []string) {
+	outExts := append([]string(nil), exts...)
+	names := make([]string, 0, 2)
+	if len(outExts) > 0 {
+		return outExts, names
+	}
+	switch lang {
+	case "awk":
+		outExts = append(outExts, ".awk", ".gawk")
+	case "cmake":
+		outExts = append(outExts, ".cmake")
+		names = append(names, "cmakelists.txt")
+	case "d":
+		outExts = append(outExts, ".d", ".di")
+	case "dart":
+		outExts = append(outExts, ".dart")
+	case "erlang":
+		outExts = append(outExts, ".erl", ".hrl")
+	case "gomod":
+		names = append(names, "go.mod")
+	case "make":
+		outExts = append(outExts, ".mk")
+		names = append(names, "makefile")
+	}
+	return outExts, names
 }
 
 type materializedCorpusOutput struct {
@@ -679,7 +735,7 @@ func isRepeatedLine(line string, want rune) bool {
 	return true
 }
 
-func looksCorpusCandidatePath(relPath string, includeFixtures bool) bool {
+func looksCorpusCandidatePath(relPath string, includeFixtures bool, specialNames map[string]struct{}) bool {
 	rel := strings.ToLower(filepath.ToSlash(relPath))
 	base := strings.ToLower(filepath.Base(rel))
 	if strings.HasPrefix(base, ".") {
@@ -688,12 +744,18 @@ func looksCorpusCandidatePath(relPath string, includeFixtures bool) bool {
 	switch base {
 	case "readme", "readme.md", "readme.txt",
 		"license", "license.md", "copying",
-		"go.mod", "go.sum",
+		"go.sum",
 		"cargo.lock", "cargo.toml",
 		"package-lock.json", "pnpm-lock.yaml", "yarn.lock",
 		"pipfile.lock", "poetry.lock", "composer.lock",
 		"gemfile.lock", "mix.lock":
-		return false
+		if _, ok := specialNames[base]; !ok {
+			return false
+		}
+	case "go.mod":
+		if _, ok := specialNames[base]; !ok {
+			return false
+		}
 	}
 	if strings.HasPrefix(rel, ".github/") ||
 		strings.Contains(rel, "/.github/") ||
@@ -709,8 +771,12 @@ func looksCorpusCandidatePath(relPath string, includeFixtures bool) bool {
 		if strings.HasPrefix(rel, "test/") ||
 			strings.HasPrefix(rel, "tests/") ||
 			strings.Contains(rel, "/test/") ||
-			strings.Contains(rel, "/tests/") ||
-			strings.Contains(rel, "/corpus/") ||
+			strings.Contains(rel, "/tests/") {
+			if !isAllowedSourceTestPath(rel) {
+				return false
+			}
+		}
+		if strings.Contains(rel, "/corpus/") ||
 			strings.Contains(rel, "/fixture") {
 			return false
 		}
@@ -718,8 +784,20 @@ func looksCorpusCandidatePath(relPath string, includeFixtures bool) bool {
 	return true
 }
 
+func isAllowedSourceTestPath(rel string) bool {
+	rel = strings.ToLower(filepath.ToSlash(rel))
+	return strings.HasPrefix(rel, "test/highlight/") ||
+		strings.HasPrefix(rel, "tests/highlight/") ||
+		strings.HasPrefix(rel, "test/tags/") ||
+		strings.HasPrefix(rel, "tests/tags/") ||
+		strings.Contains(rel, "/test/highlight/") ||
+		strings.Contains(rel, "/tests/highlight/") ||
+		strings.Contains(rel, "/test/tags/") ||
+		strings.Contains(rel, "/tests/tags/")
+}
+
 func looksGenericSourcePath(relPath string, includeFixtures bool) bool {
-	if !looksCorpusCandidatePath(relPath, includeFixtures) {
+	if !looksCorpusCandidatePath(relPath, includeFixtures, nil) {
 		return false
 	}
 	rel := strings.ToLower(filepath.ToSlash(relPath))

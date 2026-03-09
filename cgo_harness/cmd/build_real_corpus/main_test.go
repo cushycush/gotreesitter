@@ -154,6 +154,90 @@ func TestCollectCandidatesWithoutFixturesExcludesCorpusTests(t *testing.T) {
 	}
 }
 
+func TestCollectCandidatesWithoutFixturesAllowsSourceTypedHighlightAndTagTests(t *testing.T) {
+	tmp := t.TempDir()
+	mustWriteSizedText(t, filepath.Join(tmp, "test", "highlight", "operators.ex"), 800)
+	mustWriteSizedText(t, filepath.Join(tmp, "tests", "tags", "module.ex"), 900)
+	mustWriteSizedText(t, filepath.Join(tmp, "test", "unit", "helper.ex"), 900)
+	mustWriteSizedText(t, filepath.Join(tmp, "test", "corpus", "fixture.ex"), 900)
+
+	candidates, err := collectCandidates(tmp, []string{".ex"}, defaultMaxBytes, false)
+	if err != nil {
+		t.Fatalf("collectCandidates: %v", err)
+	}
+
+	seen := map[string]bool{}
+	for _, c := range candidates {
+		seen[filepath.ToSlash(c.RelPath)] = true
+	}
+	if !seen["test/highlight/operators.ex"] {
+		t.Fatalf("expected highlight source candidate missing: %#v", candidates)
+	}
+	if !seen["tests/tags/module.ex"] {
+		t.Fatalf("expected tags source candidate missing: %#v", candidates)
+	}
+	if seen["test/unit/helper.ex"] {
+		t.Fatalf("general test file should remain excluded in source-only mode: %#v", candidates)
+	}
+	if seen["test/corpus/fixture.ex"] {
+		t.Fatalf("fixture corpus file should remain excluded in source-only mode: %#v", candidates)
+	}
+}
+
+func TestCollectCandidatesWithNamedFilesAllowsSpecialLanguageFiles(t *testing.T) {
+	tmp := t.TempDir()
+	mustWriteSizedText(t, filepath.Join(tmp, "go.mod"), 600)
+	mustWriteSizedText(t, filepath.Join(tmp, "CMakeLists.txt"), 900)
+	mustWriteSizedText(t, filepath.Join(tmp, "README.txt"), 900)
+
+	candidates, err := collectCandidatesWithNames(tmp, nil, []string{"go.mod", "cmakelists.txt"}, defaultMaxBytes, false)
+	if err != nil {
+		t.Fatalf("collectCandidatesWithNames: %v", err)
+	}
+
+	seen := map[string]bool{}
+	for _, c := range candidates {
+		seen[filepath.ToSlash(c.RelPath)] = true
+	}
+	if !seen["go.mod"] {
+		t.Fatalf("expected go.mod candidate missing: %#v", candidates)
+	}
+	if !seen["CMakeLists.txt"] {
+		t.Fatalf("expected CMakeLists.txt candidate missing: %#v", candidates)
+	}
+	if seen["README.txt"] {
+		t.Fatalf("readme should remain excluded: %#v", candidates)
+	}
+}
+
+func TestCandidateMatchersForLanguageInfersKnownExtensionsAndNames(t *testing.T) {
+	tests := []struct {
+		lang      string
+		wantExts  []string
+		wantNames []string
+	}{
+		{lang: "dart", wantExts: []string{".dart"}},
+		{lang: "erlang", wantExts: []string{".erl", ".hrl"}},
+		{lang: "gomod", wantNames: []string{"go.mod"}},
+		{lang: "cmake", wantExts: []string{".cmake"}, wantNames: []string{"cmakelists.txt"}},
+		{lang: "make", wantExts: []string{".mk"}, wantNames: []string{"makefile"}},
+	}
+
+	for _, tc := range tests {
+		gotExts, gotNames := candidateMatchersForLanguage(tc.lang, nil)
+		for _, want := range tc.wantExts {
+			if !containsString(gotExts, want) {
+				t.Fatalf("%s ext matchers missing %q: %#v", tc.lang, want, gotExts)
+			}
+		}
+		for _, want := range tc.wantNames {
+			if !containsString(gotNames, want) {
+				t.Fatalf("%s name matchers missing %q: %#v", tc.lang, want, gotNames)
+			}
+		}
+	}
+}
+
 func TestSplitTreeSitterCorpusSources(t *testing.T) {
 	content := []byte(`================================================================================
 First case
@@ -236,3 +320,12 @@ func mustWriteSizedText(t *testing.T, path string, size int) {
 type testError string
 
 func (e testError) Error() string { return string(e) }
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
