@@ -122,6 +122,80 @@ type dfaStateHashEntry struct {
 	next     *dfaStateHashEntry
 }
 
+// dfaSubsetScratch owns reusable buffers for one NFA→DFA subset construction.
+// It lets us probe candidate closures without allocating fresh maps/slices on
+// every range transition; new backing storage is only retained for novel DFA
+// states that survive addState.
+type dfaSubsetScratch struct {
+	seenGen uint32
+	seen    []uint32
+	stack   []int
+	move    []int
+	closure []int
+}
+
+func newDFASubsetScratch(stateCount int) dfaSubsetScratch {
+	return dfaSubsetScratch{seenGen: 1, seen: make([]uint32, stateCount)}
+}
+
+func (s *dfaSubsetScratch) nextSeenGen() uint32 {
+	s.seenGen++
+	if s.seenGen == 0 {
+		for i := range s.seen {
+			s.seen[i] = 0
+		}
+		s.seenGen = 1
+	}
+	return s.seenGen
+}
+
+func (s *dfaSubsetScratch) collectMoveTargets(n *nfa, states []int, lo, hi rune) []int {
+	gen := s.nextSeenGen()
+	targets := s.move[:0]
+	for _, state := range states {
+		for _, t := range n.states[state].transitions {
+			if t.epsilon || t.lo > lo || t.hi < hi || s.seen[t.nextState] == gen {
+				continue
+			}
+			s.seen[t.nextState] = gen
+			targets = append(targets, t.nextState)
+		}
+	}
+	sort.Ints(targets)
+	s.move = targets
+	return targets
+}
+
+func (s *dfaSubsetScratch) epsilonClosure(n *nfa, seeds []int) []int {
+	gen := s.nextSeenGen()
+	stack := s.stack[:0]
+	closure := s.closure[:0]
+	for _, state := range seeds {
+		if s.seen[state] == gen {
+			continue
+		}
+		s.seen[state] = gen
+		closure = append(closure, state)
+		stack = append(stack, state)
+	}
+	for len(stack) > 0 {
+		state := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for _, t := range n.states[state].transitions {
+			if !t.epsilon || s.seen[t.nextState] == gen {
+				continue
+			}
+			s.seen[t.nextState] = gen
+			closure = append(closure, t.nextState)
+			stack = append(stack, t.nextState)
+		}
+	}
+	sort.Ints(closure)
+	s.stack = stack[:0]
+	s.closure = closure
+	return closure
+}
+
 func hashIntSlice(vals []int) uint64 {
 	h := uint64(0xcbf29ce484222325)
 	for _, v := range vals {
@@ -133,8 +207,10 @@ func hashIntSlice(vals []int) uint64 {
 
 // subsetConstruction converts an NFA to a DFA using the subset construction algorithm.
 func subsetConstruction(n *nfa) []dfaState {
+	scratch := newDFASubsetScratch(len(n.states))
+
 	// Compute epsilon closure of start state.
-	startClosure := epsilonClosure(n, []int{n.start})
+	startClosure := scratch.epsilonClosure(n, []int{n.start})
 
 	stateMap := make(map[uint64]*dfaStateHashEntry) // closure hash → DFA state index chain
 	var stateSets [][]int
@@ -149,13 +225,14 @@ func subsetConstruction(n *nfa) []dfaState {
 			}
 		}
 		id := len(dfaStates)
+		stored := append([]int(nil), states...)
 		stateMap[hash] = &dfaStateHashEntry{stateIdx: id, next: stateMap[hash]}
-		stateSets = append(stateSets, states)
+		stateSets = append(stateSets, stored)
 
 		// Determine accept symbol (highest priority = lowest priority number).
 		accept := 0
 		bestPriority := int(^uint(0) >> 1) // max int
-		for _, s := range states {
+		for _, s := range stored {
 			if n.states[s].accept > 0 {
 				if n.states[s].priority < bestPriority {
 					bestPriority = n.states[s].priority
@@ -165,7 +242,7 @@ func subsetConstruction(n *nfa) []dfaState {
 		}
 
 		dfaStates = append(dfaStates, dfaState{accept: accept, acceptPriority: bestPriority})
-		worklist = append(worklist, dfaStateWorkItem{id: id, states: states})
+		worklist = append(worklist, dfaStateWorkItem{id: id, states: stored})
 		return id
 	}
 
@@ -181,7 +258,11 @@ func subsetConstruction(n *nfa) []dfaState {
 
 		// For each character range, compute the target NFA state set.
 		for _, r := range ranges {
-			targetStates := moveAndClose(n, current.states, r.lo, r.hi)
+			targetStates := scratch.collectMoveTargets(n, current.states, r.lo, r.hi)
+			if len(targetStates) == 0 {
+				continue
+			}
+			targetStates = scratch.epsilonClosure(n, targetStates)
 			if len(targetStates) == 0 {
 				continue
 			}
@@ -441,7 +522,7 @@ func convertDFAToLexStates(dfa []dfaState, addSkipTransitions bool) []gotreesitt
 			// graph does not stay fully duplicated through the rest of conversion.
 			ds.transitions = nil
 		} else if addSkipTransitions && i == 0 {
-			ls.Transitions = transitionBuf[bufPos:bufPos:bufPos+3]
+			ls.Transitions = transitionBuf[bufPos : bufPos : bufPos+3]
 			bufPos += 3
 		}
 
