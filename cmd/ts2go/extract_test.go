@@ -173,6 +173,26 @@ func TestExtractConstants(t *testing.T) {
 	}
 }
 
+func TestExtractGrammarInfersProductionIDCountFromArraySizes(t *testing.T) {
+	source := strings.Replace(miniParserC, "#define PRODUCTION_ID_COUNT 2\n", "", 1)
+	source = strings.Replace(source, "ts_field_map_slices[PRODUCTION_ID_COUNT]", "ts_field_map_slices[2]", 1)
+
+	g, err := ExtractGrammar(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if g.ProductionIDCount != 2 {
+		t.Fatalf("ProductionIDCount = %d, want 2", g.ProductionIDCount)
+	}
+	if len(g.FieldMapSlices) != 2 {
+		t.Fatalf("len(FieldMapSlices) = %d, want 2", len(g.FieldMapSlices))
+	}
+	if len(g.FieldMapEntries) != 2 {
+		t.Fatalf("len(FieldMapEntries) = %d, want 2", len(g.FieldMapEntries))
+	}
+}
+
 func TestExtractEnum(t *testing.T) {
 	vals := extractEnum(miniParserC)
 

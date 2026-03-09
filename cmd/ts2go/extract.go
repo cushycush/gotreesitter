@@ -143,6 +143,7 @@ func ExtractGrammar(source string) (*ExtractedGrammar, error) {
 		// Not fatal — name can be provided via flag.
 		g.Name = "unknown"
 	}
+	inferProductionIDCount(source, g)
 
 	if err := extractSymbolNames(source, g); err != nil {
 		return nil, fmt.Errorf("symbol names: %w", err)
@@ -266,6 +267,32 @@ func extractConstants(source string, g *ExtractedGrammar) error {
 	}
 
 	return nil
+}
+
+func inferProductionIDCount(source string, g *ExtractedGrammar) {
+	if g == nil || g.ProductionIDCount > 0 {
+		return
+	}
+	for _, arrayName := range []string{"ts_field_map_slices", "ts_alias_sequences"} {
+		if count, ok := inferFirstArrayDimension(source, arrayName, g.enumValues); ok && count > 0 {
+			g.ProductionIDCount = count
+			return
+		}
+	}
+}
+
+func inferFirstArrayDimension(source, arrayName string, enums map[string]int) (int, bool) {
+	re := regexp.MustCompile(fmt.Sprintf(`(?m)\b%s\s*\[\s*(\w+)\s*\]`, regexp.QuoteMeta(arrayName)))
+	matches := re.FindAllStringSubmatch(source, -1)
+	for _, m := range matches {
+		if len(m) < 2 {
+			continue
+		}
+		if resolved, ok := resolveIndexedName(m[1], enums); ok && resolved > 0 {
+			return resolved, true
+		}
+	}
+	return 0, false
 }
 
 // extractEnum parses the C enum block(s) and returns a map of name->value.
