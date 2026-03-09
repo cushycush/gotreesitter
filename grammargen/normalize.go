@@ -2026,13 +2026,18 @@ func isSingleSymRef(r *Rule) bool {
 	if r == nil {
 		return false
 	}
-	// Unwrap precedence wrappers.
-	for r.Kind == RulePrec || r.Kind == RulePrecLeft || r.Kind == RulePrecRight || r.Kind == RulePrecDynamic {
-		if len(r.Children) > 0 {
-			r = r.Children[0]
-		} else {
+	// Unwrap precedence, alias, and field wrappers — these all produce cc=1
+	// productions (they attach metadata but don't add child count).
+	for {
+		switch r.Kind {
+		case RulePrec, RulePrecLeft, RulePrecRight, RulePrecDynamic, RuleAlias, RuleField:
+			if len(r.Children) > 0 {
+				r = r.Children[0]
+				continue
+			}
 			return false
 		}
+		break
 	}
 	// A single symbol, pattern, or string literal all produce cc=1 productions.
 	return r.Kind == RuleSymbol || r.Kind == RulePattern || r.Kind == RuleString
