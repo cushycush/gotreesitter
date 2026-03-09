@@ -1893,25 +1893,71 @@ func expandInlineRules(g *Grammar) *Grammar {
 		}
 	}
 
-	// Create a new grammar without the successfully-inlined rules.
-	out := NewGrammar(g.Name)
+	// First pass: expand inline refs in all rules.
+	expandedRules := make(map[string]*Rule)
 	for _, name := range g.RuleOrder {
 		if inlineSet[name] && inlineBodies[name] != nil {
-			continue // drop inlined rules
+			continue // will be dropped
+		}
+		expandedRules[name] = substituteInlineRefs(g.Rules[name], inlineBodies)
+	}
+	var expandedExtras []*Rule
+	for _, extra := range g.Extras {
+		expandedExtras = append(expandedExtras, substituteInlineRefs(extra, inlineBodies))
+	}
+	var expandedExternals []*Rule
+	for _, ext := range g.Externals {
+		expandedExternals = append(expandedExternals, substituteInlineRefs(ext, inlineBodies))
+	}
+
+	// Scan expanded rules for remaining references to inline rules that
+	// weren't fully expanded (depth limit hit). These inline rules must
+	// be preserved as hidden rules to prevent dangling symbol references
+	// that would become epsilon productions.
+	stillReferenced := make(map[string]bool)
+	for _, rule := range expandedRules {
+		collectInlineRefs(rule, inlineBodies, stillReferenced)
+	}
+	for _, extra := range expandedExtras {
+		collectInlineRefs(extra, inlineBodies, stillReferenced)
+	}
+	for _, ext := range expandedExternals {
+		collectInlineRefs(ext, inlineBodies, stillReferenced)
+	}
+	// For any inline rule still referenced, add it to hiddenRenames so it's
+	// kept as a hidden rule in the output grammar.
+	for name := range stillReferenced {
+		if _, already := hiddenRenames[name]; !already {
+			if !strings.HasPrefix(name, "_") {
+				hiddenRenames[name] = "_" + name
+			}
+			// else: already hidden, no rename needed, just don't delete it
+		}
+	}
+
+	// Create a new grammar without the fully-inlined rules.
+	out := NewGrammar(g.Name)
+	for _, name := range g.RuleOrder {
+		if inlineSet[name] && inlineBodies[name] != nil && !stillReferenced[name] {
+			continue // drop fully inlined rules
 		}
 		outName := name
 		if renamed, ok := hiddenRenames[name]; ok {
 			outName = renamed
 		}
-		rule := substituteInlineRefs(g.Rules[name], inlineBodies)
+		rule := expandedRules[name]
+		if rule == nil {
+			// This is an inline rule still referenced — use its original body
+			// with inline refs substituted (and handle its own nested refs).
+			rule = substituteInlineRefs(g.Rules[name], inlineBodies)
+		}
 		rule = applyHiddenRenames(rule, hiddenRenames)
 		out.Define(outName, rule)
 	}
 
 	// Copy other fields.
-	for _, extra := range g.Extras {
-		r := substituteInlineRefs(extra, inlineBodies)
-		out.Extras = append(out.Extras, applyHiddenRenames(r, hiddenRenames))
+	for _, extra := range expandedExtras {
+		out.Extras = append(out.Extras, applyHiddenRenames(extra, hiddenRenames))
 	}
 	// Rename conflict group entries too.
 	for _, group := range g.Conflicts {
@@ -1925,9 +1971,8 @@ func expandInlineRules(g *Grammar) *Grammar {
 		}
 		out.Conflicts = append(out.Conflicts, outGroup)
 	}
-	for _, ext := range g.Externals {
-		r := substituteInlineRefs(ext, inlineBodies)
-		out.Externals = append(out.Externals, applyHiddenRenames(r, hiddenRenames))
+	for _, ext := range expandedExternals {
+		out.Externals = append(out.Externals, applyHiddenRenames(ext, hiddenRenames))
 	}
 	out.Word = g.Word
 	out.Supertypes = g.Supertypes
@@ -1991,6 +2036,23 @@ func substituteInlineRefsDepth(r *Rule, inlineBodies map[string]*Rule, depth int
 		out.Children[i] = substituteInlineRefsDepth(c, inlineBodies, depth)
 	}
 	return &out
+}
+
+// collectInlineRefs finds any symbol references in r that point to inline rules
+// in inlineBodies. These are refs that weren't expanded due to depth limiting.
+func collectInlineRefs(r *Rule, inlineBodies map[string]*Rule, out map[string]bool) {
+	if r == nil {
+		return
+	}
+	if r.Kind == RuleSymbol {
+		if _, ok := inlineBodies[r.Value]; ok {
+			out[r.Value] = true
+		}
+		return
+	}
+	for _, c := range r.Children {
+		collectInlineRefs(c, inlineBodies, out)
+	}
 }
 
 // applyHiddenRenames renames symbol references according to the hidden renames map.
