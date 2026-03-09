@@ -143,6 +143,8 @@ func findParityLockPath() (string, error) {
 func buildParityCRef(rootDir string, entry parityLockEntry) (*parityCRef, error) {
 	repoDir, ok := parityLocalRepoDir(entry)
 	if !ok {
+		// Compute a temp clone destination under rootDir.
+		repoDir = filepath.Join(rootDir, "repos", paritySafeName(entry.Name))
 		commitShort := entry.Commit
 		if len(commitShort) > 12 {
 			commitShort = commitShort[:12]
