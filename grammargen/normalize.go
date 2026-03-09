@@ -1957,28 +1957,38 @@ func choiceWidth(r *Rule) int {
 }
 
 // substituteInlineRefs replaces RuleSymbol references to inline rules with
-// cloned copies of the inline rule body.
+// cloned copies of the inline rule body. Recursion depth is bounded to
+// prevent Cartesian product explosion in grammars with deep inline chains
+// (e.g. Haskell with 17 nested chains across 51 inline rules).
 func substituteInlineRefs(r *Rule, inlineBodies map[string]*Rule) *Rule {
+	return substituteInlineRefsDepth(r, inlineBodies, 0)
+}
+
+const maxInlineSubstDepth = 2
+
+func substituteInlineRefsDepth(r *Rule, inlineBodies map[string]*Rule, depth int) *Rule {
 	if r == nil {
 		return nil
 	}
 	if r.Kind == RuleSymbol {
 		if body, ok := inlineBodies[r.Value]; ok {
-			// Recursively substitute inside the cloned body so that
-			// nested inline rules (e.g. _lhs_expression → _identifier)
-			// are fully expanded.
-			return substituteInlineRefs(cloneRule(body), inlineBodies)
+			clone := cloneRule(body)
+			// Recursively substitute nested inline refs up to a bounded
+			// depth to avoid exponential production explosion.
+			if depth < maxInlineSubstDepth {
+				return substituteInlineRefsDepth(clone, inlineBodies, depth+1)
+			}
+			return clone
 		}
 		return r
 	}
-	// Recurse into children.
 	if len(r.Children) == 0 {
 		return r
 	}
 	out := *r
 	out.Children = make([]*Rule, len(r.Children))
 	for i, c := range r.Children {
-		out.Children[i] = substituteInlineRefs(c, inlineBodies)
+		out.Children[i] = substituteInlineRefsDepth(c, inlineBodies, depth)
 	}
 	return &out
 }
