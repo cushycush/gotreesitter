@@ -11,19 +11,19 @@ import (
 type ConflictKind int
 
 const (
-	ShiftReduce  ConflictKind = iota
+	ShiftReduce ConflictKind = iota
 	ReduceReduce
 )
 
 // ConflictDiag describes a conflict encountered during LR table construction.
 type ConflictDiag struct {
-	Kind         ConflictKind
-	State        int
-	LookaheadSym int
-	Actions      []lrAction // the conflicting actions
-	Resolution   string     // how it was resolved (or "GLR" if kept)
-	IsMergedState bool      // was this state produced by LALR merging?
-	MergeCount    int       // how many merge origins this state has
+	Kind          ConflictKind
+	State         int
+	LookaheadSym  int
+	Actions       []lrAction // the conflicting actions
+	Resolution    string     // how it was resolved (or "GLR" if kept)
+	IsMergedState bool       // was this state produced by LALR merging?
+	MergeCount    int        // how many merge origins this state has
 }
 
 func (d *ConflictDiag) String(ng *NormalizedGrammar) string {
@@ -431,6 +431,14 @@ func GenerateWithReport(g *Grammar) (*GenerateReport, error) {
 		}
 		report.SplitResult = sr
 	}
+
+	// The LR construction context is only needed through conflict diagnostics
+	// and optional split evaluation. Drop its scratch data before building lex
+	// tables and encoding so those phases do not overlap with the full LR build
+	// heap for large grammars.
+	ctx.releaseScratch()
+	prov = nil
+	ctx = nil
 
 	// Add nonterminal extra parse chains (must be after conflict resolution
 	// and optional splitting, since both modify the tables).

@@ -279,6 +279,26 @@ func (ctx *lrContext) recordLookaheadContributor(stateIdx, lookahead, ntTransIdx
 	}
 }
 
+// releaseScratch drops temporary LR-construction data once table building and
+// split diagnostics are complete. This avoids carrying the full build context
+// into later lex/assemble/encode phases in GenerateWithReport.
+func (ctx *lrContext) releaseScratch() {
+	if ctx == nil {
+		return
+	}
+	ctx.firstSets = nil
+	ctx.nullables = nil
+	ctx.prodsByLHS = nil
+	ctx.betaCache = nil
+	ctx.itemSets = nil
+	ctx.transitions = nil
+	ctx.provenance = nil
+	ctx.dot0Index = nil
+	ctx.dot0Dirty = nil
+	ctx.extraProdIndices = nil
+	ctx.allTerminals = bitset{}
+}
+
 // addNonterminalExtraChains creates dedicated parse state chains for nonterminal
 // extra productions and adds shift actions from every main state.
 func addNonterminalExtraChains(tables *LRTables, ng *NormalizedGrammar) {
