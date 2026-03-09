@@ -177,7 +177,7 @@ var ParseSmokeSamples = map[string]string{
 	"eds":             "[1000]\nParameterName=Device type\n",
 	"eex":             "<%= 1 + 1 %>\n",
 	"elm":             "module Main exposing (main)\nmain = 1\n",
-	"elsa":            "let x = 1\n",
+	"elsa":            "let x = y",
 	"enforce":         "package p;\n",
 	"erlang":          "-module(hello).\n",
 	"faust":           "process = _;\n",
