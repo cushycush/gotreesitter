@@ -122,22 +122,31 @@ func (ctx *lrContext) lr0Closure(kernel []coreItem) lrItemSet {
 	ng := ctx.ng
 	tokenCount := ctx.tokenCount
 
-	seen := make(map[uint64]int, len(kernel)*2)
+	for _, prodIdx := range ctx.dot0Dirty {
+		ctx.dot0Index[prodIdx] = -1
+	}
+	ctx.dot0Dirty = ctx.dot0Dirty[:0]
+
+	kernelSeen := make(map[uint64]int, len(kernel))
 	cores := make([]coreEntry, 0, len(kernel)*2)
 
 	// Add kernel items.
 	for _, ki := range kernel {
 		key := packCoreItemKey(ki.prodIdx, ki.dot)
-		if _, ok := seen[key]; ok {
+		if _, ok := kernelSeen[key]; ok {
 			continue // deduplicate
 		}
 		idx := len(cores)
-		seen[key] = idx
+		kernelSeen[key] = idx
 		cores = append(cores, coreEntry{
 			prodIdx:    ki.prodIdx,
 			dot:        ki.dot,
 			lookaheads: newBitset(tokenCount), // empty, will be filled in phase 2
 		})
+		if ki.dot == 0 {
+			ctx.dot0Index[ki.prodIdx] = idx
+			ctx.dot0Dirty = append(ctx.dot0Dirty, ki.prodIdx)
+		}
 	}
 
 	// Expand: for each item [A → α.Bβ], add [B → .γ] for all B-productions.
@@ -156,22 +165,28 @@ func (ctx *lrContext) lr0Closure(kernel []coreItem) lrItemSet {
 		}
 
 		for _, prodIdx := range ctx.prodsByLHS[nextSym] {
-			key := packCoreItemKey(prodIdx, 0)
-			if _, ok := seen[key]; !ok {
-				idx := len(cores)
-				seen[key] = idx
-				cores = append(cores, coreEntry{
-					prodIdx:    prodIdx,
-					dot:        0,
-					lookaheads: newBitset(tokenCount),
-				})
+			if ctx.dot0Index[prodIdx] >= 0 {
+				continue
 			}
+			idx := len(cores)
+			ctx.dot0Index[prodIdx] = idx
+			ctx.dot0Dirty = append(ctx.dot0Dirty, prodIdx)
+			cores = append(cores, coreEntry{
+				prodIdx:    prodIdx,
+				dot:        0,
+				lookaheads: newBitset(tokenCount),
+			})
 		}
+	}
+
+	packedCoreIndex := make(map[uint64]int, len(cores))
+	for idx, ce := range cores {
+		packedCoreIndex[packCoreItemKey(ce.prodIdx, ce.dot)] = idx
 	}
 
 	set := lrItemSet{
 		cores:           cores,
-		packedCoreIndex: seen,
+		packedCoreIndex: packedCoreIndex,
 	}
 	// Compute only coreHash (fullHash and reduceLAHash will be set after lookaheads).
 	var ch uint64
