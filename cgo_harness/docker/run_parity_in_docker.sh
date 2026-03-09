@@ -173,7 +173,7 @@ trap cleanup EXIT
 CID="$(docker create \
   --name "$CONTAINER_NAME" \
   --init \
-  --dns 8.8.8.8 \
+  --dns 10.255.255.254 --dns 8.8.8.8 \
   --memory "$MEMORY_LIMIT" \
   --memory-swap "$MEMORY_LIMIT" \
   --cpus "$CPUS_LIMIT" \

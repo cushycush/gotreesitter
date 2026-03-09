@@ -148,7 +148,7 @@ run_in_docker() {
   cid="$(docker create \
     --name "$container_name" \
     --init \
-    --dns 8.8.8.8 \
+    --dns 10.255.255.254 --dns 8.8.8.8 \
     --memory "$mem" \
     --memory-swap "$mem" \
     --cpus "$CPUS_LIMIT" \
