@@ -255,6 +255,9 @@ func subsetConstruction(n *nfa) []dfaState {
 
 		// Collect all character ranges from transitions of current NFA states.
 		ranges := collectTransitionRanges(n, current.states)
+		if len(ranges) > 0 {
+			dfaStates[curID].transitions = make([]dfaTransition, 0, len(ranges))
+		}
 
 		// For each character range, compute the target NFA state set.
 		for _, r := range ranges {
@@ -359,7 +362,7 @@ func collectTransitionRanges(n *nfa, states []int) []runeRange {
 	}
 
 	// Create non-overlapping ranges from boundary points.
-	var ranges []runeRange
+	ranges := make([]runeRange, 0, len(points))
 	for i := 0; i < len(points); i++ {
 		lo := points[i]
 		var hi rune
@@ -397,7 +400,7 @@ func mergeAdjacentRanges(ranges []runeRange, n *nfa, states []int) []runeRange {
 	if len(ranges) <= 1 {
 		return ranges
 	}
-	var merged []runeRange
+	merged := make([]runeRange, 0, len(ranges))
 	cur := ranges[0]
 	curTarget := moveTargets(n, states, cur.lo, cur.hi)
 
