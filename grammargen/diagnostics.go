@@ -432,6 +432,10 @@ func GenerateWithReport(g *Grammar) (*GenerateReport, error) {
 		report.SplitResult = sr
 	}
 
+	// Add nonterminal extra parse chains (must be after conflict resolution
+	// and optional splitting, since both modify the tables).
+	addNonterminalExtraChains(tables, ng)
+
 	// Build lex DFA.
 	tokenCount := ng.TokenCount()
 	immediateTokens := make(map[int]bool)
@@ -451,7 +455,7 @@ func GenerateWithReport(g *Grammar) (*GenerateReport, error) {
 		tokenCount,
 		func(state, sym int) bool {
 			if acts, ok := tables.ActionTable[state]; ok {
-				if _, ok := acts[sym]; ok {
+				if entry, ok := acts[sym]; ok && len(entry) > 0 {
 					return true
 				}
 			}
