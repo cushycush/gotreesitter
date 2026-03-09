@@ -108,6 +108,15 @@ func Generate(g *Grammar) ([]byte, error) {
 
 // GenerateLanguage compiles a Grammar into a Language struct without encoding.
 func GenerateLanguage(g *Grammar) (*gotreesitter.Language, error) {
+	// LR splitting requires provenance/item-set data from the full pipeline.
+	if g.EnableLRSplitting {
+		report, err := GenerateWithReport(g)
+		if err != nil {
+			return nil, err
+		}
+		return report.Language, nil
+	}
+
 	ng, err := Normalize(g)
 	if err != nil {
 		return nil, fmt.Errorf("normalize: %w", err)

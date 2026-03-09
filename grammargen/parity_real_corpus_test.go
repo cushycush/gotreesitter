@@ -187,6 +187,10 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 				t.Fatalf("import failed: %v", err)
 			}
 
+			if getenvBool("GTS_GRAMMARGEN_LR_SPLIT") {
+				gram.EnableLRSplitting = true
+			}
+
 			timeout := g.genTimeout
 			if timeout == 0 {
 				timeout = 30 * time.Second
