@@ -27,6 +27,7 @@ type Node struct {
 	endPoint     Point
 	children     []*Node
 	fieldIDs     []FieldID // parallel to children, 0 = no field
+	fieldSources []uint8   // parallel to children, 0 = none, 1 = direct, 2 = inherited
 	isNamed      bool
 	isExtra      bool
 	isMissing    bool
@@ -36,6 +37,19 @@ type Node struct {
 	parent       *Node
 	childIndex   int
 	ownerArena   *nodeArena
+}
+
+func defaultFieldSources(fieldIDs []FieldID) []uint8 {
+	if len(fieldIDs) == 0 {
+		return nil
+	}
+	out := make([]uint8, len(fieldIDs))
+	for i, fid := range fieldIDs {
+		if fid != 0 {
+			out[i] = 1
+		}
+	}
+	return out
 }
 
 // ParseStopReason reports why parseInternal terminated.
@@ -560,6 +574,7 @@ func newParentNode(arena *nodeArena, sym Symbol, named bool, children []*Node, f
 	n.isNamed = named
 	n.children = children
 	n.fieldIDs = fieldIDs
+	n.fieldSources = defaultFieldSources(fieldIDs)
 	n.productionID = productionID
 	n.childIndex = -1
 	populateParentNode(n, children)
@@ -618,6 +633,7 @@ func newParentNodeInArena(arena *nodeArena, sym Symbol, named bool, children []*
 	n.isNamed = named
 	n.children = children
 	n.fieldIDs = fieldIDs
+	n.fieldSources = defaultFieldSources(fieldIDs)
 	n.productionID = productionID
 	n.childIndex = -1
 	populateParentNode(n, children)
@@ -637,6 +653,7 @@ func newParentNodeInArenaNoLinks(arena *nodeArena, sym Symbol, named bool, child
 	n.isNamed = named
 	n.children = children
 	n.fieldIDs = fieldIDs
+	n.fieldSources = defaultFieldSources(fieldIDs)
 	n.productionID = productionID
 	n.childIndex = -1
 	populateParentNodeNoLinks(n, children, trackChildErrors)
@@ -855,6 +872,7 @@ func cloneTreeNodesIntoArena(root *Node, arena *nodeArena) *Node {
 		*dst = *src
 		dst.children = nil
 		dst.fieldIDs = nil
+		dst.fieldSources = nil
 		dst.parent = nil
 		dst.childIndex = -1
 		dst.ownerArena = arena
@@ -875,6 +893,11 @@ func cloneTreeNodesIntoArena(root *Node, arena *nodeArena) *Node {
 			fieldIDs := arena.allocFieldIDSlice(n)
 			copy(fieldIDs, oldNode.fieldIDs)
 			newNode.fieldIDs = fieldIDs
+		}
+		if n := len(oldNode.fieldSources); n > 0 {
+			fieldSources := make([]uint8, n)
+			copy(fieldSources, oldNode.fieldSources)
+			newNode.fieldSources = fieldSources
 		}
 
 		if n := len(oldNode.children); n > 0 {
@@ -927,6 +950,7 @@ func cloneTreeNodesWithOffset(root *Node, offsetBytes uint32, offsetExtent Point
 		dst.endPoint = offsetPoint(src.endPoint)
 		dst.children = nil
 		dst.fieldIDs = nil
+		dst.fieldSources = nil
 		dst.parent = nil
 		dst.childIndex = -1
 		dst.ownerArena = nil
@@ -946,6 +970,10 @@ func cloneTreeNodesWithOffset(root *Node, offsetBytes uint32, offsetExtent Point
 		if n := len(oldNode.fieldIDs); n > 0 {
 			newNode.fieldIDs = make([]FieldID, n)
 			copy(newNode.fieldIDs, oldNode.fieldIDs)
+		}
+		if n := len(oldNode.fieldSources); n > 0 {
+			newNode.fieldSources = make([]uint8, n)
+			copy(newNode.fieldSources, oldNode.fieldSources)
 		}
 
 		if n := len(oldNode.children); n > 0 {

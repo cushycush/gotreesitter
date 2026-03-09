@@ -250,7 +250,7 @@ func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, tok Toke
 		reducedEnd--
 	}
 
-	children, fieldIDs := p.buildReduceChildren(windowEntries, 0, reducedEnd, childCount, act.Symbol, act.ProductionID, arena)
+	children, fieldIDs, fieldSources := p.buildReduceChildren(windowEntries, 0, reducedEnd, childCount, act.Symbol, act.ProductionID, arena)
 
 	targetDepth := s.depth() - actualEnd
 	if targetDepth < 0 || !s.truncate(targetDepth) {
@@ -268,6 +268,7 @@ func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, tok Toke
 	} else {
 		parent = newParentNodeInArena(arena, act.Symbol, named, children, fieldIDs, act.ProductionID)
 	}
+	parent.fieldSources = fieldSources
 	shouldUseRawSpan := shouldUseRawSpanForReduction(act.Symbol, children, p.language.SymbolMetadata, p.forceRawSpanAll, p.forceRawSpanTable)
 	if shouldUseRawSpan && reducedEnd > 0 {
 		span := computeReduceRawSpan(windowEntries, 0, reducedEnd)
@@ -486,6 +487,8 @@ func isSpanExtendingInvisibleSymbol(sym Symbol, symbolNames []string) bool {
 	switch symbolNames[idx] {
 	case "_implicit_end_tag":
 		return true
+	case "_outdent":
+		return true
 	default:
 		return false
 	}
@@ -504,13 +507,48 @@ func isNonSpanExtendingInvisibleSymbol(sym Symbol, symbolNames []string) bool {
 	}
 }
 
-func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCount int, parentSymbol Symbol, productionID uint16, arena *nodeArena) ([]*Node, []FieldID) {
+const (
+	fieldSourceNone uint8 = iota
+	fieldSourceDirect
+	fieldSourceInherited
+)
+
+func fieldSourceAt(fieldSources []uint8, i int) uint8 {
+	if i < 0 || i >= len(fieldSources) {
+		return fieldSourceNone
+	}
+	return fieldSources[i]
+}
+
+func countEligibleNamedFieldTargets(children []*Node, fieldIDs []FieldID, start, end int) int {
+	count := 0
+	for i := start; i < end; i++ {
+		if children[i] == nil || !children[i].isNamed || fieldIDs[i] != 0 {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+func countEligibleFieldTargets(children []*Node, fieldIDs []FieldID, start, end int) int {
+	count := 0
+	for i := start; i < end; i++ {
+		if children[i] == nil || fieldIDs[i] != 0 {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCount int, parentSymbol Symbol, productionID uint16, arena *nodeArena) ([]*Node, []FieldID, []uint8) {
 	lang := p.language
 	symbolMeta := lang.SymbolMetadata
 
 	aliasSeq := p.reduceAliasSequence(productionID)
 	if len(aliasSeq) == 0 && !p.reduceProductionHasFields(productionID) {
-		return buildReduceChildrenNoAliasNoFields(entries, start, end, parentSymbol, symbolMeta, arena), nil
+		return buildReduceChildrenNoAliasNoFields(entries, start, end, parentSymbol, symbolMeta, arena), nil, nil
 	}
 
 	normalizedCount := 0
@@ -543,8 +581,10 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 	rawFieldIDs, rawInherited := p.buildFieldIDs(childCount, productionID, arena)
 	children := arena.allocNodeSlice(normalizedCount)
 	var fieldIDs []FieldID
+	var fieldSources []uint8
 	if rawFieldIDs != nil {
 		fieldIDs = arena.allocFieldIDSlice(normalizedCount)
+		fieldSources = make([]uint8, normalizedCount)
 	}
 
 	out := 0
@@ -580,6 +620,9 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 			if fieldIDs != nil {
 				if !inherited {
 					fieldIDs[out] = fid
+					if fid != 0 {
+						fieldSources[out] = fieldSourceDirect
+					}
 				}
 			}
 			out++
@@ -591,7 +634,7 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 			continue
 		}
 		spanStart := out
-		out = appendFlattenedHiddenChildrenWithFields(children, fieldIDs, out, n, symbolMeta)
+		out = appendFlattenedHiddenChildrenWithFields(children, fieldIDs, fieldSources, out, n, symbolMeta)
 		if fieldIDs != nil {
 			fieldEnd := out
 			if fieldEnd > len(fieldIDs) {
@@ -602,7 +645,11 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 			// already surface that same field on one of the copied
 			// children.
 			if fid != 0 {
-				applyFieldToFlattenedSpan(children, fieldIDs, spanStart, fieldEnd, fid, inherited, true)
+				source := fieldSourceDirect
+				if inherited {
+					source = fieldSourceInherited
+				}
+				applyFieldToFlattenedSpan(children, fieldIDs, fieldSources, spanStart, fieldEnd, fid, source, true)
 			}
 		}
 	}
@@ -610,9 +657,10 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 		children = children[:out]
 		if fieldIDs != nil {
 			fieldIDs = fieldIDs[:out]
+			fieldSources = fieldSources[:out]
 		}
 	}
-	return children, fieldIDs
+	return children, fieldIDs, fieldSources
 }
 
 func buildReduceChildrenNoAliasNoFields(entries []stackEntry, start, end int, parentSymbol Symbol, symbolMeta []SymbolMetadata, arena *nodeArena) []*Node {
@@ -697,10 +745,10 @@ func countFlattenedHiddenChildren(n *Node, symbolMeta []SymbolMetadata) int {
 }
 
 func appendFlattenedHiddenChildren(dst []*Node, out int, n *Node, symbolMeta []SymbolMetadata) int {
-	return appendFlattenedHiddenChildrenWithFields(dst, nil, out, n, symbolMeta)
+	return appendFlattenedHiddenChildrenWithFields(dst, nil, nil, out, n, symbolMeta)
 }
 
-func appendFlattenedHiddenChildrenWithFields(dst []*Node, fieldDst []FieldID, out int, n *Node, symbolMeta []SymbolMetadata) int {
+func appendFlattenedHiddenChildrenWithFields(dst []*Node, fieldDst []FieldID, fieldSrcDst []uint8, out int, n *Node, symbolMeta []SymbolMetadata) int {
 	if n == nil {
 		return out
 	}
@@ -714,23 +762,83 @@ func appendFlattenedHiddenChildrenWithFields(dst []*Node, fieldDst []FieldID, ou
 	}
 	for i, child := range n.children {
 		spanStart := out
-		out = appendFlattenedHiddenChildrenWithFields(dst, fieldDst, out, child, symbolMeta)
+		out = appendFlattenedHiddenChildrenWithFields(dst, fieldDst, fieldSrcDst, out, child, symbolMeta)
 		if fieldDst != nil && i < len(n.fieldIDs) && n.fieldIDs[i] != 0 {
-			applyFieldToFlattenedSpan(dst, fieldDst, spanStart, out, n.fieldIDs[i], false, false)
+			source := fieldSourceAt(n.fieldSources, i)
+			if source == fieldSourceNone {
+				source = fieldSourceDirect
+			}
+			applyFieldToFlattenedSpan(dst, fieldDst, fieldSrcDst, spanStart, out, n.fieldIDs[i], source, false)
 		}
 	}
 	return out
 }
 
-func applyFieldToFlattenedSpan(children []*Node, fieldIDs []FieldID, start, end int, fid FieldID, inherited bool, preferNamed bool) {
+func applyFieldToFlattenedSpan(children []*Node, fieldIDs []FieldID, fieldSources []uint8, start, end int, fid FieldID, source uint8, preferNamed bool) {
 	if fid == 0 || fieldIDs == nil || start >= end {
 		return
+	}
+	inherited := source == fieldSourceInherited
+	conflictCount, multipleKinds := flattenedSpanConflictSummary(children, fieldIDs, start, end, fid)
+	override := !multipleKinds && conflictCount >= 2
+	if override {
+		for j := start; j < end; j++ {
+			if children[j] == nil {
+				continue
+			}
+			if inherited && fieldIDs[j] != 0 && fieldIDs[j] != fid && fieldSourceAt(fieldSources, j) == fieldSourceDirect {
+				continue
+			}
+			fieldIDs[j] = fid
+			if fieldSources != nil {
+				fieldSources[j] = source
+			}
+		}
+		return
+	}
+	if !multipleKinds && conflictCount == 1 && preferNamed {
+		for j := start; j < end; j++ {
+			if children[j] == nil || !children[j].isNamed {
+				continue
+			}
+			if inherited && fieldIDs[j] != 0 && fieldIDs[j] != fid && fieldSourceAt(fieldSources, j) == fieldSourceDirect {
+				continue
+			}
+			fieldIDs[j] = fid
+			if fieldSources != nil {
+				fieldSources[j] = source
+			}
+			return
+		}
 	}
 	alreadyAssigned := false
 	for j := start; j < end; j++ {
 		if fieldIDs[j] == fid {
 			alreadyAssigned = true
 			break
+		}
+	}
+	if source == fieldSourceDirect && alreadyAssigned {
+		first, last := -1, -1
+		for j := start; j < end; j++ {
+			if fieldIDs[j] != fid {
+				continue
+			}
+			if first < 0 {
+				first = j
+			}
+			last = j
+		}
+		if first >= 0 && last > first {
+			for j := first + 1; j < last; j++ {
+				if children[j] == nil || fieldIDs[j] != 0 {
+					continue
+				}
+				fieldIDs[j] = fid
+				if fieldSources != nil {
+					fieldSources[j] = source
+				}
+			}
 		}
 	}
 	for j := start; !alreadyAssigned && j < end; j++ {
@@ -743,9 +851,73 @@ func applyFieldToFlattenedSpan(children []*Node, fieldIDs []FieldID, start, end 
 		if inherited && nodeHasDirectFieldID(children[j], fid) {
 			continue
 		}
+		if source == fieldSourceDirect {
+			namedTargets := countEligibleNamedFieldTargets(children, fieldIDs, start, end)
+			totalTargets := countEligibleFieldTargets(children, fieldIDs, start, end)
+			if namedTargets > 1 {
+				firstNamed, lastNamed := -1, -1
+				for k := start; k < end; k++ {
+					if children[k] == nil || !children[k].isNamed || fieldIDs[k] != 0 {
+						continue
+					}
+					if firstNamed < 0 {
+						firstNamed = k
+					}
+					lastNamed = k
+				}
+				for k := firstNamed; k <= lastNamed; k++ {
+					if k < 0 || children[k] == nil || fieldIDs[k] != 0 {
+						continue
+					}
+					fieldIDs[k] = fid
+					if fieldSources != nil {
+						fieldSources[k] = source
+					}
+				}
+				break
+			}
+			if namedTargets == 1 && totalTargets > 1 {
+				for k := start; k < end; k++ {
+					if children[k] == nil || fieldIDs[k] != 0 {
+						continue
+					}
+					fieldIDs[k] = fid
+					if fieldSources != nil {
+						fieldSources[k] = source
+					}
+				}
+				break
+			}
+		}
 		fieldIDs[j] = fid
+		if fieldSources != nil {
+			fieldSources[j] = source
+		}
 		break
 	}
+}
+
+func flattenedSpanConflictSummary(children []*Node, fieldIDs []FieldID, start, end int, fid FieldID) (int, bool) {
+	var conflict FieldID
+	conflictCount := 0
+	for j := start; j < end; j++ {
+		if children[j] == nil || fieldIDs[j] == 0 || fieldIDs[j] == fid {
+			continue
+		}
+		if nodeHasDirectFieldID(children[j], fieldIDs[j]) {
+			continue
+		}
+		if conflict == 0 {
+			conflict = fieldIDs[j]
+			conflictCount = 1
+			continue
+		}
+		if fieldIDs[j] != conflict {
+			return conflictCount, true
+		}
+		conflictCount++
+	}
+	return conflictCount, false
 }
 
 func nodeHasDirectFieldID(n *Node, fid FieldID) bool {
@@ -769,7 +941,7 @@ func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, tok Token, anyR
 		return
 	}
 
-	children, fieldIDs := p.buildReduceChildren(entries, window.start, window.reducedEnd, childCount, act.Symbol, act.ProductionID, arena)
+	children, fieldIDs, fieldSources := p.buildReduceChildren(entries, window.start, window.reducedEnd, childCount, act.Symbol, act.ProductionID, arena)
 
 	trailingStart := window.reducedEnd
 	trailingEnd := window.actualEnd
@@ -787,6 +959,7 @@ func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, tok Token, anyR
 	} else {
 		parent = newParentNodeInArena(arena, act.Symbol, named, children, fieldIDs, act.ProductionID)
 	}
+	parent.fieldSources = fieldSources
 	shouldUseRawSpan := shouldUseRawSpanForReduction(act.Symbol, children, p.language.SymbolMetadata, p.forceRawSpanAll, p.forceRawSpanTable)
 	if shouldUseRawSpan && window.reducedEnd > window.start {
 		span := computeReduceRawSpan(entries, window.start, window.reducedEnd)
@@ -998,19 +1171,23 @@ func materializeHiddenNodeForAlias(arena *nodeArena, lang *Language, n *Node) *N
 		cloned := cloneNodeInArena(arena, n)
 		cloned.children = nil
 		cloned.fieldIDs = nil
+		cloned.fieldSources = nil
 		return cloned
 	}
 
 	cloned := cloneNodeInArena(arena, n)
 	children := arena.allocNodeSlice(normalizedCount)
 	var fieldIDs []FieldID
+	var fieldSources []uint8
 	if hiddenTreeHasFieldIDs(n) {
 		fieldIDs = arena.allocFieldIDSlice(normalizedCount)
+		fieldSources = make([]uint8, normalizedCount)
 	}
-	out := appendFlattenedHiddenChildrenWithFields(children, fieldIDs, 0, n, symbolMeta)
+	out := appendFlattenedHiddenChildrenWithFields(children, fieldIDs, fieldSources, 0, n, symbolMeta)
 	cloned.children = children[:out]
 	if len(fieldIDs) > 0 {
 		fieldIDs = fieldIDs[:out]
+		fieldSources = fieldSources[:out]
 		hasField := false
 		for _, fid := range fieldIDs {
 			if fid != 0 {
@@ -1020,11 +1197,14 @@ func materializeHiddenNodeForAlias(arena *nodeArena, lang *Language, n *Node) *N
 		}
 		if hasField {
 			cloned.fieldIDs = fieldIDs
+			cloned.fieldSources = fieldSources
 		} else {
 			cloned.fieldIDs = nil
+			cloned.fieldSources = nil
 		}
 	} else {
 		cloned.fieldIDs = nil
+		cloned.fieldSources = nil
 	}
 	return cloned
 }

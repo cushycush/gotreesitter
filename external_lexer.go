@@ -18,9 +18,8 @@ type ExternalLexer struct {
 	endMarked  bool
 
 	// advancedContent is set when Advance(false) is called at least once.
-	// This distinguishes skip-only scans (where endPos should stay at the
-	// scan start per C semantics) from content-consuming scans (where
-	// endPos should track consumed content).
+	// It is only used to preserve an explicit MarkEnd position when later
+	// Advance(true) calls move startPos past that mark.
 	advancedContent bool
 
 	resultSymbol Symbol
@@ -111,18 +110,12 @@ func (l *ExternalLexer) token() (Token, bool) {
 	endPos := l.endPos
 	endPoint := l.endPoint
 	if !l.endMarked {
-		if l.advancedContent {
-			// Scanner consumed content via Advance(false) but never called
-			// MarkEnd. Default to current cursor (includes all consumed chars).
-			// This is slightly more permissive than C (which would stop one
-			// byte short of the last advance), but avoids penalizing scanners
-			// that omit a trailing MarkEnd.
-			endPos = l.pos
-			endPoint = l.point
-		}
-		// Skip-only scans (no Advance(false)): keep endPos at its
-		// initialized value (scan start position), matching C tree-sitter
-		// behavior where skip() does not update token_end_position.
+		// C tree-sitter calls mark_end(current_position) during lexer_finish
+		// when a successful external scan never marked an end explicitly.
+		// That means skip-only scans default to the cursor after skipped
+		// whitespace, not back at the scan start.
+		endPos = l.pos
+		endPoint = l.point
 	}
 	// When endPos < startPos the scanner marked a position before skip
 	// advanced startPos past it.  This yields a zero-width token at the

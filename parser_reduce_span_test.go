@@ -174,6 +174,31 @@ func TestExtendParentSpanAllowsImplicitEndTagGap(t *testing.T) {
 	}
 }
 
+func TestExtendParentSpanAllowsOutdentGap(t *testing.T) {
+	parent := NewParentNode(3, true, nil, nil, 0)
+	parent.startByte = 3209
+	parent.endByte = 3242
+	parent.startPoint = Point{Row: 98, Column: 8}
+	parent.endPoint = Point{Row: 98, Column: 41}
+
+	core := NewLeafNode(2, true, 3209, 3242, Point{Row: 98, Column: 8}, Point{Row: 98, Column: 41})
+	outdent := NewLeafNode(4, false, 3250, 3250, Point{Row: 100, Column: 6}, Point{Row: 100, Column: 6})
+
+	entries := []stackEntry{
+		{state: 0, node: core},
+		{state: 0, node: outdent},
+	}
+	meta := []SymbolMetadata{
+		{}, {}, {Visible: true}, {}, {Visible: false},
+	}
+	names := []string{"", "", "visible", "", "_outdent"}
+	extendParentSpanToWindow(parent, entries, 0, len(entries), meta, names)
+
+	if got, want := parent.endByte, uint32(3250); got != want {
+		t.Fatalf("parent.endByte = %d, want %d", got, want)
+	}
+}
+
 func TestExtendParentSpanSkipsInvisibleLineEnding(t *testing.T) {
 	parent := NewParentNode(3, true, nil, nil, 0)
 	parent.startByte = 10

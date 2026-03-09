@@ -195,6 +195,11 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 				padded := make([]FieldID, leadingCount+len(realRoot.fieldIDs)+trailingCount)
 				copy(padded[leadingCount:], realRoot.fieldIDs)
 				realRoot.fieldIDs = padded
+				if len(realRoot.fieldSources) > 0 {
+					paddedSources := make([]uint8, len(padded))
+					copy(paddedSources[leadingCount:], realRoot.fieldSources)
+					realRoot.fieldSources = paddedSources
+				}
 			}
 			// Extend root range to cover the extras.
 			for _, e := range extras {
@@ -390,23 +395,23 @@ func collapsePythonClassFragments(nodes []*Node, arena *nodeArena, lang *Languag
 			copy(buf, bodyChildren)
 			bodyChildren = buf
 		}
-	blockNode := newParentNodeInArena(arena, blockSym, true, bodyChildren, nil, 0)
-	blockNode.hasError = false
+		blockNode := newParentNodeInArena(arena, blockSym, true, bodyChildren, nil, 0)
+		blockNode.hasError = false
 
-	classChildren := make([]*Node, 0, 5)
-	classChildren = append(classChildren, classNode, nameNode)
+		classChildren := make([]*Node, 0, 5)
+		classChildren = append(classChildren, classNode, nameNode)
 		if argNode != nil {
 			classChildren = append(classChildren, argNode)
 		}
 		classChildren = append(classChildren, colonNode, blockNode)
-	if arena != nil {
-		buf := arena.allocNodeSlice(len(classChildren))
-		copy(buf, classChildren)
-		classChildren = buf
-	}
-	classFieldIDs := pythonSyntheticClassFieldIDs(arena, len(classChildren), argNode != nil, lang)
-	classDef := newParentNodeInArena(arena, classDefSym, true, classChildren, classFieldIDs, 0)
-	classDef.hasError = false
+		if arena != nil {
+			buf := arena.allocNodeSlice(len(classChildren))
+			copy(buf, classChildren)
+			classChildren = buf
+		}
+		classFieldIDs := pythonSyntheticClassFieldIDs(arena, len(classChildren), argNode != nil, lang)
+		classDef := newParentNodeInArena(arena, classDefSym, true, classChildren, classFieldIDs, 0)
+		classDef.hasError = false
 
 		out := make([]*Node, 0, len(nodes)-(j+5-i)+1)
 		out = append(out, nodes[:i]...)
@@ -599,6 +604,7 @@ func repairPythonRootNode(root *Node, arena *nodeArena, lang *Language) *Node {
 	}
 	cloned.children = repaired
 	cloned.fieldIDs = nil
+	cloned.fieldSources = nil
 	if pythonModuleChildrenLookComplete(repaired, lang) {
 		cloned.hasError = false
 	}
@@ -809,6 +815,7 @@ func repairPythonBlock(node *Node, arena *nodeArena, lang *Language, allowHoist 
 	}
 	cloned.children = out
 	cloned.fieldIDs = nil
+	cloned.fieldSources = nil
 	firstNamed := pythonBlockStartAnchor(out, lang)
 	lastSpan := pythonBlockEndAnchor(out)
 	if firstNamed != nil {
@@ -894,6 +901,7 @@ func splitPythonOvernestedFunction(node *Node, arena *nodeArena, lang *Language)
 	}
 	newBody.children = kept
 	newBody.fieldIDs = nil
+	newBody.fieldSources = nil
 	lastKept := kept[len(kept)-1]
 	newBody.endByte = lastKept.endByte
 	newBody.endPoint = lastKept.endPoint
