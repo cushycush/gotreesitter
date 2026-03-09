@@ -37,13 +37,10 @@ var paritySkips = map[string]parityMeta{
 // knownDegradedStructural tracks currently non-parity structural languages
 // within the full-coverage gate. Keep this list shrinking over time.
 var knownDegradedStructural = map[string]string{
-	"blade":    "smoke sample parse shape diverges from C",
 	"caddy":    "smoke sample parse shape diverges from C",
-	"chatito":  "smoke sample parse shape diverges from C",
 	"cobol":    "smoke sample parse shape diverges from C",
 	"cooklang": "smoke sample parse shape diverges from C",
 	"elsa":     "smoke sample parse shape diverges from C",
-	"enforce":  "smoke sample parse shape diverges from C",
 	"fortran":  "smoke sample parse shape diverges from C",
 	"hlsl":     "smoke sample parse shape diverges from C",
 	"just":     "smoke sample parse shape diverges from C",
