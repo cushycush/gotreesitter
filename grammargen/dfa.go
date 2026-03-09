@@ -112,45 +112,50 @@ type lexModeSpec struct {
 	skipWhitespace bool         // whether to add skip transitions for whitespace
 }
 
-// stateSet is a sorted set of NFA state IDs (used as DFA state identity).
-type stateSet struct {
+type dfaStateWorkItem struct {
+	id     int
 	states []int
 }
 
-func (ss stateSet) key() string {
-	// Use a compact key for map lookups.
-	buf := make([]byte, len(ss.states)*4)
-	for i, s := range ss.states {
-		buf[i*4] = byte(s >> 24)
-		buf[i*4+1] = byte(s >> 16)
-		buf[i*4+2] = byte(s >> 8)
-		buf[i*4+3] = byte(s)
+type dfaStateHashEntry struct {
+	stateIdx int
+	next     *dfaStateHashEntry
+}
+
+func hashIntSlice(vals []int) uint64 {
+	h := uint64(0xcbf29ce484222325)
+	for _, v := range vals {
+		h ^= uint64(uint32(v))
+		h *= 0x100000001b3
 	}
-	return string(buf)
+	return h
 }
 
 // subsetConstruction converts an NFA to a DFA using the subset construction algorithm.
 func subsetConstruction(n *nfa) []dfaState {
 	// Compute epsilon closure of start state.
 	startClosure := epsilonClosure(n, []int{n.start})
-	startSet := stateSet{states: startClosure}
 
-	stateMap := make(map[string]int) // closure key → DFA state index
+	stateMap := make(map[uint64]*dfaStateHashEntry) // closure hash → DFA state index chain
+	var stateSets [][]int
 	var dfaStates []dfaState
-	var worklist []stateSet
+	var worklist []dfaStateWorkItem
 
-	addState := func(ss stateSet) int {
-		k := ss.key()
-		if id, ok := stateMap[k]; ok {
-			return id
+	addState := func(states []int) int {
+		hash := hashIntSlice(states)
+		for entry := stateMap[hash]; entry != nil; entry = entry.next {
+			if sameIntSlice(stateSets[entry.stateIdx], states) {
+				return entry.stateIdx
+			}
 		}
 		id := len(dfaStates)
-		stateMap[k] = id
+		stateMap[hash] = &dfaStateHashEntry{stateIdx: id, next: stateMap[hash]}
+		stateSets = append(stateSets, states)
 
 		// Determine accept symbol (highest priority = lowest priority number).
 		accept := 0
 		bestPriority := int(^uint(0) >> 1) // max int
-		for _, s := range ss.states {
+		for _, s := range states {
 			if n.states[s].accept > 0 {
 				if n.states[s].priority < bestPriority {
 					bestPriority = n.states[s].priority
@@ -160,16 +165,16 @@ func subsetConstruction(n *nfa) []dfaState {
 		}
 
 		dfaStates = append(dfaStates, dfaState{accept: accept, acceptPriority: bestPriority})
-		worklist = append(worklist, ss)
+		worklist = append(worklist, dfaStateWorkItem{id: id, states: states})
 		return id
 	}
 
-	addState(startSet)
+	addState(startClosure)
 
 	for len(worklist) > 0 {
 		current := worklist[0]
 		worklist = worklist[1:]
-		curID := stateMap[current.key()]
+		curID := current.id
 
 		// Collect all character ranges from transitions of current NFA states.
 		ranges := collectTransitionRanges(n, current.states)
@@ -180,8 +185,7 @@ func subsetConstruction(n *nfa) []dfaState {
 			if len(targetStates) == 0 {
 				continue
 			}
-			targetSet := stateSet{states: targetStates}
-			targetID := addState(targetSet)
+			targetID := addState(targetStates)
 			dfaStates[curID].transitions = append(dfaStates[curID].transitions,
 				dfaTransition{lo: r.lo, hi: r.hi, nextState: targetID})
 		}
