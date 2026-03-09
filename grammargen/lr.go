@@ -57,19 +57,24 @@ type LRTables struct {
 
 // buildLRTables constructs LR(1) parse tables from a normalized grammar.
 func buildLRTables(ng *NormalizedGrammar) (*LRTables, error) {
-	tables, _, err := buildLRTablesWithProvenance(ng)
+	tables, _, err := buildLRTablesInternal(ng, false)
 	return tables, err
 }
 
 // buildLRTablesWithProvenance constructs LR(1) parse tables and returns
 // the merge provenance alongside the tables for diagnostic use.
 func buildLRTablesWithProvenance(ng *NormalizedGrammar) (*LRTables, *lrContext, error) {
+	return buildLRTablesInternal(ng, true)
+}
+
+func buildLRTablesInternal(ng *NormalizedGrammar, trackProvenance bool) (*LRTables, *lrContext, error) {
 	ctx := &lrContext{
-		ng:         ng,
-		firstSets:  make([]bitset, len(ng.Symbols)),
-		nullables:  make([]bool, len(ng.Symbols)),
-		prodsByLHS: make(map[int][]int),
-		betaCache:  make(map[uint32]*betaResult),
+		ng:              ng,
+		firstSets:       make([]bitset, len(ng.Symbols)),
+		nullables:       make([]bool, len(ng.Symbols)),
+		prodsByLHS:      make(map[int][]int),
+		betaCache:       make(map[uint32]*betaResult),
+		trackProvenance: trackProvenance,
 	}
 
 	tokenCount := ng.TokenCount()
@@ -235,7 +240,9 @@ type lrContext struct {
 	transitions map[int]map[int]int
 
 	// Merge provenance tracking (diagnostic metadata, does not affect construction)
-	provenance *mergeProvenance
+	provenance                 *mergeProvenance
+	trackProvenance            bool
+	trackLookaheadContributors bool
 
 	// Fast dot-0 lookup: prodIdx → cores slice index (-1 = absent).
 	// Allocated once, reused across closureToSet calls.
@@ -245,6 +252,31 @@ type lrContext struct {
 	// Nonterminal extra support
 	extraProdIndices []int
 	allTerminals     bitset // all terminal symbol IDs
+}
+
+func (ctx *lrContext) ensureProvenance() {
+	if !ctx.trackProvenance || ctx.provenance != nil {
+		return
+	}
+	ctx.provenance = newMergeProvenance()
+}
+
+func (ctx *lrContext) recordFreshState(stateIdx int) {
+	if ctx.provenance != nil {
+		ctx.provenance.recordFresh(stateIdx)
+	}
+}
+
+func (ctx *lrContext) recordMergedState(stateIdx int, origin mergeOrigin) {
+	if ctx.provenance != nil {
+		ctx.provenance.recordMerge(stateIdx, origin)
+	}
+}
+
+func (ctx *lrContext) recordLookaheadContributor(stateIdx, lookahead, ntTransIdx int) {
+	if ctx.provenance != nil && ctx.trackLookaheadContributors {
+		ctx.provenance.recordLookaheadContributor(stateIdx, lookahead, ntTransIdx)
+	}
 }
 
 // addNonterminalExtraChains creates dedicated parse state chains for nonterminal
@@ -765,7 +797,7 @@ type stateHashEntry struct {
 // with bitset lookaheads for performance on large grammars.
 func (ctx *lrContext) buildItemSets() []lrItemSet {
 	ctx.transitions = make(map[int]map[int]int)
-	ctx.provenance = newMergeProvenance()
+	ctx.ensureProvenance()
 
 	tokenCount := ctx.tokenCount
 
@@ -793,7 +825,7 @@ func (ctx *lrContext) buildItemSets() []lrItemSet {
 	addToHashMap(fullMap, initialSet.fullHash, 0)
 	addToHashMap(coreMap, initialSet.coreHash, 0)
 	addToHashMap(extMap, initialSet.reduceLAHash, 0)
-	ctx.provenance.recordFresh(0)
+	ctx.recordFreshState(0)
 
 	worklist := []int{0}
 	inWorklist := map[int]bool{0: true}
@@ -901,7 +933,7 @@ func (ctx *lrContext) findOrCreateState(
 	addToHashMap(fullMap, closedSet.fullHash, newIdx)
 	addToHashMap(coreMap, closedSet.coreHash, newIdx)
 	addToHashMap(extMap, closedSet.reduceLAHash, newIdx)
-	ctx.provenance.recordFresh(newIdx)
+	ctx.recordFreshState(newIdx)
 	*worklist = append(*worklist, newIdx)
 	(*inWorklist)[newIdx] = true
 	return newIdx
@@ -941,7 +973,7 @@ func (ctx *lrContext) mergeInto(
 
 	if len(newEntries) > 0 {
 		ctx.closureIncremental(existing, newEntries)
-		ctx.provenance.recordMerge(idx, mergeOrigin{
+		ctx.recordMergedState(idx, mergeOrigin{
 			kernelHash:  closedSet.coreHash,
 			sourceState: -1,
 		})

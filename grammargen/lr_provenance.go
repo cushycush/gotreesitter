@@ -18,9 +18,8 @@ type mergeProvenance struct {
 
 func newMergeProvenance() *mergeProvenance {
 	return &mergeProvenance{
-		fresh:          make(map[int]bool),
-		merges:         make(map[int][]mergeOrigin),
-		laContributors: make(map[int]map[int][]int),
+		fresh:  make(map[int]bool),
+		merges: make(map[int][]mergeOrigin),
 	}
 }
 
@@ -41,6 +40,9 @@ func (p *mergeProvenance) origins(stateIdx int) []mergeOrigin {
 }
 
 func (p *mergeProvenance) recordLookaheadContributor(stateIdx, lookahead, ntTransIdx int) {
+	if p.laContributors == nil {
+		p.laContributors = make(map[int]map[int][]int)
+	}
 	if p.laContributors[stateIdx] == nil {
 		p.laContributors[stateIdx] = make(map[int][]int)
 	}

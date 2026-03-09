@@ -15,9 +15,9 @@ package grammargen
 // ntTransition identifies a nonterminal transition (p, A) in the LR(0) automaton,
 // meaning: in state p, reading nonterminal A, go to some state q.
 type ntTransition struct {
-	state    int // source state p
-	nonterm  int // nonterminal symbol A
-	target   int // target state q = GOTO(p, A)
+	state   int // source state p
+	nonterm int // nonterminal symbol A
+	target  int // target state q = GOTO(p, A)
 }
 
 // buildItemSetsLALR constructs LALR(1) item sets using the DeRemer/Pennello algorithm.
@@ -37,7 +37,7 @@ func (ctx *lrContext) buildItemSetsLALR() []lrItemSet {
 // propagation, merging, or worklist re-processing.
 func (ctx *lrContext) buildLR0() {
 	ctx.transitions = make(map[int]map[int]int)
-	ctx.provenance = newMergeProvenance()
+	ctx.ensureProvenance()
 	ng := ctx.ng
 	tokenCount := ctx.tokenCount
 
@@ -48,7 +48,7 @@ func (ctx *lrContext) buildLR0() {
 	initialSet := ctx.lr0Closure([]coreItem{{prodIdx: ng.AugmentProdID, dot: 0}})
 	ctx.itemSets = []lrItemSet{initialSet}
 	addToHashMap(coreMap, initialSet.coreHash, 0)
-	ctx.provenance.recordFresh(0)
+	ctx.recordFreshState(0)
 
 	// BFS through states.
 	for stateIdx := 0; stateIdx < len(ctx.itemSets); stateIdx++ {
@@ -88,7 +88,7 @@ func (ctx *lrContext) buildLR0() {
 			for entry := coreMap[closedSet.coreHash]; entry != nil; entry = entry.next {
 				if sameCores(&ctx.itemSets[entry.stateIdx], &closedSet) {
 					targetIdx = entry.stateIdx
-					ctx.provenance.recordMerge(targetIdx, mergeOrigin{
+					ctx.recordMergedState(targetIdx, mergeOrigin{
 						kernelHash:  closedSet.coreHash,
 						sourceState: stateIdx,
 					})
@@ -99,7 +99,7 @@ func (ctx *lrContext) buildLR0() {
 				targetIdx = len(ctx.itemSets)
 				ctx.itemSets = append(ctx.itemSets, closedSet)
 				addToHashMap(coreMap, closedSet.coreHash, targetIdx)
-				ctx.provenance.recordFresh(targetIdx)
+				ctx.recordFreshState(targetIdx)
 			}
 
 			// Record transition.
@@ -379,7 +379,7 @@ func (ctx *lrContext) computeLALRLookaheads() {
 		if idx, ok := itemSet.coreIndex[reduceCore]; ok {
 			itemSet.cores[idx].lookaheads.unionWith(&followSets[lb.ntIdx])
 			followSets[lb.ntIdx].forEach(func(la int) {
-				ctx.provenance.recordLookaheadContributor(lb.stateIdx, la, lb.ntIdx)
+				ctx.recordLookaheadContributor(lb.stateIdx, la, lb.ntIdx)
 			})
 		}
 	}

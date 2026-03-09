@@ -85,13 +85,14 @@ func TestLALRProvenanceEndToEnd(t *testing.T) {
 	}
 
 	ctx := &lrContext{
-		ng:         ng,
-		firstSets:  make([]bitset, len(ng.Symbols)),
-		nullables:  make([]bool, len(ng.Symbols)),
-		prodsByLHS: make(map[int][]int),
-		betaCache:  make(map[uint32]*betaResult),
-		dot0Index:  make([]int, len(ng.Productions)),
-		tokenCount: ng.TokenCount(),
+		ng:              ng,
+		firstSets:       make([]bitset, len(ng.Symbols)),
+		nullables:       make([]bool, len(ng.Symbols)),
+		prodsByLHS:      make(map[int][]int),
+		betaCache:       make(map[uint32]*betaResult),
+		dot0Index:       make([]int, len(ng.Productions)),
+		tokenCount:      ng.TokenCount(),
+		trackProvenance: true,
 	}
 	for i := range ctx.dot0Index {
 		ctx.dot0Index[i] = -1
@@ -138,13 +139,14 @@ func TestFullLRProvenanceEndToEnd(t *testing.T) {
 	// Since buildLRTables doesn't expose lrContext, we test via
 	// the full LR path by constructing lrContext directly.
 	ctx := &lrContext{
-		ng:         ng,
-		firstSets:  make([]bitset, len(ng.Symbols)),
-		nullables:  make([]bool, len(ng.Symbols)),
-		prodsByLHS: make(map[int][]int),
-		betaCache:  make(map[uint32]*betaResult),
-		dot0Index:  make([]int, len(ng.Productions)),
-		tokenCount: ng.TokenCount(),
+		ng:              ng,
+		firstSets:       make([]bitset, len(ng.Symbols)),
+		nullables:       make([]bool, len(ng.Symbols)),
+		prodsByLHS:      make(map[int][]int),
+		betaCache:       make(map[uint32]*betaResult),
+		dot0Index:       make([]int, len(ng.Productions)),
+		tokenCount:      ng.TokenCount(),
+		trackProvenance: true,
 	}
 	for i := range ctx.dot0Index {
 		ctx.dot0Index[i] = -1

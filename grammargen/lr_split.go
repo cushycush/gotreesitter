@@ -152,6 +152,11 @@ func localLR1Rebuild(
 			continue
 		}
 
+		requiredNewStates := len(partitions) - 1
+		if totalSplit+requiredNewStates > maxNewStates {
+			continue
+		}
+
 		// Check if splitting would resolve the conflict.
 		// ALL partitions must have strictly fewer actions on the conflict symbol
 		// than the original. If any partition still has the same (or more), splitting
@@ -195,10 +200,6 @@ func localLR1Rebuild(
 		}
 
 		for i := 1; i < len(partitions); i++ {
-			if totalSplit+(i) > maxNewStates {
-				break
-			}
-
 			p := partitions[i]
 			newStateIdx := tables.StateCount
 			tables.StateCount++
