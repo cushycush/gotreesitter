@@ -225,27 +225,57 @@ func epsilonClosure(n *nfa, states []int) []int {
 // collectTransitionRanges collects all non-epsilon character transition ranges
 // from the given NFA states and partitions them into non-overlapping ranges.
 func collectTransitionRanges(n *nfa, states []int) []runeRange {
-	// Collect boundary points.
-	var points []rune
-	pointSet := make(map[rune]bool)
-	addPoint := func(r rune) {
-		if !pointSet[r] {
-			pointSet[r] = true
-			points = append(points, r)
-		}
-	}
-
+	transitionCount := 0
 	for _, s := range states {
 		for _, t := range n.states[s].transitions {
-			if t.epsilon {
-				continue
+			if !t.epsilon {
+				transitionCount++
 			}
-			addPoint(t.lo)
-			addPoint(t.hi + 1) // exclusive upper bound
 		}
 	}
+	if transitionCount == 0 {
+		return nil
+	}
 
-	sort.Slice(points, func(i, j int) bool { return points[i] < points[j] })
+	// Collect boundary points.
+	points := make([]rune, 0, transitionCount*2)
+	if transitionCount >= 128 {
+		for _, s := range states {
+			for _, t := range n.states[s].transitions {
+				if t.epsilon {
+					continue
+				}
+				points = append(points, t.lo, t.hi+1) // exclusive upper bound
+			}
+		}
+		sort.Slice(points, func(i, j int) bool { return points[i] < points[j] })
+		write := 1
+		for read := 1; read < len(points); read++ {
+			if points[read] != points[write-1] {
+				points[write] = points[read]
+				write++
+			}
+		}
+		points = points[:write]
+	} else {
+		pointSet := make(map[rune]bool, transitionCount*2)
+		addPoint := func(r rune) {
+			if !pointSet[r] {
+				pointSet[r] = true
+				points = append(points, r)
+			}
+		}
+		for _, s := range states {
+			for _, t := range n.states[s].transitions {
+				if t.epsilon {
+					continue
+				}
+				addPoint(t.lo)
+				addPoint(t.hi + 1) // exclusive upper bound
+			}
+		}
+		sort.Slice(points, func(i, j int) bool { return points[i] < points[j] })
+	}
 
 	// Create non-overlapping ranges from boundary points.
 	var ranges []runeRange
