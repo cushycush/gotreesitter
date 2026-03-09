@@ -401,7 +401,7 @@ func collectTransitionRanges(n *nfa, states []int) []runeRange {
 		}
 	}
 
-	return mergeAdjacentRanges(ranges, n, states)
+	return ranges
 }
 
 // mergeAdjacentRanges merges adjacent ranges that lead to the same target state set.
