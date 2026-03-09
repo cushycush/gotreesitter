@@ -312,7 +312,7 @@ func TestGrammargenCGOParity(t *testing.T) {
 	}
 
 	if updateRatchet && len(observed) > 0 {
-		writeGrammargenCGOFloors(t, floorsPath, observed, root, maxCases, maxBytes, testedGrammars, totalElig, totalNoErr, totalParity)
+		writeGrammargenCGOFloors(t, floorsPath, floors, observed, root, maxCases, maxBytes)
 	}
 
 	t.Logf("GRAMMARGEN-CGO SUMMARY: grammars=%d eligible=%d no_error=%d tree_parity=%d",
@@ -584,15 +584,26 @@ func isEqualsFence(line string) bool {
 
 func enforceGrammargenCGORatchet(t *testing.T, name string, floor, cur grammargenCGOFloorEntry) {
 	t.Helper()
+	for _, msg := range grammargenCGORatchetRegressions(name, floor, cur) {
+		t.Error(msg)
+	}
+}
+
+func grammargenCGORatchetRegressions(name string, floor, cur grammargenCGOFloorEntry) []string {
+	var out []string
 	if cur.Eligible < floor.Eligible {
-		t.Errorf("ratchet regression [%s] eligible: %d < floor %d", name, cur.Eligible, floor.Eligible)
+		out = append(out, fmt.Sprintf("ratchet regression [%s] eligible: %d < floor %d", name, cur.Eligible, floor.Eligible))
 	}
 	if cur.NoError < floor.NoError {
-		t.Errorf("ratchet regression [%s] no_error: %d < floor %d", name, cur.NoError, floor.NoError)
+		out = append(out, fmt.Sprintf("ratchet regression [%s] no_error: %d < floor %d", name, cur.NoError, floor.NoError))
 	}
 	if cur.TreeParity < floor.TreeParity {
-		t.Errorf("ratchet regression [%s] tree_parity: %d < floor %d", name, cur.TreeParity, floor.TreeParity)
+		out = append(out, fmt.Sprintf("ratchet regression [%s] tree_parity: %d < floor %d", name, cur.TreeParity, floor.TreeParity))
 	}
+	if floor.Divergences > 0 && cur.Divergences > floor.Divergences {
+		out = append(out, fmt.Sprintf("ratchet regression [%s] divergences: %d > floor %d", name, cur.Divergences, floor.Divergences))
+	}
+	return out
 }
 
 func parseLangFilter(raw string) map[string]bool {
@@ -639,8 +650,43 @@ func loadGrammargenCGOFloors(path string) (grammargenCGOFloorFile, bool, error) 
 	return out, true, nil
 }
 
-func writeGrammargenCGOFloors(t *testing.T, path string, observed map[string]grammargenCGOFloorEntry, root string, maxCases, maxBytes, grammarCount, totalElig, totalNoErr, totalParity int) {
+func mergeGrammargenCGOFloors(existing, observed map[string]grammargenCGOFloorEntry) map[string]grammargenCGOFloorEntry {
+	merged := make(map[string]grammargenCGOFloorEntry, len(existing)+len(observed))
+	for name, entry := range existing {
+		merged[name] = entry
+	}
+	for name, cur := range observed {
+		if prev, ok := merged[name]; ok {
+			if cur.Eligible < prev.Eligible {
+				cur.Eligible = prev.Eligible
+			}
+			if cur.NoError < prev.NoError {
+				cur.NoError = prev.NoError
+			}
+			if cur.TreeParity < prev.TreeParity {
+				cur.TreeParity = prev.TreeParity
+			}
+			if prev.Divergences > 0 && (cur.Divergences == 0 || prev.Divergences < cur.Divergences) {
+				cur.Divergences = prev.Divergences
+			}
+		}
+		merged[name] = cur
+	}
+	return merged
+}
+
+func writeGrammargenCGOFloors(t *testing.T, path string, existing grammargenCGOFloorFile, observed map[string]grammargenCGOFloorEntry, root string, maxCases, maxBytes int) {
 	t.Helper()
+	merged := mergeGrammargenCGOFloors(existing.Metrics, observed)
+	grammarCount := len(merged)
+	totalElig := 0
+	totalNoErr := 0
+	totalParity := 0
+	for _, entry := range merged {
+		totalElig += entry.Eligible
+		totalNoErr += entry.NoError
+		totalParity += entry.TreeParity
+	}
 	out := grammargenCGOFloorFile{
 		Version:      1,
 		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
@@ -651,7 +697,7 @@ func writeGrammargenCGOFloors(t *testing.T, path string, observed map[string]gra
 		TotalElig:    totalElig,
 		TotalNoErr:   totalNoErr,
 		TotalParity:  totalParity,
-		Metrics:      observed,
+		Metrics:      merged,
 	}
 	if sha := gitShortSHA(12); sha != "" {
 		out.CommitSHA = sha
