@@ -122,16 +122,17 @@ func (ctx *lrContext) lr0Closure(kernel []coreItem) lrItemSet {
 	ng := ctx.ng
 	tokenCount := ctx.tokenCount
 
-	coreIdx := make(map[coreItem]int, len(kernel)*2)
+	seen := make(map[uint64]int, len(kernel)*2)
 	cores := make([]coreEntry, 0, len(kernel)*2)
 
 	// Add kernel items.
 	for _, ki := range kernel {
-		if _, ok := coreIdx[ki]; ok {
+		key := packCoreItemKey(ki.prodIdx, ki.dot)
+		if _, ok := seen[key]; ok {
 			continue // deduplicate
 		}
 		idx := len(cores)
-		coreIdx[ki] = idx
+		seen[key] = idx
 		cores = append(cores, coreEntry{
 			prodIdx:    ki.prodIdx,
 			dot:        ki.dot,
@@ -155,10 +156,10 @@ func (ctx *lrContext) lr0Closure(kernel []coreItem) lrItemSet {
 		}
 
 		for _, prodIdx := range ctx.prodsByLHS[nextSym] {
-			ci := coreItem{prodIdx, 0}
-			if _, ok := coreIdx[ci]; !ok {
+			key := packCoreItemKey(prodIdx, 0)
+			if _, ok := seen[key]; !ok {
 				idx := len(cores)
-				coreIdx[ci] = idx
+				seen[key] = idx
 				cores = append(cores, coreEntry{
 					prodIdx:    prodIdx,
 					dot:        0,
@@ -166,6 +167,11 @@ func (ctx *lrContext) lr0Closure(kernel []coreItem) lrItemSet {
 				})
 			}
 		}
+	}
+
+	coreIdx := make(map[coreItem]int, len(cores))
+	for i, c := range cores {
+		coreIdx[coreItem{prodIdx: c.prodIdx, dot: c.dot}] = i
 	}
 
 	set := lrItemSet{
@@ -182,6 +188,10 @@ func (ctx *lrContext) lr0Closure(kernel []coreItem) lrItemSet {
 	set.reduceLAHash = ch
 
 	return set
+}
+
+func packCoreItemKey(prodIdx, dot int) uint64 {
+	return uint64(uint32(prodIdx))<<32 | uint64(uint32(dot))
 }
 
 // computeLALRLookaheads implements the DeRemer/Pennello algorithm to compute
