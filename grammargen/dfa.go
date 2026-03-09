@@ -357,7 +357,8 @@ func moveAndClose(n *nfa, states []int, lo, hi rune) []int {
 // convertDFAToLexStates converts internal DFA states to gotreesitter LexState format.
 func convertDFAToLexStates(dfa []dfaState, addSkipTransitions bool) []gotreesitter.LexState {
 	states := make([]gotreesitter.LexState, len(dfa))
-	for i, ds := range dfa {
+	for i := range dfa {
+		ds := &dfa[i]
 		prio := int16(0)
 		if ds.accept > 0 && ds.acceptPriority < int(^uint(0)>>1) {
 			// Clamp to int16 range.
@@ -377,12 +378,18 @@ func convertDFAToLexStates(dfa []dfaState, addSkipTransitions bool) []gotreesitt
 			EOF:            -1,
 		}
 
-		for _, t := range ds.transitions {
-			ls.Transitions = append(ls.Transitions, gotreesitter.LexTransition{
+		if len(ds.transitions) > 0 {
+			ls.Transitions = make([]gotreesitter.LexTransition, len(ds.transitions))
+			for j, t := range ds.transitions {
+				ls.Transitions[j] = gotreesitter.LexTransition{
 				Lo:        t.lo,
 				Hi:        t.hi,
 				NextState: t.nextState,
-			})
+				}
+			}
+			// Release the source edge slice once it has been copied so the DFA
+			// graph does not stay fully duplicated through the rest of conversion.
+			ds.transitions = nil
 		}
 
 		states[i] = ls
