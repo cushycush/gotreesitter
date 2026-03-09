@@ -450,9 +450,6 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 	// Extra duplicates cause spurious reduce-reduce conflicts.
 	productions = deduplicateProductions(productions)
 
-	// (Phase 7c was removed — hidden pass-through flattening is now at
-	//  the rule-tree level in Phase 0b before symbol registration.)
-
 	// Phase 8: Resolve conflicts.
 	var conflicts [][]int
 	for _, cgroup := range g.Conflicts {
