@@ -1806,3 +1806,62 @@ func TestReservedWordSetIDZeroDoesNotBlock(t *testing.T) {
 		t.Fatalf("setID=0: got symbol %d, want 2 (KW_IF — promoted)", got.Symbol)
 	}
 }
+
+func TestPromoteKeywordUsesAnyGLRState(t *testing.T) {
+	lang := &Language{
+		Name:                "keyword_glr_union",
+		SymbolCount:         4,
+		TokenCount:          3,
+		StateCount:          3,
+		LargeStateCount:     3,
+		KeywordCaptureToken: 1, // IDENT
+		KeywordLexStates: []LexState{
+			{AcceptToken: 0, Default: -1, EOF: -1, Transitions: []LexTransition{
+				{Lo: 'i', Hi: 'i', NextState: 1},
+			}},
+			{AcceptToken: 0, Default: -1, EOF: -1, Transitions: []LexTransition{
+				{Lo: 'f', Hi: 'f', NextState: 2},
+			}},
+			{AcceptToken: 2, Default: -1, EOF: -1},
+		},
+		ParseTable: [][]uint16{
+			{0, 0, 0, 0},
+			{0, 1, 0, 0}, // state 1: identifier-only
+			{0, 0, 1, 0}, // state 2: keyword-only
+		},
+		ParseActions: []ParseActionEntry{
+			{Actions: nil},
+			{Actions: []ParseAction{{Type: ParseActionShift, State: 1}}},
+		},
+	}
+	parser := NewParser(lang)
+	source := []byte("if")
+	tok := Token{
+		Symbol:    lang.KeywordCaptureToken,
+		StartByte: 0,
+		EndByte:   uint32(len(source)),
+	}
+
+	single := (&dfaTokenSource{
+		lexer:             &Lexer{states: lang.LexStates, source: source},
+		language:          lang,
+		state:             1,
+		lookupActionIndex: parser.lookupActionIndex,
+		hasKeywordState:   parser.hasKeywordState,
+	}).promoteKeyword(tok)
+	if single.Symbol != 1 {
+		t.Fatalf("single identifier-only state: got symbol %d, want 1 (IDENT)", single.Symbol)
+	}
+
+	union := (&dfaTokenSource{
+		lexer:             &Lexer{states: lang.LexStates, source: source},
+		language:          lang,
+		state:             1,
+		glrStates:         []StateID{1, 2},
+		lookupActionIndex: parser.lookupActionIndex,
+		hasKeywordState:   parser.hasKeywordState,
+	}).promoteKeyword(tok)
+	if union.Symbol != 2 {
+		t.Fatalf("GLR union state: got symbol %d, want 2 (KW_IF)", union.Symbol)
+	}
+}

@@ -861,6 +861,25 @@ func (d *dfaTokenSource) hasAnyActionForSymbol(sym Symbol) bool {
 	return false
 }
 
+func (d *dfaTokenSource) hasAnyKeywordState() bool {
+	if d == nil || len(d.hasKeywordState) == 0 {
+		return true
+	}
+	hasKeywordState := func(state StateID) bool {
+		idx := int(state)
+		return idx >= 0 && idx < len(d.hasKeywordState) && d.hasKeywordState[idx]
+	}
+	if len(d.glrStates) == 0 {
+		return hasKeywordState(d.state)
+	}
+	for _, st := range d.glrStates {
+		if hasKeywordState(st) {
+			return true
+		}
+	}
+	return false
+}
+
 func (d *dfaTokenSource) eofTokenAtLexerPos() Token {
 	if d == nil || d.lexer == nil {
 		return Token{}
@@ -1413,11 +1432,8 @@ func (d *dfaTokenSource) promoteKeyword(tok Token) Token {
 	if tok.EndByte <= tok.StartByte {
 		return tok
 	}
-	if len(d.hasKeywordState) > 0 {
-		state := int(d.state)
-		if state >= 0 && state < len(d.hasKeywordState) && !d.hasKeywordState[state] {
-			return tok
-		}
+	if !d.hasAnyKeywordState() {
+		return tok
 	}
 
 	start := int(tok.StartByte)
@@ -1469,8 +1485,8 @@ func (d *dfaTokenSource) promoteKeyword(tok Token) Token {
 	// keywords like "get"/"set" from being promoted in positions where
 	// they should be treated as identifiers (e.g., obj.get(...)).
 	if d.lookupActionIndex != nil {
-		kwHasAction := d.lookupActionIndex(d.state, kwTok.Symbol) != 0
-		idHasAction := d.lookupActionIndex(d.state, tok.Symbol) != 0
+		kwHasAction := d.hasAnyActionForSymbol(kwTok.Symbol)
+		idHasAction := d.hasAnyActionForSymbol(tok.Symbol)
 		if !kwHasAction && idHasAction {
 			return tok // parser expects identifier, not keyword
 		}
