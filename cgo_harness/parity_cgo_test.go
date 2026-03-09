@@ -40,7 +40,6 @@ var knownDegradedStructural = map[string]string{
 	"cooklang": "smoke sample parse shape diverges from C",
 	"elsa":     "smoke sample parse shape diverges from C",
 	"hlsl":     "smoke sample parse shape diverges from C",
-	"less":     "smoke sample parse shape diverges from C",
 	"wolfram":  "smoke sample parse shape diverges from C",
 }
 

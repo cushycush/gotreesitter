@@ -212,6 +212,9 @@ func ExtractGrammar(source string) (*ExtractedGrammar, error) {
 // extractFieldMaps parses ts_field_map_slices[] and ts_field_map[] arrays.
 func extractFieldMaps(source string, g *ExtractedGrammar) error {
 	if g.ProductionIDCount == 0 {
+		inferProductionIDCount(source, g)
+	}
+	if g.ProductionIDCount == 0 {
 		return nil
 	}
 
@@ -1240,6 +1243,9 @@ func extractParseActions(source string, g *ExtractedGrammar) error {
 
 // extractAliasSequences parses ts_alias_sequences[PRODUCTION_ID_COUNT][MAX_ALIAS_SEQUENCE_LENGTH].
 func extractAliasSequences(source string, g *ExtractedGrammar) error {
+	if g.ProductionIDCount == 0 {
+		inferProductionIDCount(source, g)
+	}
 	if g.ProductionIDCount == 0 || g.MaxAliasSeqLength == 0 {
 		return nil
 	}
@@ -1314,6 +1320,46 @@ func extractAliasSequences(source string, g *ExtractedGrammar) error {
 		g.AliasSequences = seqs
 	}
 	return nil
+}
+
+func inferProductionIDCount(source string, g *ExtractedGrammar) {
+	if g == nil || g.ProductionIDCount != 0 {
+		return
+	}
+	for _, arrayName := range []string{"ts_field_map_slices", "ts_alias_sequences"} {
+		if n, ok := inferFirstArrayDimension(source, arrayName, g); ok && n > 0 {
+			g.ProductionIDCount = n
+			return
+		}
+	}
+}
+
+func inferFirstArrayDimension(source, arrayName string, g *ExtractedGrammar) (int, bool) {
+	re := regexp.MustCompile(regexp.QuoteMeta(arrayName) + `\s*\[\s*([^\]]+)\s*\]`)
+	m := re.FindStringSubmatch(source)
+	if len(m) < 2 {
+		return 0, false
+	}
+	return parseArraySizeToken(m[1], g)
+}
+
+func parseArraySizeToken(raw string, g *ExtractedGrammar) (int, bool) {
+	token := strings.TrimSpace(raw)
+	if token == "" {
+		return 0, false
+	}
+	if v, err := strconv.ParseInt(token, 0, 32); err == nil {
+		return int(v), true
+	}
+	if token == "PRODUCTION_ID_COUNT" && g != nil && g.ProductionIDCount > 0 {
+		return g.ProductionIDCount, true
+	}
+	if g != nil && g.enumValues != nil {
+		if v, ok := g.enumValues[token]; ok {
+			return v, true
+		}
+	}
+	return 0, false
 }
 
 func parseReduceActionArgs(args string, g *ExtractedGrammar) (ExtractedAction, error) {
