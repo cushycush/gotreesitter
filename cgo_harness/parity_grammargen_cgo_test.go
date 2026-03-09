@@ -137,7 +137,7 @@ var grammargenCGOGrammars = []grammargenCGOGrammar{
 //
 // This is the single-hop direct oracle test: grammargen blob vs C runtime.
 func TestGrammargenCGOParity(t *testing.T) {
-	if !envBool(grammargenCGOEnableEnv) {
+	if !envBool(grammargenCGOEnableEnv, false) {
 		t.Skipf("set %s=1 to enable grammargen direct C parity", grammargenCGOEnableEnv)
 	}
 
@@ -151,7 +151,7 @@ func TestGrammargenCGOParity(t *testing.T) {
 
 	maxCases := envInt(grammargenCGOMaxCasesEnv, 20)
 	maxBytes := envInt(grammargenCGOMaxBytesEnv, 256*1024)
-	updateRatchet := envBool(grammargenCGORatchetEnv)
+	updateRatchet := envBool(grammargenCGORatchetEnv, false)
 	langFilter := parseLangFilter(os.Getenv(grammargenCGOLangsEnv))
 
 	floorsPath := strings.TrimSpace(os.Getenv(grammargenCGOFloorsPathEnv))
@@ -610,25 +610,7 @@ func parseLangFilter(raw string) map[string]bool {
 	return out
 }
 
-func envBool(key string) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
-	case "1", "true", "yes", "on":
-		return true
-	}
-	return false
-}
-
-func envInt(key string, def int) int {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return def
-	}
-	var n int
-	if _, err := fmt.Sscanf(raw, "%d", &n); err != nil || n <= 0 {
-		return def
-	}
-	return n
-}
+// envBool and envInt are defined in parity_breaker_test.go.
 
 func defaultGrammargenCGOFloorsPath() string {
 	_, file, _, ok := runtime.Caller(0)
