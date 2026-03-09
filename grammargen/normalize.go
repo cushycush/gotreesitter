@@ -1873,34 +1873,61 @@ func expandInlineRules(g *Grammar) *Grammar {
 	}
 
 	// Build lookup for inline rule bodies.
-	// Tree-sitter C always fully inlines inline rules regardless of width.
-	// We must do the same to produce structurally identical parse tables.
+	// Expand inline rules with reasonable width. Very wide choices (>16
+	// alternatives) can cause Cartesian product explosion when the rule is used
+	// in multiple positions of a sequence. Tree-sitter handles this but some
+	// grammars' inline rules need the nonterminal wrapper for correct GLR
+	// conflict resolution in grammargen's current LR table builder.
 	inlineBodies := make(map[string]*Rule)
+	// For inline rules too wide to expand, rename them to be hidden (prefix '_')
+	// so they don't create visible nodes in the parse tree.
+	hiddenRenames := make(map[string]string)
 	for _, name := range g.Inline {
 		if rule, ok := g.Rules[name]; ok {
-			inlineBodies[name] = rule
+			if choiceWidth(rule) <= 16 {
+				inlineBodies[name] = rule
+			} else if !strings.HasPrefix(name, "_") {
+				// Too wide to inline but currently visible — make hidden.
+				hiddenRenames[name] = "_" + name
+			}
 		}
 	}
 
-	// Create a new grammar without the inlined rules.
+	// Create a new grammar without the successfully-inlined rules.
 	out := NewGrammar(g.Name)
 	for _, name := range g.RuleOrder {
-		if inlineSet[name] {
+		if inlineSet[name] && inlineBodies[name] != nil {
 			continue // drop inlined rules
 		}
+		outName := name
+		if renamed, ok := hiddenRenames[name]; ok {
+			outName = renamed
+		}
 		rule := substituteInlineRefs(g.Rules[name], inlineBodies)
-		out.Define(name, rule)
+		rule = applyHiddenRenames(rule, hiddenRenames)
+		out.Define(outName, rule)
 	}
 
 	// Copy other fields.
 	for _, extra := range g.Extras {
-		out.Extras = append(out.Extras, substituteInlineRefs(extra, inlineBodies))
+		r := substituteInlineRefs(extra, inlineBodies)
+		out.Extras = append(out.Extras, applyHiddenRenames(r, hiddenRenames))
 	}
+	// Rename conflict group entries too.
 	for _, group := range g.Conflicts {
-		out.Conflicts = append(out.Conflicts, group)
+		outGroup := make([]string, len(group))
+		for i, name := range group {
+			if renamed, ok := hiddenRenames[name]; ok {
+				outGroup[i] = renamed
+			} else {
+				outGroup[i] = name
+			}
+		}
+		out.Conflicts = append(out.Conflicts, outGroup)
 	}
 	for _, ext := range g.Externals {
-		out.Externals = append(out.Externals, substituteInlineRefs(ext, inlineBodies))
+		r := substituteInlineRefs(ext, inlineBodies)
+		out.Externals = append(out.Externals, applyHiddenRenames(r, hiddenRenames))
 	}
 	out.Word = g.Word
 	out.Supertypes = g.Supertypes
@@ -1911,6 +1938,24 @@ func expandInlineRules(g *Grammar) *Grammar {
 
 // choiceWidth returns the number of top-level Choice alternatives in a rule.
 // For non-Choice rules, returns 1.
+func choiceWidth(r *Rule) int {
+	if r == nil {
+		return 1
+	}
+	// Unwrap precedence wrappers.
+	for r.Kind == RulePrec || r.Kind == RulePrecLeft || r.Kind == RulePrecRight || r.Kind == RulePrecDynamic {
+		if len(r.Children) > 0 {
+			r = r.Children[0]
+		} else {
+			return 1
+		}
+	}
+	if r.Kind == RuleChoice {
+		return len(r.Children)
+	}
+	return 1
+}
+
 // substituteInlineRefs replaces RuleSymbol references to inline rules with
 // cloned copies of the inline rule body.
 func substituteInlineRefs(r *Rule, inlineBodies map[string]*Rule) *Rule {
@@ -1938,6 +1983,36 @@ func substituteInlineRefs(r *Rule, inlineBodies map[string]*Rule) *Rule {
 	return &out
 }
 
+// applyHiddenRenames renames symbol references according to the hidden renames map.
+func applyHiddenRenames(r *Rule, renames map[string]string) *Rule {
+	if r == nil || len(renames) == 0 {
+		return r
+	}
+	if r.Kind == RuleSymbol {
+		if newName, ok := renames[r.Value]; ok {
+			cp := *r
+			cp.Value = newName
+			return &cp
+		}
+		return r
+	}
+	if len(r.Children) == 0 {
+		return r
+	}
+	out := *r
+	out.Children = make([]*Rule, len(r.Children))
+	changed := false
+	for i, c := range r.Children {
+		out.Children[i] = applyHiddenRenames(c, renames)
+		if out.Children[i] != c {
+			changed = true
+		}
+	}
+	if !changed {
+		return r
+	}
+	return &out
+}
 
 // scanInnerPrec walks a rule tree looking for prec wrappers inside seq elements.
 // In tree-sitter, prec.left(N, $.symbol) inside a seq propagates the precedence
