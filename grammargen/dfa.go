@@ -270,7 +270,16 @@ func subsetConstruction(n *nfa) []dfaState {
 				continue
 			}
 			targetID := addState(targetStates)
-			dfaStates[curID].transitions = append(dfaStates[curID].transitions,
+			transitions := dfaStates[curID].transitions
+			if n := len(transitions); n > 0 {
+				last := &transitions[n-1]
+				if last.nextState == targetID && last.hi+1 == r.lo {
+					last.hi = r.hi
+					dfaStates[curID].transitions = transitions
+					continue
+				}
+			}
+			dfaStates[curID].transitions = append(transitions,
 				dfaTransition{lo: r.lo, hi: r.hi, nextState: targetID})
 		}
 	}
