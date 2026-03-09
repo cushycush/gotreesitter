@@ -138,7 +138,7 @@ var ParseSmokeSamples = map[string]string{
 	"perl":    "my $x = 1;\n",
 	"prolog":  "parent(tom, bob).\n",
 	"mojo":    "fn main():\n    print(1)\n",
-	"wolfram": "f[x_] := x^2\nTable[f[i], {i, 10}]\n",
+	"wolfram": "f[x] := x^2\nTable[f[i], {i, 10}]\n",
 	"norg":    "* Heading\n  Some text here.\n",
 
 	// Phase 8: remaining languages (complete coverage)

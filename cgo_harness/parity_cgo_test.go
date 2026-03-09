@@ -42,7 +42,6 @@ var knownDegradedStructural = map[string]string{
 	"fortran":  "smoke sample parse shape diverges from C",
 	"less":     "smoke sample parse shape diverges from C",
 	"nginx":    "smoke sample parse shape diverges from C",
-	"wolfram":  "smoke sample parse shape diverges from C",
 }
 
 type parityCase struct {
