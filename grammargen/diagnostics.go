@@ -369,25 +369,6 @@ func generateWithReport(g *Grammar, opts reportBuildOptions) (*GenerateReport, e
 
 	// Apply local LR(1) rebuild if enabled and candidates exist.
 	if g.EnableLRSplitting && len(report.SplitCandidates) > 0 {
-		// Snapshot tables for global rollback.
-		origActionTable := make(map[int]map[int][]lrAction, len(tables.ActionTable))
-		for s, acts := range tables.ActionTable {
-			m := make(map[int][]lrAction, len(acts))
-			for sym, a := range acts {
-				m[sym] = append([]lrAction{}, a...)
-			}
-			origActionTable[s] = m
-		}
-		origGotoTable := make(map[int]map[int]int, len(tables.GotoTable))
-		for s, gotos := range tables.GotoTable {
-			m := make(map[int]int, len(gotos))
-			for sym, t := range gotos {
-				m[sym] = t
-			}
-			origGotoTable[s] = m
-		}
-		origStateCount := tables.StateCount
-
 		// Count pre-split GLR conflicts.
 		glrBefore := 0
 		for _, d := range diags {
@@ -420,9 +401,15 @@ func generateWithReport(g *Grammar, opts reportBuildOptions) (*GenerateReport, e
 
 		if glrAfter >= glrBefore {
 			// Global rollback: splitting didn't reduce GLR conflicts.
-			tables.ActionTable = origActionTable
-			tables.GotoTable = origGotoTable
-			tables.StateCount = origStateCount
+			// Rebuild the original resolved tables instead of retaining a
+			// whole-table snapshot on the success path.
+			tables, err = buildLRTables(ng)
+			if err != nil {
+				return nil, fmt.Errorf("rebuild LR tables after split rollback: %w", err)
+			}
+			if err := resolveConflicts(tables, ng); err != nil {
+				return nil, fmt.Errorf("resolve conflicts after split rollback: %w", err)
+			}
 			sr.StatesSplit = 0
 			sr.NewStatesAdded = 0
 			sr.ConflictsAfter = sr.ConflictsBefore
