@@ -1964,7 +1964,10 @@ func substituteInlineRefs(r *Rule, inlineBodies map[string]*Rule) *Rule {
 	}
 	if r.Kind == RuleSymbol {
 		if body, ok := inlineBodies[r.Value]; ok {
-			return cloneRule(body)
+			// Recursively substitute inside the cloned body so that
+			// nested inline rules (e.g. _lhs_expression → _identifier)
+			// are fully expanded.
+			return substituteInlineRefs(cloneRule(body), inlineBodies)
 		}
 		return r
 	}
