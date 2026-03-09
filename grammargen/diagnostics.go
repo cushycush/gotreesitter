@@ -334,8 +334,7 @@ func RunTests(g *Grammar) error {
 	return nil
 }
 
-// GenerateWithReport compiles a grammar and returns a full diagnostic report.
-func GenerateWithReport(g *Grammar) (*GenerateReport, error) {
+func generateWithReport(g *Grammar, includeArtifacts bool) (*GenerateReport, error) {
 	report := &GenerateReport{}
 
 	// Validate first.
@@ -444,6 +443,14 @@ func GenerateWithReport(g *Grammar) (*GenerateReport, error) {
 	// and optional splitting, since both modify the tables).
 	addNonterminalExtraChains(tables, ng)
 
+	report.SymbolCount = len(ng.Symbols)
+	report.StateCount = tables.StateCount + 1 // buildParseTables inserts error state 0
+	report.TokenCount = ng.TokenCount()
+
+	if !includeArtifacts {
+		return report, nil
+	}
+
 	// Build lex DFA.
 	tokenCount := ng.TokenCount()
 	immediateTokens := make(map[int]bool)
@@ -517,4 +524,16 @@ func GenerateWithReport(g *Grammar) (*GenerateReport, error) {
 	report.Blob = blob
 
 	return report, nil
+}
+
+// GenerateWithReport compiles a grammar and returns a full diagnostic report.
+func GenerateWithReport(g *Grammar) (*GenerateReport, error) {
+	return generateWithReport(g, true)
+}
+
+// generateDiagnosticsReport runs the report pipeline but skips lex/assemble/blob
+// work. It is intended for large-grammar diagnostic/perf tests that only need
+// conflicts, split metadata, warnings, and final table counts.
+func generateDiagnosticsReport(g *Grammar) (*GenerateReport, error) {
+	return generateWithReport(g, false)
 }

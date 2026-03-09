@@ -53,7 +53,7 @@ func TestSplitOracleRealGrammars(t *testing.T) {
 				t.Skipf("import failed: %v", err)
 			}
 
-			report, err := GenerateWithReport(g)
+			report, err := generateDiagnosticsReport(g)
 			if err != nil {
 				t.Skipf("generate failed: %v", err)
 			}
@@ -160,7 +160,7 @@ func TestSplitRebuildRealGrammars(t *testing.T) {
 			}
 
 			// Run WITHOUT splitting to get baseline (fresh grammar).
-			reportBefore, err := GenerateWithReport(g1)
+			reportBefore, err := generateDiagnosticsReport(g1)
 			if err != nil {
 				t.Skipf("generate (no split) failed: %v", err)
 			}
@@ -171,7 +171,9 @@ func TestSplitRebuildRealGrammars(t *testing.T) {
 					glrBefore++
 				}
 			}
+			statesBefore := reportBefore.StateCount
 			candidatesBefore := len(reportBefore.SplitCandidates)
+			reportBefore = nil
 
 			// Run WITH splitting (fresh grammar to avoid mutation artifacts).
 			g2, err := ImportGrammarJSON(data)
@@ -179,7 +181,7 @@ func TestSplitRebuildRealGrammars(t *testing.T) {
 				t.Skipf("import (split) failed: %v", err)
 			}
 			g2.EnableLRSplitting = true
-			reportAfter, err := GenerateWithReport(g2)
+			reportAfter, err := generateDiagnosticsReport(g2)
 			if err != nil {
 				t.Skipf("generate (with split) failed: %v", err)
 			}
@@ -195,7 +197,7 @@ func TestSplitRebuildRealGrammars(t *testing.T) {
 			sr := reportAfter.SplitResult
 
 			t.Logf("SPLIT EVAL: %s", tgt.name)
-			t.Logf("  states: %d → %d", reportBefore.StateCount, reportAfter.StateCount)
+			t.Logf("  states: %d → %d", statesBefore, reportAfter.StateCount)
 			t.Logf("  GLR conflicts: %d → %d (delta %+d)", glrBefore, glrAfter, glrAfter-glrBefore)
 			t.Logf("  candidates: %d → %d", candidatesBefore, candidatesAfter)
 			if sr != nil {
@@ -207,7 +209,7 @@ func TestSplitRebuildRealGrammars(t *testing.T) {
 			f, err := os.Create(summaryPath)
 			if err == nil {
 				fmt.Fprintf(f, "lang=%s\n", tgt.name)
-				fmt.Fprintf(f, "states_before=%d states_after=%d\n", reportBefore.StateCount, reportAfter.StateCount)
+				fmt.Fprintf(f, "states_before=%d states_after=%d\n", statesBefore, reportAfter.StateCount)
 				fmt.Fprintf(f, "glr_before=%d glr_after=%d delta=%+d\n", glrBefore, glrAfter, glrAfter-glrBefore)
 				fmt.Fprintf(f, "candidates_before=%d candidates_after=%d\n", candidatesBefore, candidatesAfter)
 				if sr != nil {
