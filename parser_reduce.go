@@ -760,7 +760,7 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 		if visible {
 			children[out] = n
 			if fieldIDs != nil {
-				if !inherited {
+				if !inherited && !p.shouldSuppressVisibleDirectField(n, fid) {
 					fieldIDs[out] = fid
 					if fid != 0 {
 						fieldSources[out] = fieldSourceDirect
@@ -834,7 +834,47 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 			fieldSources = fieldSources[:out]
 		}
 	}
+	if fieldIDs != nil {
+		p.suppressReducedChildFields(children, fieldIDs, fieldSources)
+	}
 	return children, fieldIDs, fieldSources
+}
+
+func (p *Parser) shouldSuppressVisibleDirectField(n *Node, fid FieldID) bool {
+	if p == nil || p.language == nil || n == nil || fid == 0 {
+		return false
+	}
+	if p.language.Name != "dart" {
+		return false
+	}
+	if int(fid) >= len(p.language.FieldNames) || p.language.FieldNames[fid] != "name" {
+		return false
+	}
+	switch n.Type(p.language) {
+	case "constructor_param", "super_formal_parameter":
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *Parser) suppressReducedChildFields(children []*Node, fieldIDs []FieldID, fieldSources []uint8) {
+	if p == nil || len(children) == 0 || len(fieldIDs) == 0 {
+		return
+	}
+	limit := len(children)
+	if len(fieldIDs) < limit {
+		limit = len(fieldIDs)
+	}
+	for i := 0; i < limit; i++ {
+		if !p.shouldSuppressVisibleDirectField(children[i], fieldIDs[i]) {
+			continue
+		}
+		fieldIDs[i] = 0
+		if fieldSources != nil && i < len(fieldSources) {
+			fieldSources[i] = fieldSourceNone
+		}
+	}
 }
 
 func buildReduceChildrenNoAliasNoFields(entries []stackEntry, start, end int, parentSymbol Symbol, symbolMeta []SymbolMetadata, arena *nodeArena) []*Node {

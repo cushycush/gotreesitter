@@ -340,13 +340,18 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 		}
 
 		candVisible := int(candTok.Symbol) < len(d.language.SymbolMetadata) && d.language.SymbolMetadata[candTok.Symbol].Visible
+		splitPreference := 0
+		if candTok.StartByte == bestTok.StartByte {
+			splitPreference = d.compareDartAngleTokenPreference(candTok, bestTok)
+		}
 		better := !bestFound ||
 			candTok.StartByte < bestTok.StartByte ||
-			(candTok.StartByte == bestTok.StartByte && d.preferSpecificTokenOnExactMatch(candTok, candEndPos, bestTok, bestEndPos)) ||
-			(candTok.StartByte == bestTok.StartByte && score > bestScore) ||
-			(candTok.StartByte == bestTok.StartByte && score == bestScore && candTok.EndByte > bestTok.EndByte) ||
-			(candTok.StartByte == bestTok.StartByte && score == bestScore && candTok.EndByte == bestTok.EndByte && candEndPos > bestEndPos) ||
-			(candTok.StartByte == bestTok.StartByte && score == bestScore && candTok.EndByte == bestTok.EndByte && candEndPos == bestEndPos && candVisible && !bestVisible)
+			(candTok.StartByte == bestTok.StartByte && splitPreference > 0) ||
+			(candTok.StartByte == bestTok.StartByte && splitPreference == 0 && candEndPos > bestEndPos) ||
+			(candTok.StartByte == bestTok.StartByte && splitPreference == 0 && candEndPos == bestEndPos && candTok.EndByte > bestTok.EndByte) ||
+			(candTok.StartByte == bestTok.StartByte && splitPreference == 0 && candEndPos == bestEndPos && candTok.EndByte == bestTok.EndByte && d.preferSpecificTokenOnExactMatch(candTok, candEndPos, bestTok, bestEndPos)) ||
+			(candTok.StartByte == bestTok.StartByte && splitPreference == 0 && candEndPos == bestEndPos && candTok.EndByte == bestTok.EndByte && score > bestScore) ||
+			(candTok.StartByte == bestTok.StartByte && splitPreference == 0 && candEndPos == bestEndPos && candTok.EndByte == bestTok.EndByte && score == bestScore && candVisible && !bestVisible)
 		if better {
 			bestFound = true
 			bestScore = score
@@ -429,6 +434,24 @@ func (d *dfaTokenSource) preferSpecificTokenOnExactMatch(candTok Token, candEndP
 		return candMeta.Visible
 	}
 	return candMeta.Visible && !candMeta.Named && bestMeta.Visible && bestMeta.Named
+}
+
+func (d *dfaTokenSource) compareDartAngleTokenPreference(candTok, bestTok Token) int {
+	if d == nil || d.language == nil || d.language.Name != "dart" {
+		return 0
+	}
+	if int(candTok.Symbol) >= len(d.language.SymbolNames) || int(bestTok.Symbol) >= len(d.language.SymbolNames) {
+		return 0
+	}
+	candName := d.language.SymbolNames[candTok.Symbol]
+	bestName := d.language.SymbolNames[bestTok.Symbol]
+	if candName == ">" && bestName == ">>" {
+		return 1
+	}
+	if candName == ">>" && bestName == ">" {
+		return -1
+	}
+	return 0
 }
 
 func (d *dfaTokenSource) sameSymbolName(a, b Symbol) bool {

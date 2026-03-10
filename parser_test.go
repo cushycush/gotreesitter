@@ -1709,6 +1709,92 @@ func TestBuildReduceChildrenDirectFieldWinsOverInheritedEntriesOnSameChild(t *te
 	}
 }
 
+func TestBuildReduceChildrenDartConstructorParamDoesNotReceiveDirectNameField(t *testing.T) {
+	lang := &Language{
+		Name:         "dart",
+		SymbolNames:  []string{"EOF", "formal_parameter", "constructor_param", "this", ".", "identifier"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF", Visible: false, Named: false},
+			{Name: "formal_parameter", Visible: true, Named: true},
+			{Name: "constructor_param", Visible: true, Named: true},
+			{Name: "this", Visible: true, Named: true},
+			{Name: ".", Visible: true, Named: false},
+			{Name: "identifier", Visible: true, Named: true},
+		},
+		FieldNames: []string{"", "name"},
+		FieldMapSlices: [][2]uint16{
+			{0, 1},
+		},
+		FieldMapEntries: []FieldMapEntry{
+			{FieldID: 1, ChildIndex: 0, Inherited: false},
+		},
+	}
+
+	parser := NewParser(lang)
+	arena := newNodeArena(arenaClassFull)
+	thisLeaf := newLeafNodeInArena(arena, 3, true, 0, 4, Point{}, Point{Column: 4})
+	dot := newLeafNodeInArena(arena, 4, false, 4, 5, Point{Column: 4}, Point{Column: 5})
+	name := newLeafNodeInArena(arena, 5, true, 5, 6, Point{Column: 5}, Point{Column: 6})
+	constructorParam := newParentNodeInArena(arena, 2, true, []*Node{thisLeaf, dot, name}, nil, 0)
+
+	children, fieldIDs, fieldSources := parser.buildReduceChildren([]stackEntry{{node: constructorParam}}, 0, 1, 1, 1, 0, arena)
+	if got, want := len(children), 1; got != want {
+		t.Fatalf("len(children) = %d, want %d", got, want)
+	}
+	if got := fieldIDs[0]; got != 0 {
+		t.Fatalf("fieldIDs[0] = %d, want 0", got)
+	}
+	if got := fieldSourceAt(fieldSources, 0); got != 0 {
+		t.Fatalf("fieldSources[0] = %d, want 0", got)
+	}
+}
+
+func TestBuildReduceChildrenDartHiddenConstructorParamDoesNotReceiveNameField(t *testing.T) {
+	lang := &Language{
+		Name:        "dart",
+		SymbolNames: []string{"EOF", "formal_parameter", "_hidden", "constructor_param", "this", ".", "identifier"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF", Visible: false, Named: false},
+			{Name: "formal_parameter", Visible: true, Named: true},
+			{Name: "_hidden", Visible: false, Named: false},
+			{Name: "constructor_param", Visible: true, Named: true},
+			{Name: "this", Visible: true, Named: true},
+			{Name: ".", Visible: true, Named: false},
+			{Name: "identifier", Visible: true, Named: true},
+		},
+		FieldNames: []string{"", "name"},
+		FieldMapSlices: [][2]uint16{
+			{0, 1},
+		},
+		FieldMapEntries: []FieldMapEntry{
+			{FieldID: 1, ChildIndex: 0, Inherited: false},
+		},
+	}
+
+	parser := NewParser(lang)
+	arena := newNodeArena(arenaClassFull)
+	thisLeaf := newLeafNodeInArena(arena, 4, true, 0, 4, Point{}, Point{Column: 4})
+	dot := newLeafNodeInArena(arena, 5, false, 4, 5, Point{Column: 4}, Point{Column: 5})
+	name := newLeafNodeInArena(arena, 6, true, 5, 6, Point{Column: 5}, Point{Column: 6})
+	constructorParam := newParentNodeInArena(arena, 3, true, []*Node{thisLeaf, dot, name}, nil, 0)
+	hidden := newParentNodeInArena(arena, 2, false, []*Node{constructorParam}, []FieldID{1}, 0)
+	hidden.fieldSources = []uint8{fieldSourceDirect}
+
+	children, fieldIDs, fieldSources := parser.buildReduceChildren([]stackEntry{{node: hidden}}, 0, 1, 1, 1, 0, arena)
+	if got, want := len(children), 1; got != want {
+		t.Fatalf("len(children) = %d, want %d", got, want)
+	}
+	if got, want := children[0].Type(lang), "constructor_param"; got != want {
+		t.Fatalf("children[0].Type() = %q, want %q", got, want)
+	}
+	if got := fieldIDs[0]; got != 0 {
+		t.Fatalf("fieldIDs[0] = %d, want 0", got)
+	}
+	if got := fieldSourceAt(fieldSources, 0); got != 0 {
+		t.Fatalf("fieldSources[0] = %d, want 0", got)
+	}
+}
+
 func TestBuildReduceChildrenNoAliasNoFieldsInlinesHiddenChildren(t *testing.T) {
 	lang := &Language{
 		SymbolNames: []string{"EOF", "_hidden", "identifier", "operator"},
@@ -2131,6 +2217,38 @@ func TestBuildResultFromNodesKeepsExpectedRootForValidMultipleFragments(t *testi
 	}
 	if root.HasError() {
 		t.Fatal("expected valid multi-fragment root to stay error-free")
+	}
+	tree.Release()
+}
+
+func TestBuildResultFromNodesKeepsDartProgramRootWhenOnlyChildNodesHaveErrors(t *testing.T) {
+	lang := &Language{
+		Name:        "dart",
+		SymbolNames: []string{"library_name", "class_definition", "program"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "library_name", Visible: true, Named: true},
+			{Name: "class_definition", Visible: true, Named: true},
+			{Name: "program", Visible: true, Named: true},
+		},
+	}
+	parser := &Parser{language: lang, hasRootSymbol: true, rootSymbol: 2}
+	arena := acquireNodeArena(arenaClassFull)
+	source := []byte("library;\nclass A {}\n")
+
+	library := newLeafNodeInArena(arena, 0, true, 0, 8, Point{}, Point{Column: 8})
+	library.hasError = true
+	classDef := newLeafNodeInArena(arena, 1, true, 9, 19, Point{Row: 1}, Point{Row: 1, Column: 10})
+
+	tree := parser.buildResultFromNodes([]*Node{library, classDef}, source, arena, nil, nil, nil)
+	if tree == nil || tree.RootNode() == nil {
+		t.Fatal("buildResultFromNodes returned nil tree/root")
+	}
+	root := tree.RootNode()
+	if got := root.Type(lang); got != "program" {
+		t.Fatalf("root type = %q, want %q", got, "program")
+	}
+	if !root.HasError() {
+		t.Fatal("expected program root to retain HasError=true when a child has error")
 	}
 	tree.Release()
 }
