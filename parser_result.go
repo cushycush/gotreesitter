@@ -316,6 +316,9 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, lang *Language) {
 	normalizeDVariableStorageClassWrappers(root, lang)
 	normalizeFortranStatementLineBreaks(root, source, lang)
 	normalizeHaskellImportsSpan(root, source, lang)
+	normalizeHaskellZeroWidthTokens(root, lang)
+	normalizeHaskellRootImportField(root, lang)
+	normalizeHaskellDeclarationsSpan(root, source, lang)
 	normalizeIniSectionStarts(root, lang)
 	normalizeMakeConditionalConsequenceFields(root, lang)
 	normalizeNginxAttributeLineBreaks(root, source, lang)
@@ -1891,6 +1894,78 @@ func normalizeHaskellImportsSpan(root *Node, source []byte, lang *Language) {
 		}
 		left.endByte = right.startByte
 		left.endPoint = advancePointByBytes(left.endPoint, gap)
+	}
+}
+
+func normalizeHaskellZeroWidthTokens(root *Node, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "haskell" || len(root.children) == 0 {
+		return
+	}
+	filtered := root.children[:0]
+	for _, child := range root.children {
+		if child == nil {
+			continue
+		}
+		if child.Type(lang) == "_token1" && child.startByte == child.endByte {
+			continue
+		}
+		filtered = append(filtered, child)
+	}
+	root.children = filtered
+}
+
+func normalizeHaskellRootImportField(root *Node, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "haskell" || len(root.children) == 0 {
+		return
+	}
+	if len(lang.FieldNames) == 0 {
+		return
+	}
+	for i, child := range root.children {
+		if child == nil {
+			continue
+		}
+		fid := FieldID(0)
+		for j, name := range lang.FieldNames {
+			if name == child.Type(lang) {
+				fid = FieldID(j)
+				break
+			}
+		}
+		if fid == 0 {
+			continue
+		}
+		if len(root.fieldIDs) < len(root.children) {
+			fieldIDs := make([]FieldID, len(root.children))
+			copy(fieldIDs, root.fieldIDs)
+			root.fieldIDs = fieldIDs
+		}
+		if len(root.fieldSources) < len(root.children) {
+			fieldSources := make([]uint8, len(root.children))
+			copy(fieldSources, root.fieldSources)
+			root.fieldSources = fieldSources
+		}
+		root.fieldIDs[i] = fid
+		root.fieldSources[i] = fieldSourceInherited
+	}
+}
+
+func normalizeHaskellDeclarationsSpan(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "haskell" || len(source) == 0 {
+		return
+	}
+	for _, child := range root.children {
+		if child == nil || child.Type(lang) != "declarations" {
+			continue
+		}
+		if child.endByte >= root.endByte || root.endByte > uint32(len(source)) {
+			continue
+		}
+		gap := source[child.endByte:root.endByte]
+		if !bytesAreTrivia(gap) {
+			continue
+		}
+		extendNodeEndTo(child, root.endByte, source)
 	}
 }
 
