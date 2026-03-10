@@ -54,6 +54,29 @@ func TestSelectFilesByBucketKeepsSmallMediumLargeWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestSelectFilesByBucketDoesNotRelabelCrossBucketFallbacks(t *testing.T) {
+	candidates := []corpusFile{
+		{RelPath: "medium.kt", Size: 4520},
+		{RelPath: "large.ts", Size: 376385},
+	}
+
+	selected := selectFilesByBucket(candidates, 1, 256, 2000, 16000)
+	if len(selected) != 2 {
+		t.Fatalf("expected 2 selected files, got %d", len(selected))
+	}
+
+	got := map[string]string{}
+	for _, sf := range selected {
+		got[sf.RelPath] = sf.Bucket
+	}
+	if got["medium.kt"] != "medium" {
+		t.Fatalf("medium.kt bucket = %q, want medium", got["medium.kt"])
+	}
+	if got["large.ts"] != "large" {
+		t.Fatalf("large.ts bucket = %q, want large", got["large.ts"])
+	}
+}
+
 func TestCollectCandidatesWithoutExtsSkipsLockfiles(t *testing.T) {
 	tmp := t.TempDir()
 	mustWriteSizedText(t, filepath.Join(tmp, "Cargo.lock"), 512)

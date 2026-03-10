@@ -851,10 +851,7 @@ func selectFilesByBucket(candidates []corpusFile, maxPerBucket, minSmall, minMed
 		}
 	}
 
-	pick := func(bucket string, pool []corpusFile, fallback []corpusFile) []selectedCorpusFile {
-		if len(pool) == 0 {
-			pool = fallback
-		}
+	pick := func(bucket string, pool []corpusFile) []selectedCorpusFile {
 		if len(pool) == 0 {
 			return nil
 		}
@@ -898,9 +895,9 @@ func selectFilesByBucket(candidates []corpusFile, maxPerBucket, minSmall, minMed
 	out := make([]selectedCorpusFile, 0, maxPerBucket*3)
 	used := map[string]struct{}{}
 	for _, bucketPick := range [][]selectedCorpusFile{
-		pick("small", small, all),
-		pick("medium", medium, all),
-		pick("large", large, all),
+		pick("small", small),
+		pick("medium", medium),
+		pick("large", large),
 	} {
 		for _, sf := range bucketPick {
 			if _, ok := used[sf.RelPath]; ok {
