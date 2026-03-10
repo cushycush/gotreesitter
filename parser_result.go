@@ -162,12 +162,22 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 		}
 	}
 	if realRoot != nil {
+		returnRealRoot := !hasExpectedRoot || realRoot.symbol == expectedRootSymbol
 		if reuseState != nil && reuseState.reusedAny {
 			realRoot = cloneNodeInArena(arena, realRoot)
 			realRoot.parent = nil
 			realRoot.childIndex = -1
 		}
-		if len(extras) > 0 {
+		foldExtras := returnRealRoot && len(extras) > 0
+		if foldExtras {
+			for _, e := range allExtras {
+				if e != nil && (e.IsError() || e.HasError()) {
+					foldExtras = false
+					break
+				}
+			}
+		}
+		if foldExtras {
 			// Fold visible extras into the real root as leading/trailing children.
 			merged := make([]*Node, 0, len(extras)+len(realRoot.children))
 			leadingCount := 0
@@ -213,22 +223,26 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 				}
 			}
 		}
-		// Invisible extras should still contribute to the root byte/point range.
-		for _, e := range allExtras {
-			if e.startByte < realRoot.startByte {
-				realRoot.startByte = e.startByte
-				realRoot.startPoint = e.startPoint
-			}
-			if e.endByte > realRoot.endByte {
-				realRoot.endByte = e.endByte
-				realRoot.endPoint = e.endPoint
+		// Invisible extras should still contribute to the final root byte/point range.
+		if returnRealRoot {
+			for _, e := range allExtras {
+				if e.startByte < realRoot.startByte {
+					realRoot.startByte = e.startByte
+					realRoot.startPoint = e.startPoint
+				}
+				if e.endByte > realRoot.endByte {
+					realRoot.endByte = e.endByte
+					realRoot.endPoint = e.endPoint
+				}
 			}
 		}
 		realRoot = repairPythonRootNode(realRoot, arena, p.language)
-		extendNodeToTrailingWhitespace(realRoot, source)
+		if returnRealRoot || !realRoot.hasError {
+			extendNodeToTrailingWhitespace(realRoot, source)
+		}
 		p.normalizeRootSourceStart(realRoot, source)
 		normalizeKnownSpanAttribution(realRoot, source, p.language)
-		if !hasExpectedRoot || realRoot.symbol == expectedRootSymbol {
+		if returnRealRoot {
 			if shouldWireParentLinks {
 				wireParentLinksWithScratch(realRoot, linkScratch)
 			}

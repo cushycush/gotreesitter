@@ -311,6 +311,9 @@ func (n *Node) Text(source []byte) string {
 
 // Type returns the node's type name from the language.
 func (n *Node) Type(lang *Language) string {
+	if n != nil && n.symbol == errorSymbol {
+		return "ERROR"
+	}
 	if int(n.symbol) < len(lang.SymbolNames) {
 		name := lang.SymbolNames[n.symbol]
 		name = unescapePunctuationSymbolName(name)

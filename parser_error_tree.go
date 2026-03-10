@@ -19,7 +19,7 @@ func parseErrorTree(source []byte, lang *Language) *Tree {
 		end.Column++
 	}
 
-	root := NewLeafNode(errorSymbol, false, 0, uint32(len(source)), Point{}, end)
+	root := NewLeafNode(errorSymbol, true, 0, uint32(len(source)), Point{}, end)
 	root.hasError = true
 	return NewTree(root, source, lang)
 }

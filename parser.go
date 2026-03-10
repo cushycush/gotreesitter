@@ -377,6 +377,328 @@ func (p *Parser) tryInsertMissingSingleShift(s *glrStack, tok Token, nodeCount *
 	return true
 }
 
+func nodesFromStack(stack glrStack) []*Node {
+	if len(stack.entries) > 0 {
+		nodes := make([]*Node, 0, len(stack.entries))
+		for _, entry := range stack.entries {
+			if entry.node != nil {
+				nodes = append(nodes, entry.node)
+			}
+		}
+		return nodes
+	}
+	return nodesFromGSS(stack.gss)
+}
+
+func trimTrailingRecoveryEOFErrors(nodes []*Node, eofByte uint32) []*Node {
+	end := len(nodes)
+	for end > 0 {
+		n := nodes[end-1]
+		if n == nil || n.symbol != errorSymbol || n.startByte != eofByte || n.endByte != eofByte {
+			break
+		}
+		if len(n.children) == 0 {
+			end--
+			continue
+		}
+		if len(n.children) != 1 {
+			break
+		}
+		child := n.children[0]
+		if child == nil || child.symbol != errorSymbol || child.startByte != eofByte || child.endByte != eofByte {
+			break
+		}
+		end--
+	}
+	return nodes[:end]
+}
+
+func trimRecoveryWhitespaceTail(n *Node, source []byte) {
+	if n == nil {
+		return
+	}
+	for _, child := range n.children {
+		trimRecoveryWhitespaceTail(child, source)
+	}
+	if len(n.children) == 0 {
+		return
+	}
+	last := n.children[len(n.children)-1]
+	if last == nil || n.endByte <= last.endByte || int(n.endByte) > len(source) || int(last.endByte) > len(source) {
+		return
+	}
+	if len(bytes.TrimSpace(source[last.endByte:n.endByte])) != 0 {
+		return
+	}
+	n.endByte = last.endByte
+	n.endPoint = last.endPoint
+}
+
+func findVisibleSymbolByName(lang *Language, name string, named bool) (Symbol, bool) {
+	if lang == nil {
+		return 0, false
+	}
+	for i, symName := range lang.SymbolNames {
+		if symName != name || i >= len(lang.SymbolMetadata) {
+			continue
+		}
+		meta := lang.SymbolMetadata[i]
+		if !meta.Visible || meta.Named != named {
+			continue
+		}
+		return Symbol(i), true
+	}
+	return 0, false
+}
+
+func normalizeSQLRecoveredMissingNull(root *Node, arena *nodeArena, lang *Language) {
+	if root == nil || arena == nil || lang == nil || lang.Name != "sql" {
+		return
+	}
+	nullParentSym, ok := findVisibleSymbolByName(lang, "NULL", true)
+	if !ok {
+		return
+	}
+	nullLeafSym, ok := findVisibleSymbolByName(lang, "NULL", false)
+	if !ok {
+		return
+	}
+	numberSym, ok := findVisibleSymbolByName(lang, "number", true)
+	if !ok {
+		return
+	}
+	var walk func(*Node)
+	walk = func(parent *Node) {
+		if parent == nil {
+			return
+		}
+		for i, child := range parent.children {
+			if child == nil {
+				continue
+			}
+			walk(child)
+			if parent.Type(lang) != "select_clause_body" || !child.isMissing || child.symbol != numberSym {
+				continue
+			}
+			leaf := newLeafNodeInArena(arena, nullLeafSym, false, child.startByte, child.endByte, child.startPoint, child.endPoint)
+			leaf.isMissing = true
+			leaf.hasError = true
+			repl := newParentNodeInArena(arena, nullParentSym, true, []*Node{leaf}, nil, 0)
+			repl.hasError = true
+			parent.children[i] = repl
+		}
+	}
+	walk(root)
+}
+
+func (p *Parser) tryAdvanceEOFOnSingleStack(s *glrStack, tok Token, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry) bool {
+	if p == nil || p.language == nil || s == nil || s.dead || s.depth() == 0 {
+		return false
+	}
+	parseActions := p.language.ParseActions
+	anyReduced := false
+	const maxEOFRecoverySteps = 256
+	for steps := 0; steps < maxEOFRecoverySteps; steps++ {
+		if s.accepted {
+			return true
+		}
+		actionIdx := p.lookupActionIndex(s.top().state, 0)
+		if actionIdx == 0 || int(actionIdx) >= len(parseActions) {
+			return p.canFinalizeNoActionEOF(s)
+		}
+		actions := parseActions[actionIdx].Actions
+		if len(actions) != 1 {
+			return false
+		}
+		act := actions[0]
+		switch act.Type {
+		case ParseActionReduce:
+			p.applyAction(s, act, tok, &anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, false, nil)
+			if s.dead {
+				return false
+			}
+		case ParseActionAccept:
+			s.accepted = true
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+func (p *Parser) tryInsertMissingSingleShiftAtEOF(s *glrStack, tok Token, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch) bool {
+	if p == nil || p.language == nil || s == nil || s.dead || tok.NoLookahead || tok.Symbol != 0 || tok.StartByte != tok.EndByte {
+		return false
+	}
+
+	state := s.top().state
+	var (
+		candidateSym Symbol
+		candidateAct ParseAction
+		candidateCnt int
+	)
+	p.forEachActionIndexInState(state, func(sym Symbol, idx uint16) bool {
+		if sym == 0 || uint32(sym) >= p.language.TokenCount {
+			return true
+		}
+		if int(sym) >= len(p.language.SymbolMetadata) {
+			return true
+		}
+		meta := p.language.SymbolMetadata[sym]
+		if !meta.Visible || !meta.Named {
+			return true
+		}
+		if int(idx) >= len(p.language.ParseActions) {
+			return true
+		}
+		actions := p.language.ParseActions[idx].Actions
+		if len(actions) != 1 {
+			return true
+		}
+		act := actions[0]
+		if act.Type != ParseActionShift || act.Extra {
+			return true
+		}
+		if p.lookupActionIndex(act.State, 0) == 0 {
+			return true
+		}
+		candidateSym = sym
+		candidateAct = act
+		candidateCnt++
+		return candidateCnt < 2
+	})
+	if candidateCnt != 1 {
+		return false
+	}
+
+	missingTok := Token{
+		Symbol:     candidateSym,
+		StartByte:  tok.StartByte,
+		EndByte:    tok.StartByte,
+		StartPoint: tok.StartPoint,
+		EndPoint:   tok.StartPoint,
+		Missing:    true,
+	}
+	p.applyAction(s, candidateAct, missingTok, new(bool), nodeCount, arena, entryScratch, gssScratch, nil, false, nil)
+	s.shifted = false
+	return true
+}
+
+func (p *Parser) tryRecoverTrailingEOFSuffix(s *glrStack, tok Token, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, source []byte) ([]*Node, bool) {
+	if p == nil || s == nil || s.dead || tok.Symbol != 0 || tok.StartByte != tok.EndByte {
+		return nil, false
+	}
+	entries := s.entries
+	borrowed := false
+	if entries == nil {
+		tmp := []stackEntry(nil)
+		if tmpEntries != nil {
+			tmp = *tmpEntries
+		}
+		entries, borrowed = s.entriesForRead(tmp)
+	}
+	if borrowed && tmpEntries != nil {
+		defer func() {
+			*tmpEntries = entries[:0]
+		}()
+	}
+	if len(entries) == 0 {
+		return nil, false
+	}
+
+	for firstDrop := len(entries) - 1; firstDrop >= 0; firstDrop-- {
+		node := entries[firstDrop].node
+		if node == nil || node.isExtra {
+			continue
+		}
+		if firstDrop == 0 {
+			continue
+		}
+		cuts := []int{firstDrop}
+		if !node.isNamed {
+			cut := firstDrop + 1
+			for cut < len(entries) {
+				trailing := entries[cut].node
+				if trailing == nil || !trailing.isExtra {
+					break
+				}
+				cut++
+			}
+			if cut > firstDrop && cut <= len(entries) {
+				cuts = append(cuts, cut)
+			}
+		}
+		for _, cut := range cuts {
+			prefix := s.cloneWithScratch(gssScratch)
+			if !prefix.truncate(cut) {
+				continue
+			}
+			prefixEOF := tok
+			switch {
+			case cut > 0 && entries[cut-1].node != nil:
+				last := entries[cut-1].node
+				prefixEOF.StartByte = last.endByte
+				prefixEOF.EndByte = last.endByte
+				prefixEOF.StartPoint = last.endPoint
+				prefixEOF.EndPoint = last.endPoint
+			default:
+				prefixEOF.StartByte = node.startByte
+				prefixEOF.EndByte = node.startByte
+				prefixEOF.StartPoint = node.startPoint
+				prefixEOF.EndPoint = node.startPoint
+			}
+			insertedMissing := false
+			if !p.tryAdvanceEOFOnSingleStack(&prefix, prefixEOF, nodeCount, arena, entryScratch, gssScratch, tmpEntries) {
+				if !p.tryInsertMissingSingleShiftAtEOF(&prefix, prefixEOF, nodeCount, arena, entryScratch, gssScratch) {
+					continue
+				}
+				insertedMissing = true
+				if !p.tryAdvanceEOFOnSingleStack(&prefix, prefixEOF, nodeCount, arena, entryScratch, gssScratch, tmpEntries) {
+					continue
+				}
+			}
+
+			nodes := nodesFromStack(prefix)
+			if p.hasRootSymbol && len(nodes) == 1 && nodes[0] != nil && nodes[0].symbol == p.rootSymbol {
+				nodes = append([]*Node(nil), nodes[0].children...)
+			}
+			if insertedMissing || cut > firstDrop {
+				nodes = trimTrailingRecoveryEOFErrors(nodes, tok.StartByte)
+				for _, n := range nodes {
+					trimRecoveryWhitespaceTail(n, source)
+				}
+			}
+			recovered := false
+			for i := cut; i < len(entries); i++ {
+				trailing := entries[i].node
+				if trailing == nil {
+					continue
+				}
+				if trailing.symbol == errorSymbol && trailing.startByte == tok.StartByte && trailing.endByte == tok.EndByte {
+					continue
+				}
+				if !recovered && !trailing.isExtra {
+					errNode := newParentNodeInArena(arena, errorSymbol, true, []*Node{trailing}, nil, 0)
+					errNode.hasError = true
+					errNode.isExtra = true
+					nodes = append(nodes, errNode)
+					recovered = true
+					if nodeCount != nil {
+						*nodeCount = *nodeCount + 1
+					}
+					continue
+				}
+				nodes = append(nodes, trailing)
+			}
+			if recovered || insertedMissing || cut > firstDrop {
+				return nodes, true
+			}
+		}
+	}
+	return nil, false
+}
+
 func (p *Parser) parseIncrementalInternal(source []byte, oldTree *Tree, ts TokenSource, timing *incrementalParseTiming) *Tree {
 	// Fast path: unchanged source and no recorded edits.
 	if canReuseUnchangedTree(source, oldTree, p.language) {
@@ -915,6 +1237,17 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 						if len(stacks) == 1 {
 							if p.canFinalizeNoActionEOF(s) {
 								return finalize(stacks, ParseStopAccepted)
+							}
+							if nodes, ok := p.tryRecoverTrailingEOFSuffix(s, tok, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, source); ok {
+								tree := p.buildResultFromNodes(nodes, source, arena, oldTree, &reuseState, &scratch.nodeLinks)
+								if root := tree.RootNode(); root != nil {
+									normalizeSQLRecoveredMissingNull(root, arena, p.language)
+									for _, child := range root.children {
+										trimRecoveryWhitespaceTail(child, source)
+									}
+									wireParentLinksWithScratch(root, &scratch.nodeLinks)
+								}
+								return finalizeTree(tree, ParseStopAccepted)
 							}
 							s.dead = true
 							continue

@@ -32,7 +32,7 @@ func (p *Parser) pushOrExtendErrorNode(s *glrStack, state StateID, tok Token, no
 		}
 	}
 
-	errNode := newLeafNodeInArena(arena, errorSymbol, false,
+	errNode := newLeafNodeInArena(arena, errorSymbol, true,
 		tok.StartByte, tok.EndByte, tok.StartPoint, tok.EndPoint)
 	errNode.hasError = true
 	if trackChildErrors != nil {
@@ -558,7 +558,7 @@ func fieldSourceAt(fieldSources []uint8, i int) uint8 {
 func countEligibleNamedFieldTargets(children []*Node, fieldIDs []FieldID, start, end int) int {
 	count := 0
 	for i := start; i < end; i++ {
-		if children[i] == nil || children[i].isExtra || !children[i].isNamed || fieldIDs[i] != 0 {
+		if children[i] == nil || children[i].isExtra || children[i].isMissing || !children[i].isNamed || fieldIDs[i] != 0 {
 			continue
 		}
 		count++
@@ -569,7 +569,7 @@ func countEligibleNamedFieldTargets(children []*Node, fieldIDs []FieldID, start,
 func countEligibleFieldTargets(children []*Node, fieldIDs []FieldID, start, end int) int {
 	count := 0
 	for i := start; i < end; i++ {
-		if children[i] == nil || children[i].isExtra || fieldIDs[i] != 0 {
+		if children[i] == nil || children[i].isExtra || children[i].isMissing || fieldIDs[i] != 0 {
 			continue
 		}
 		count++
@@ -1006,7 +1006,7 @@ func applyFieldToFlattenedSpan(children []*Node, fieldIDs []FieldID, fieldSource
 	override := !multipleKinds && conflictCount >= 2
 	if override {
 		for j := start; j < end; j++ {
-			if children[j] == nil || children[j].isExtra {
+			if children[j] == nil || children[j].isExtra || children[j].isMissing {
 				continue
 			}
 			if inherited && fieldIDs[j] != 0 && fieldIDs[j] != fid && fieldSourceAt(fieldSources, j) == fieldSourceDirect {
@@ -1021,7 +1021,7 @@ func applyFieldToFlattenedSpan(children []*Node, fieldIDs []FieldID, fieldSource
 	}
 	if !multipleKinds && conflictCount == 1 && preferNamed {
 		for j := start; j < end; j++ {
-			if children[j] == nil || children[j].isExtra || !children[j].isNamed {
+			if children[j] == nil || children[j].isExtra || children[j].isMissing || !children[j].isNamed {
 				continue
 			}
 			if inherited && fieldIDs[j] != 0 && fieldIDs[j] != fid && fieldSourceAt(fieldSources, j) == fieldSourceDirect {
@@ -1066,7 +1066,7 @@ func applyFieldToFlattenedSpan(children []*Node, fieldIDs []FieldID, fieldSource
 		allowAnonymousSingleDirectTarget = namedTargets == 0 && totalTargets == 1
 	}
 	for j := start; !alreadyAssigned && j < end; j++ {
-		if fieldIDs[j] != 0 || children[j] == nil || children[j].isExtra {
+		if fieldIDs[j] != 0 || children[j] == nil || children[j].isExtra || children[j].isMissing {
 			continue
 		}
 		if preferNamed && !allowAnonymousSingleDirectTarget && !children[j].isNamed {
@@ -1078,7 +1078,7 @@ func applyFieldToFlattenedSpan(children []*Node, fieldIDs []FieldID, fieldSource
 		if source == fieldSourceDirect {
 			if namedTargets == 0 && totalTargets == 1 {
 				for k := start; k < end; k++ {
-					if children[k] == nil || children[k].isExtra || fieldIDs[k] != 0 {
+					if children[k] == nil || children[k].isExtra || children[k].isMissing || fieldIDs[k] != 0 {
 						continue
 					}
 					fieldIDs[k] = fid
@@ -1091,7 +1091,7 @@ func applyFieldToFlattenedSpan(children []*Node, fieldIDs []FieldID, fieldSource
 			}
 			if namedTargets > 1 {
 				for k := start; k < end; k++ {
-					if children[k] == nil || children[k].isExtra || !children[k].isNamed || fieldIDs[k] != 0 {
+					if children[k] == nil || children[k].isExtra || children[k].isMissing || !children[k].isNamed || fieldIDs[k] != 0 {
 						continue
 					}
 					fieldIDs[k] = fid
@@ -1103,7 +1103,7 @@ func applyFieldToFlattenedSpan(children []*Node, fieldIDs []FieldID, fieldSource
 			}
 			if namedTargets == 1 && totalTargets > 1 {
 				for k := start; k < end; k++ {
-					if children[k] == nil || children[k].isExtra || fieldIDs[k] != 0 {
+					if children[k] == nil || children[k].isExtra || children[k].isMissing || fieldIDs[k] != 0 {
 						continue
 					}
 					fieldIDs[k] = fid
@@ -1115,7 +1115,7 @@ func applyFieldToFlattenedSpan(children []*Node, fieldIDs []FieldID, fieldSource
 			}
 			if namedTargets == 1 {
 				for k := start; k < end; k++ {
-					if children[k] == nil || children[k].isExtra || !children[k].isNamed || fieldIDs[k] != 0 {
+					if children[k] == nil || children[k].isExtra || children[k].isMissing || !children[k].isNamed || fieldIDs[k] != 0 {
 						continue
 					}
 					fieldIDs[k] = fid
