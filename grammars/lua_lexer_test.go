@@ -74,3 +74,104 @@ func TestParseLuaWithTokenSource(t *testing.T) {
 		t.Fatal("expected lua parse without syntax errors")
 	}
 }
+
+func TestParseLuaWithTokenSourceAfterLineComment(t *testing.T) {
+	lang := LuaLanguage()
+	parser := gotreesitter.NewParser(lang)
+	src := []byte("local function func_one() end\n--             ^ definition.function\nfunc_one()\n")
+	ts, err := NewLuaTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewLuaTokenSource failed: %v", err)
+	}
+
+	tree, err := parser.ParseWithTokenSource(src, ts)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if tree == nil || tree.RootNode() == nil {
+		t.Fatal("parse returned nil root")
+	}
+	if tree.RootNode().HasError() {
+		t.Fatal("expected lua parse without syntax errors")
+	}
+}
+
+func TestParseLuaWithTokenSourceLeadingCommentThenAssignment(t *testing.T) {
+	lang := LuaLanguage()
+	parser := gotreesitter.NewParser(lang)
+	src := []byte("-- stylua: ignore start\n\nlocal _\n\n_ = \"x\"\n")
+	ts, err := NewLuaTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewLuaTokenSource failed: %v", err)
+	}
+
+	tree, err := parser.ParseWithTokenSource(src, ts)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if tree == nil || tree.RootNode() == nil {
+		t.Fatal("parse returned nil root")
+	}
+	if tree.RootNode().HasError() {
+		t.Fatal("expected lua parse without syntax errors")
+	}
+}
+
+func TestParseLuaWithTokenSourceBlockStrings(t *testing.T) {
+	lang := LuaLanguage()
+	parser := gotreesitter.NewParser(lang)
+	cases := []struct {
+		name string
+		src  []byte
+	}{
+		{name: "double_bracket", src: []byte("_ = [[x]]\n")},
+		{name: "equals_bracket", src: []byte("_ = [=[x]=]\n")},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ts, err := NewLuaTokenSource(tc.src, lang)
+			if err != nil {
+				t.Fatalf("NewLuaTokenSource failed: %v", err)
+			}
+
+			tree, err := parser.ParseWithTokenSource(tc.src, ts)
+			if err != nil {
+				t.Fatalf("parse failed: %v", err)
+			}
+			if tree == nil || tree.RootNode() == nil {
+				t.Fatal("parse returned nil root")
+			}
+			if tree.RootNode().HasError() {
+				t.Fatal("expected lua parse without syntax errors")
+			}
+		})
+	}
+}
+
+func TestLuaTokenSourceEscapeZConsumesFollowingWhitespace(t *testing.T) {
+	lang := LuaLanguage()
+	src := []byte("_ = \"x\\z\n    y\"\n")
+	ts, err := NewLuaTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewLuaTokenSource failed: %v", err)
+	}
+
+	found := false
+	for {
+		tok := ts.Next()
+		if tok.Symbol == 0 {
+			break
+		}
+		if tok.Symbol != ts.escapeSymbol {
+			continue
+		}
+		if got, want := tok.Text, "\\z\n    "; got != want {
+			t.Fatalf("escape token text = %q, want %q", got, want)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatal("expected to find escape_sequence token")
+	}
+}

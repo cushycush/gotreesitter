@@ -28,6 +28,8 @@ type LuaTokenSource struct {
 	shebangSymbol    gotreesitter.Symbol
 	commentDashSym   gotreesitter.Symbol
 	commentContent   gotreesitter.Symbol
+	blockStringOpen  gotreesitter.Symbol
+	blockStringClose gotreesitter.Symbol
 	breakSymbol      gotreesitter.Symbol
 	varargSymbol     gotreesitter.Symbol
 
@@ -68,6 +70,8 @@ func NewLuaTokenSource(src []byte, lang *gotreesitter.Language) (*LuaTokenSource
 	ts.shebangSymbol = tl.optional("hash_bang_line")
 	ts.commentDashSym = tl.optional("--")
 	ts.commentContent = tl.optional("comment_content")
+	ts.blockStringOpen = lastTokenSymbolByName(lang, "[[")
+	ts.blockStringClose = lastTokenSymbolByName(lang, "]]")
 	ts.breakSymbol = tl.optional("break_statement")
 	ts.varargSymbol = tl.optional("vararg_expression")
 
@@ -91,6 +95,14 @@ func NewLuaTokenSourceOrEOF(src []byte, lang *gotreesitter.Language) gotreesitte
 		return tokenSourceInitError{sourceLen: uint32(len(src))}
 	}
 	return ts
+}
+
+// Reset reinitializes this token source for a new source buffer.
+func (ts *LuaTokenSource) Reset(src []byte) {
+	ts.src = src
+	ts.cur = newSourceCursor(src)
+	ts.done = false
+	ts.pending = ts.pending[:0]
 }
 
 // SupportsIncrementalReuse reports that LuaTokenSource preserves stable token
@@ -290,6 +302,16 @@ func (ts *LuaTokenSource) commentToken() (gotreesitter.Token, bool) {
 	if ts.commentContent != 0 && contentStart < ts.cur.offset {
 		ts.pending = append(ts.pending, makeToken(ts.commentContent, ts.src, contentStart, ts.cur.offset, contentPt, ts.cur.point()))
 	}
+	if !ts.cur.eof() && ts.cur.peekByte() == '\n' {
+		pt := ts.cur.point()
+		ts.pending = append(ts.pending, gotreesitter.Token{
+			StartByte:   uint32(ts.cur.offset),
+			EndByte:     uint32(ts.cur.offset),
+			StartPoint:  pt,
+			EndPoint:    pt,
+			NoLookahead: true,
+		})
+	}
 	if commentDash.Symbol == 0 {
 		if len(ts.pending) > 0 {
 			tok := ts.pending[0]
@@ -326,33 +348,28 @@ func (ts *LuaTokenSource) stringToken() (gotreesitter.Token, bool) {
 }
 
 func (ts *LuaTokenSource) longStringToken() (gotreesitter.Token, bool) {
-	if !ts.cur.matchLiteralAtCurrent("[[") {
-		return gotreesitter.Token{}, false
-	}
-
-	open := ts.literalSymbols["[["]
-	close := ts.literalSymbols["]]"]
-	if open == 0 {
+	level, ok := ts.longBracketLevelAtCurrent()
+	if !ok || ts.blockStringOpen == 0 {
 		return gotreesitter.Token{}, false
 	}
 
 	start := ts.cur.offset
 	startPt := ts.cur.point()
-	ts.cur.advanceBytes(2)
-	openTok := makeToken(open, ts.src, start, ts.cur.offset, startPt, ts.cur.point())
+	ts.cur.advanceBytes(2 + level)
+	openTok := makeToken(ts.blockStringOpen, ts.src, start, ts.cur.offset, startPt, ts.cur.point())
 
 	contentStart := ts.cur.offset
 	contentPt := ts.cur.point()
 	for !ts.cur.eof() {
-		if ts.cur.matchLiteralAtCurrent("]]") {
+		if ts.matchLongBracketEndAtCurrent(level) {
 			if ts.stringContentSym != 0 && contentStart < ts.cur.offset {
 				ts.pending = append(ts.pending, makeToken(ts.stringContentSym, ts.src, contentStart, ts.cur.offset, contentPt, ts.cur.point()))
 			}
 			closeStart := ts.cur.offset
 			closePt := ts.cur.point()
-			ts.cur.advanceBytes(2)
-			if close != 0 {
-				ts.pending = append(ts.pending, makeToken(close, ts.src, closeStart, ts.cur.offset, closePt, ts.cur.point()))
+			ts.cur.advanceBytes(2 + level)
+			if ts.blockStringClose != 0 {
+				ts.pending = append(ts.pending, makeToken(ts.blockStringClose, ts.src, closeStart, ts.cur.offset, closePt, ts.cur.point()))
 			}
 			return openTok, true
 		}
@@ -363,6 +380,36 @@ func (ts *LuaTokenSource) longStringToken() (gotreesitter.Token, bool) {
 		ts.pending = append(ts.pending, makeToken(ts.stringContentSym, ts.src, contentStart, ts.cur.offset, contentPt, ts.cur.point()))
 	}
 	return openTok, true
+}
+
+func (ts *LuaTokenSource) longBracketLevelAtCurrent() (int, bool) {
+	if ts == nil || ts.cur.offset >= len(ts.src) || ts.src[ts.cur.offset] != '[' {
+		return 0, false
+	}
+	i := ts.cur.offset + 1
+	level := 0
+	for i < len(ts.src) && ts.src[i] == '=' {
+		level++
+		i++
+	}
+	if i >= len(ts.src) || ts.src[i] != '[' {
+		return 0, false
+	}
+	return level, true
+}
+
+func (ts *LuaTokenSource) matchLongBracketEndAtCurrent(level int) bool {
+	if ts == nil || ts.cur.offset >= len(ts.src) || ts.src[ts.cur.offset] != ']' {
+		return false
+	}
+	i := ts.cur.offset + 1
+	for j := 0; j < level; j++ {
+		if i >= len(ts.src) || ts.src[i] != '=' {
+			return false
+		}
+		i++
+	}
+	return i < len(ts.src) && ts.src[i] == ']'
 }
 
 func (ts *LuaTokenSource) scanDelimitedBody(close byte, contentSym, escapeSym, closeSym gotreesitter.Symbol) {
@@ -390,9 +437,7 @@ func (ts *LuaTokenSource) scanDelimitedBody(close byte, contentSym, escapeSym, c
 			escStart := ts.cur.offset
 			escPt := ts.cur.point()
 			ts.cur.advanceByte()
-			if !ts.cur.eof() {
-				ts.cur.advanceRune()
-			}
+			ts.scanEscapeSequenceBody()
 			if escapeSym != 0 {
 				ts.pending = append(ts.pending, makeToken(escapeSym, ts.src, escStart, ts.cur.offset, escPt, ts.cur.point()))
 			}
@@ -405,6 +450,39 @@ func (ts *LuaTokenSource) scanDelimitedBody(close byte, contentSym, escapeSym, c
 
 	if contentSym != 0 && segStart < ts.cur.offset {
 		ts.pending = append(ts.pending, makeToken(contentSym, ts.src, segStart, ts.cur.offset, segPt, ts.cur.point()))
+	}
+}
+
+func (ts *LuaTokenSource) scanEscapeSequenceBody() {
+	if ts == nil || ts.cur.eof() {
+		return
+	}
+	switch ch := ts.cur.peekByte(); {
+	case ch == 'z':
+		ts.cur.advanceByte()
+		ts.cur.skipWhitespace()
+	case isASCIIDigit(ch):
+		for i := 0; i < 3 && !ts.cur.eof() && isASCIIDigit(ts.cur.peekByte()); i++ {
+			ts.cur.advanceByte()
+		}
+	case ch == 'x':
+		ts.cur.advanceByte()
+		for i := 0; i < 2 && !ts.cur.eof() && isASCIIHex(ts.cur.peekByte()); i++ {
+			ts.cur.advanceByte()
+		}
+	case ch == 'u':
+		ts.cur.advanceByte()
+		if !ts.cur.eof() && ts.cur.peekByte() == '{' {
+			ts.cur.advanceByte()
+			for !ts.cur.eof() && isASCIIHex(ts.cur.peekByte()) {
+				ts.cur.advanceByte()
+			}
+			if !ts.cur.eof() && ts.cur.peekByte() == '}' {
+				ts.cur.advanceByte()
+			}
+		}
+	default:
+		ts.cur.advanceRune()
 	}
 }
 
@@ -512,4 +590,15 @@ func isLuaIdentStart(b byte) bool {
 
 func isLuaIdentPart(b byte) bool {
 	return isLuaIdentStart(b) || isASCIIDigit(b)
+}
+
+func lastTokenSymbolByName(lang *gotreesitter.Language, name string) gotreesitter.Symbol {
+	if lang == nil {
+		return 0
+	}
+	syms := lang.TokenSymbolsByName(name)
+	if len(syms) == 0 {
+		return 0
+	}
+	return syms[len(syms)-1]
 }

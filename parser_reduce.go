@@ -636,11 +636,33 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 	symbolMeta := lang.SymbolMetadata
 
 	aliasSeq := p.reduceAliasSequence(productionID)
-	if len(aliasSeq) == 0 && !p.reduceProductionHasFields(productionID) {
+	parentVisible := true
+	if idx := int(parentSymbol); idx < len(symbolMeta) {
+		parentVisible = symbolMeta[parentSymbol].Visible
+	}
+	preserveHiddenFields := false
+	if parentVisible {
+		for i := start; i < end; i++ {
+			n := entries[i].node
+			if n == nil {
+				continue
+			}
+			visible := true
+			if idx := int(n.symbol); idx < len(symbolMeta) {
+				visible = symbolMeta[n.symbol].Visible
+			}
+			if !visible && hiddenTreeHasFieldIDs(n) {
+				preserveHiddenFields = true
+				break
+			}
+		}
+	}
+	if len(aliasSeq) == 0 && !p.reduceProductionHasFields(productionID) && !preserveHiddenFields {
 		return buildReduceChildrenNoAliasNoFields(entries, start, end, parentSymbol, symbolMeta, arena), nil, nil
 	}
 
 	normalizedCount := 0
+	needsFlattenedFieldCarry := false
 	structuralChildIndex := 0
 	for i := start; i < end; i++ {
 		n := entries[i].node
@@ -664,6 +686,9 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 			normalizedCount++
 		} else {
 			normalizedCount += countFlattenedHiddenChildren(n, symbolMeta)
+			if hiddenTreeHasFieldIDs(n) {
+				needsFlattenedFieldCarry = true
+			}
 		}
 	}
 
@@ -671,7 +696,7 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 	children := arena.allocNodeSlice(normalizedCount)
 	var fieldIDs []FieldID
 	var fieldSources []uint8
-	if rawFieldIDs != nil {
+	if rawFieldIDs != nil || needsFlattenedFieldCarry {
 		fieldIDs = arena.allocFieldIDSlice(normalizedCount)
 		fieldSources = make([]uint8, normalizedCount)
 	}
@@ -699,7 +724,6 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 			}
 			structuralChildIndex++
 		}
-
 		visible := true
 		if idx := int(n.symbol); idx < len(symbolMeta) {
 			visible = symbolMeta[n.symbol].Visible
@@ -748,7 +772,10 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 				}
 				if inherited && fieldEnd-spanStart == 1 && !flattenedSpanHasFieldID(fieldIDs, spanStart, fieldEnd, fid) {
 					child := children[spanStart]
-					if child == nil || !nodeHasDirectFieldID(child, fid) {
+					if child == nil {
+						continue
+					}
+					if len(child.children) == 0 && !nodeHasDirectFieldID(child, fid) {
 						continue
 					}
 				}
@@ -1484,8 +1511,18 @@ func (p *Parser) buildFieldIDs(childCount int, productionID uint16, arena *nodeA
 		}
 		entry := p.language.FieldMapEntries[entryIdx]
 		if int(entry.ChildIndex) < len(fieldIDs) {
-			fieldIDs[entry.ChildIndex] = entry.FieldID
-			inherited[entry.ChildIndex] = entry.Inherited
+			idx := entry.ChildIndex
+			switch {
+			case fieldIDs[idx] == 0:
+				fieldIDs[idx] = entry.FieldID
+				inherited[idx] = entry.Inherited
+			case !entry.Inherited && inherited[idx]:
+				fieldIDs[idx] = entry.FieldID
+				inherited[idx] = false
+			case entry.Inherited == inherited[idx]:
+				fieldIDs[idx] = entry.FieldID
+				inherited[idx] = entry.Inherited
+			}
 			assigned = true
 		}
 	}
