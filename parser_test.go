@@ -2478,6 +2478,184 @@ func TestNormalizeSQLRecoveredSelectRootWrapsFlatSelectClause(t *testing.T) {
 	}
 }
 
+func TestNormalizeBashProgramVariableAssignmentsSplitsTopLevelWrapper(t *testing.T) {
+	lang := &Language{
+		Name:        "bash",
+		SymbolNames: []string{"EOF", "program", "comment", "variable_assignments", "variable_assignment", "if_statement"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF", Visible: false, Named: false},
+			{Name: "program", Visible: true, Named: true},
+			{Name: "comment", Visible: true, Named: true},
+			{Name: "variable_assignments", Visible: true, Named: true},
+			{Name: "variable_assignment", Visible: true, Named: true},
+			{Name: "if_statement", Visible: true, Named: true},
+		},
+	}
+
+	arena := newNodeArena(arenaClassFull)
+	comment := newLeafNodeInArena(arena, 2, true, 0, 2, Point{}, Point{Column: 2})
+	assign1 := newLeafNodeInArena(arena, 4, true, 3, 6, Point{Column: 3}, Point{Column: 6})
+	assign2 := newLeafNodeInArena(arena, 4, true, 7, 10, Point{Column: 7}, Point{Column: 10})
+	assigns := newParentNodeInArena(arena, 3, true, []*Node{assign1, assign2}, nil, 0)
+	ifStmt := newLeafNodeInArena(arena, 5, true, 11, 15, Point{Column: 11}, Point{Column: 15})
+	root := newParentNodeInArena(arena, 1, true, []*Node{comment, assigns, ifStmt}, nil, 0)
+
+	normalizeBashProgramVariableAssignments(root, lang)
+
+	if got, want := len(root.children), 4; got != want {
+		t.Fatalf("len(root.children) = %d, want %d", got, want)
+	}
+	if got, want := root.children[1].Type(lang), "variable_assignment"; got != want {
+		t.Fatalf("root.children[1].Type = %q, want %q", got, want)
+	}
+	if got, want := root.children[2].Type(lang), "variable_assignment"; got != want {
+		t.Fatalf("root.children[2].Type = %q, want %q", got, want)
+	}
+	if got, want := root.children[3].Type(lang), "if_statement"; got != want {
+		t.Fatalf("root.children[3].Type = %q, want %q", got, want)
+	}
+}
+
+func TestNormalizeBashProgramVariableAssignmentsSplitsNestedIfWrapper(t *testing.T) {
+	lang := &Language{
+		Name:        "bash",
+		SymbolNames: []string{"EOF", "program", "variable_assignments", "variable_assignment", "if_statement", "fi"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF", Visible: false, Named: false},
+			{Name: "program", Visible: true, Named: true},
+			{Name: "variable_assignments", Visible: true, Named: true},
+			{Name: "variable_assignment", Visible: true, Named: true},
+			{Name: "if_statement", Visible: true, Named: true},
+			{Name: "fi", Visible: true, Named: false},
+		},
+	}
+
+	arena := newNodeArena(arenaClassFull)
+	assign1 := newLeafNodeInArena(arena, 3, true, 0, 3, Point{}, Point{Column: 3})
+	assign2 := newLeafNodeInArena(arena, 3, true, 4, 7, Point{Column: 4}, Point{Column: 7})
+	assigns := newParentNodeInArena(arena, 2, true, []*Node{assign1, assign2}, nil, 0)
+	fi := newLeafNodeInArena(arena, 5, false, 8, 10, Point{Column: 8}, Point{Column: 10})
+	ifStmt := newParentNodeInArena(arena, 4, true, []*Node{assigns, fi}, nil, 0)
+	root := newParentNodeInArena(arena, 1, true, []*Node{ifStmt}, nil, 0)
+
+	normalizeBashProgramVariableAssignments(root, lang)
+
+	if got, want := len(ifStmt.children), 3; got != want {
+		t.Fatalf("len(ifStmt.children) = %d, want %d", got, want)
+	}
+	if got, want := ifStmt.children[0].Type(lang), "variable_assignment"; got != want {
+		t.Fatalf("ifStmt.children[0].Type = %q, want %q", got, want)
+	}
+	if got, want := ifStmt.children[1].Type(lang), "variable_assignment"; got != want {
+		t.Fatalf("ifStmt.children[1].Type = %q, want %q", got, want)
+	}
+}
+
+func TestNormalizeBashProgramVariableAssignmentsAssignsIfConditionField(t *testing.T) {
+	lang := &Language{
+		Name:        "bash",
+		SymbolNames: []string{"EOF", "program", "if_statement", "if", "test_command", "fi"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF", Visible: false, Named: false},
+			{Name: "program", Visible: true, Named: true},
+			{Name: "if_statement", Visible: true, Named: true},
+			{Name: "if", Visible: true, Named: false},
+			{Name: "test_command", Visible: true, Named: true},
+			{Name: "fi", Visible: true, Named: false},
+		},
+		FieldNames: []string{"", "condition"},
+	}
+
+	arena := newNodeArena(arenaClassFull)
+	ifTok := newLeafNodeInArena(arena, 3, false, 0, 2, Point{}, Point{Column: 2})
+	testCmd := newLeafNodeInArena(arena, 4, true, 3, 8, Point{Column: 3}, Point{Column: 8})
+	fi := newLeafNodeInArena(arena, 5, false, 9, 11, Point{Column: 9}, Point{Column: 11})
+	ifStmt := newParentNodeInArena(arena, 2, true, []*Node{ifTok, testCmd, fi}, nil, 0)
+	root := newParentNodeInArena(arena, 1, true, []*Node{ifStmt}, nil, 0)
+
+	normalizeBashProgramVariableAssignments(root, lang)
+
+	if got, want := ifStmt.fieldIDs[1], FieldID(1); got != want {
+		t.Fatalf("ifStmt.fieldIDs[1] = %d, want %d", got, want)
+	}
+	if got, want := ifStmt.fieldSources[1], fieldSourceDirect; got != want {
+		t.Fatalf("ifStmt.fieldSources[1] = %v, want %v", got, want)
+	}
+}
+
+func TestNormalizeBashProgramVariableAssignmentsExtendsIfConditionFieldToThenBoundary(t *testing.T) {
+	lang := &Language{
+		Name:        "bash",
+		SymbolNames: []string{"EOF", "program", "if_statement", "if", "test_command", ";", "then", "fi"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF", Visible: false, Named: false},
+			{Name: "program", Visible: true, Named: true},
+			{Name: "if_statement", Visible: true, Named: true},
+			{Name: "if", Visible: true, Named: false},
+			{Name: "test_command", Visible: true, Named: true},
+			{Name: ";", Visible: true, Named: false},
+			{Name: "then", Visible: true, Named: false},
+			{Name: "fi", Visible: true, Named: false},
+		},
+		FieldNames: []string{"", "condition"},
+	}
+
+	arena := newNodeArena(arenaClassFull)
+	ifTok := newLeafNodeInArena(arena, 3, false, 0, 2, Point{}, Point{Column: 2})
+	testCmd := newLeafNodeInArena(arena, 4, true, 3, 8, Point{Column: 3}, Point{Column: 8})
+	semi := newLeafNodeInArena(arena, 5, false, 8, 9, Point{Column: 8}, Point{Column: 9})
+	thenTok := newLeafNodeInArena(arena, 6, false, 10, 14, Point{Column: 10}, Point{Column: 14})
+	fi := newLeafNodeInArena(arena, 7, false, 15, 17, Point{Column: 15}, Point{Column: 17})
+	ifStmt := newParentNodeInArena(arena, 2, true, []*Node{ifTok, testCmd, semi, thenTok, fi}, nil, 0)
+	root := newParentNodeInArena(arena, 1, true, []*Node{ifStmt}, nil, 0)
+
+	normalizeBashProgramVariableAssignments(root, lang)
+
+	if got, want := ifStmt.fieldIDs[1], FieldID(1); got != want {
+		t.Fatalf("ifStmt.fieldIDs[1] = %d, want %d", got, want)
+	}
+	if got, want := ifStmt.fieldIDs[2], FieldID(1); got != want {
+		t.Fatalf("ifStmt.fieldIDs[2] = %d, want %d", got, want)
+	}
+}
+
+func TestNormalizeBashProgramVariableAssignmentsSplitsSubshellWrapper(t *testing.T) {
+	lang := &Language{
+		Name:        "bash",
+		SymbolNames: []string{"EOF", "program", "subshell", "variable_assignments", "variable_assignment", "(", ")"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF", Visible: false, Named: false},
+			{Name: "program", Visible: true, Named: true},
+			{Name: "subshell", Visible: true, Named: true},
+			{Name: "variable_assignments", Visible: true, Named: true},
+			{Name: "variable_assignment", Visible: true, Named: true},
+			{Name: "(", Visible: true, Named: false},
+			{Name: ")", Visible: true, Named: false},
+		},
+	}
+
+	arena := newNodeArena(arenaClassFull)
+	open := newLeafNodeInArena(arena, 5, false, 0, 1, Point{}, Point{Column: 1})
+	assign1 := newLeafNodeInArena(arena, 4, true, 1, 4, Point{Column: 1}, Point{Column: 4})
+	assign2 := newLeafNodeInArena(arena, 4, true, 5, 8, Point{Column: 5}, Point{Column: 8})
+	assigns := newParentNodeInArena(arena, 3, true, []*Node{assign1, assign2}, nil, 0)
+	close := newLeafNodeInArena(arena, 6, false, 9, 10, Point{Column: 9}, Point{Column: 10})
+	subshell := newParentNodeInArena(arena, 2, true, []*Node{open, assigns, close}, nil, 0)
+	root := newParentNodeInArena(arena, 1, true, []*Node{subshell}, nil, 0)
+
+	normalizeBashProgramVariableAssignments(root, lang)
+
+	if got, want := len(subshell.children), 4; got != want {
+		t.Fatalf("len(subshell.children) = %d, want %d", got, want)
+	}
+	if got, want := subshell.children[1].Type(lang), "variable_assignment"; got != want {
+		t.Fatalf("subshell.children[1].Type = %q, want %q", got, want)
+	}
+	if got, want := subshell.children[2].Type(lang), "variable_assignment"; got != want {
+		t.Fatalf("subshell.children[2].Type = %q, want %q", got, want)
+	}
+}
+
 func TestNormalizeDSourceFileLeadingTriviaSnapsToFirstChild(t *testing.T) {
 	lang := &Language{
 		Name:        "d",
