@@ -307,9 +307,7 @@ func (d *dfaTokenSource) nextTokenForLexState(lexState uint16) Token {
 		return Token{}
 	}
 	if lexState == noLookaheadLexState {
-		tok := d.eofTokenAtLexerPos()
-		tok.NoLookahead = true
-		return tok
+		return d.syntheticEOFLookaheadToken()
 	}
 	return d.lexer.Next(lexState)
 }
@@ -383,7 +381,6 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 	bestEndRow := startRow
 	bestEndCol := startCol
 	bestVisible := false
-	bestOriginActions := 0
 
 	// Deduplicate lex states to avoid redundant scans.
 	seen := make(map[uint16]struct{}, len(d.glrStates))
@@ -417,10 +414,6 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 				score++
 			}
 		}
-		originActionCount := 0
-		if idx := d.lookupActionIndex(st, candTok.Symbol); idx != 0 && int(idx) < len(d.language.ParseActions) {
-			originActionCount = len(d.language.ParseActions[idx].Actions)
-		}
 
 		if score <= 0 {
 			continue
@@ -448,7 +441,6 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 			bestEndRow = candEndRow
 			bestEndCol = candEndCol
 			bestVisible = candVisible
-			bestOriginActions = originActionCount
 		}
 	}
 
