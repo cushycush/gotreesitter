@@ -1,5 +1,7 @@
 package gotreesitter
 
+import "bytes"
+
 // buildResultFromGLR picks the best stack and constructs the final tree.
 // Prefers accepted stacks, then highest score, then most entries.
 func (p *Parser) buildResultFromGLR(stacks []glrStack, source []byte, arena *nodeArena, oldTree *Tree, reuseState *parseReuseState, linkScratch *[]*Node) *Tree {
@@ -331,6 +333,7 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, lang *Language) {
 	normalizePerlJoinAssignmentLists(root, source, lang)
 	normalizePerlPushExpressionLists(root, source, lang)
 	normalizePerlReturnExpressionLists(root, lang)
+	normalizePowerShellProgramShape(root, source, lang)
 	normalizeScalaTrailingCommentOwnership(root, source, lang)
 	normalizeScalaFunctionModifierFields(root, lang)
 	normalizeScalaInterpolatedStringTail(root, source, lang)
@@ -1994,6 +1997,2218 @@ func normalizeSvelteTrailingExtraTrivia(root *Node, source []byte, lang *Languag
 	if len(root.fieldSources) > len(root.children) {
 		root.fieldSources = root.fieldSources[:len(root.children)]
 	}
+}
+
+func normalizePowerShellProgramShape(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "powershell" || root.Type(lang) != "ERROR" || len(root.children) < 4 || len(source) == 0 {
+		return
+	}
+	programSym, ok := symbolByName(lang, "program")
+	if !ok {
+		return
+	}
+	statementListSym, ok := symbolByName(lang, "statement_list")
+	if !ok {
+		return
+	}
+	functionStatementSym, ok := symbolByName(lang, "function_statement")
+	if !ok {
+		return
+	}
+	functionSym, ok := symbolByName(lang, "function")
+	if !ok {
+		return
+	}
+	scriptBlockSym, ok := symbolByName(lang, "script_block")
+	if !ok {
+		return
+	}
+	scriptBlockBodySym, ok := symbolByName(lang, "script_block_body")
+	if !ok {
+		return
+	}
+	closeBraceSym, ok := symbolByName(lang, "}")
+	if !ok {
+		return
+	}
+	pipelineSym, ok := symbolByName(lang, "pipeline")
+	if !ok {
+		return
+	}
+	pipelineChainSym, ok := symbolByName(lang, "pipeline_chain")
+	if !ok {
+		return
+	}
+	commandSym, ok := symbolByName(lang, "command")
+	if !ok {
+		return
+	}
+	commandNameSym, ok := symbolByName(lang, "command_name")
+	if !ok {
+		return
+	}
+	commandElementsSym, ok := symbolByName(lang, "command_elements")
+	if !ok {
+		return
+	}
+	commandArgSepSym, ok := symbolByName(lang, "command_argument_sep")
+	if !ok {
+		return
+	}
+	commandParameterSym, ok := symbolByName(lang, "command_parameter")
+	if !ok {
+		return
+	}
+	arrayLiteralSym, ok := symbolByName(lang, "array_literal_expression")
+	if !ok {
+		return
+	}
+	unaryExprSym, ok := symbolByName(lang, "unary_expression")
+	if !ok {
+		return
+	}
+	variableSym, ok := symbolByName(lang, "variable")
+	if !ok {
+		return
+	}
+	stringLiteralSym, ok := symbolByName(lang, "string_literal")
+	if !ok {
+		return
+	}
+	expandableStringSym, ok := symbolByName(lang, "expandable_string_literal")
+	if !ok {
+		return
+	}
+	genericTokenSym, ok := symbolByName(lang, "generic_token")
+	if !ok {
+		return
+	}
+	spaceSym, ok := symbolByName(lang, " ")
+	if !ok {
+		return
+	}
+
+	statementListIdx := -1
+	for i, child := range root.children {
+		if child != nil && child.Type(lang) == "statement_list" {
+			statementListIdx = i
+			break
+		}
+	}
+	if statementListIdx < 0 || statementListIdx+3 >= len(root.children) {
+		return
+	}
+	spill := root.children[statementListIdx+1:]
+	if !powerShellLooksLikeSpilledFunction(spill, lang) {
+		return
+	}
+	openBrace := spill[2]
+	if openBrace == nil {
+		return
+	}
+	closeBracePos := findMatchingBraceByte(source, int(openBrace.startByte), len(source))
+	if closeBracePos < 0 {
+		return
+	}
+
+	functionStatement := buildPowerShellSpilledFunctionStatement(
+		root.ownerArena, source, lang, spill, closeBracePos,
+		functionStatementSym, functionSym, scriptBlockSym, scriptBlockBodySym, statementListSym, closeBraceSym,
+	)
+	if functionStatement == nil {
+		return
+	}
+	pipelines := buildPowerShellTrailingPipelines(
+		root.ownerArena, source, lang, uint32(closeBracePos+1), root.endByte,
+		pipelineSym, pipelineChainSym, commandSym, commandNameSym, commandElementsSym,
+		commandArgSepSym, commandParameterSym, arrayLiteralSym, unaryExprSym,
+		variableSym, stringLiteralSym, expandableStringSym, genericTokenSym, spaceSym,
+	)
+	if len(pipelines) == 0 {
+		return
+	}
+
+	statementList := cloneNodeInArena(root.ownerArena, root.children[statementListIdx])
+	children := make([]*Node, 0, len(statementList.children)+1+len(pipelines))
+	children = append(children, statementList.children...)
+	children = append(children, functionStatement)
+	children = append(children, pipelines...)
+	if root.ownerArena != nil {
+		buf := root.ownerArena.allocNodeSlice(len(children))
+		copy(buf, children)
+		children = buf
+	}
+	statementList.children = children
+	statementList.fieldIDs = nil
+	statementList.fieldSources = nil
+	statementList.symbol = statementListSym
+	statementList.isNamed = int(statementListSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[statementListSym].Named
+	statementList.hasError = true
+	extendNodeEndTo(statementList, pipelines[len(pipelines)-1].endByte, source)
+
+	out := make([]*Node, 0, statementListIdx+1)
+	out = append(out, root.children[:statementListIdx]...)
+	out = append(out, statementList)
+	if root.ownerArena != nil {
+		buf := root.ownerArena.allocNodeSlice(len(out))
+		copy(buf, out)
+		out = buf
+	}
+	root.children = out
+	root.fieldIDs = nil
+	root.fieldSources = nil
+	root.symbol = programSym
+	root.isNamed = int(programSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[programSym].Named
+	root.hasError = true
+}
+
+func powerShellLooksLikeSpilledFunction(nodes []*Node, lang *Language) bool {
+	if len(nodes) < 4 || lang == nil {
+		return false
+	}
+	head := nodes[0]
+	if head == nil || head.Type(lang) != "ERROR" || len(head.children) != 1 || head.children[0] == nil || head.children[0].Type(lang) != "function" {
+		return false
+	}
+	return nodes[1] != nil && nodes[1].Type(lang) == "function_name" &&
+		nodes[2] != nil && nodes[2].Type(lang) == "{"
+}
+
+func buildPowerShellSpilledFunctionStatement(arena *nodeArena, source []byte, lang *Language, nodes []*Node, closeBracePos int, functionStatementSym, functionSym, scriptBlockSym, scriptBlockBodySym, statementListSym, closeBraceSym Symbol) *Node {
+	if len(nodes) < 4 || nodes[0] == nil || nodes[1] == nil || nodes[2] == nil {
+		return nil
+	}
+	functionLeaf := nodes[0].children[0]
+	functionName := nodes[1]
+	openBrace := nodes[2]
+	scriptEnd := closeBracePos
+	for scriptEnd > int(openBrace.endByte) {
+		switch source[scriptEnd-1] {
+		case ' ', '\t', '\r', '\n':
+			scriptEnd--
+		default:
+			goto trimmed
+		}
+	}
+trimmed:
+	scriptChildren := make([]*Node, 0, len(nodes))
+	for _, child := range nodes[3:] {
+		if child == nil {
+			continue
+		}
+		if int(child.startByte) >= scriptEnd {
+			break
+		}
+		if int(child.endByte) <= scriptEnd {
+			scriptChildren = append(scriptChildren, child)
+			continue
+		}
+		truncated := cloneNodeInArena(arena, child)
+		truncated.children = nil
+		truncated.fieldIDs = nil
+		truncated.fieldSources = nil
+		truncated.endByte = uint32(scriptEnd)
+		truncated.endPoint = advancePointByBytes(truncated.startPoint, source[truncated.startByte:uint32(scriptEnd)])
+		scriptChildren = append(scriptChildren, truncated)
+		break
+	}
+	if len(scriptChildren) == 0 {
+		return nil
+	}
+	if len(scriptChildren) > 0 && scriptChildren[0] != nil && scriptChildren[0].Type(lang) == "param_block" {
+		structured := make([]*Node, 0, len(scriptChildren))
+		structured = append(structured, scriptChildren[0])
+		idx := 1
+		if idx < len(scriptChildren) && scriptChildren[idx] != nil && scriptChildren[idx].Type(lang) == "_statement_terminator" {
+			idx++
+		}
+		for idx < len(scriptChildren) && scriptChildren[idx] != nil && scriptChildren[idx].Type(lang) == "comment" {
+			structured = append(structured, scriptChildren[idx])
+			idx++
+		}
+		if idx < len(scriptChildren) {
+			statementListChildren := recoverPowerShellStatementListChildren(arena, source, lang, scriptChildren[idx:], scriptEnd)
+			if arena != nil {
+				buf := arena.allocNodeSlice(len(statementListChildren))
+				copy(buf, statementListChildren)
+				statementListChildren = buf
+			}
+			statementListNamed := int(statementListSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[statementListSym].Named
+			stmtList := newParentNodeInArena(arena, statementListSym, statementListNamed, statementListChildren, nil, 0)
+			stmtList.hasError = true
+			stmtList.endByte = uint32(scriptEnd)
+			stmtList.endPoint = advancePointByBytes(stmtList.startPoint, source[stmtList.startByte:uint32(scriptEnd)])
+			bodyChildren := []*Node{stmtList}
+			if arena != nil {
+				buf := arena.allocNodeSlice(1)
+				buf[0] = stmtList
+				bodyChildren = buf
+			}
+			scriptBlockBodyNamed := int(scriptBlockBodySym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[scriptBlockBodySym].Named
+			body := newParentNodeInArena(arena, scriptBlockBodySym, scriptBlockBodyNamed, bodyChildren, nil, 0)
+			body.hasError = true
+			for fieldIdx, fieldName := range lang.FieldNames {
+				if fieldName != "statement_list" {
+					continue
+				}
+				ensureNodeFieldStorage(body, len(body.children))
+				body.fieldIDs[0] = FieldID(fieldIdx)
+				body.fieldSources[0] = fieldSourceDirect
+				break
+			}
+			structured = append(structured, body)
+		}
+		scriptChildren = structured
+	}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(scriptChildren))
+		copy(buf, scriptChildren)
+		scriptChildren = buf
+	}
+	scriptBlockNamed := int(scriptBlockSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[scriptBlockSym].Named
+	scriptBlock := newParentNodeInArena(arena, scriptBlockSym, scriptBlockNamed, scriptChildren, nil, 0)
+	scriptBlock.hasError = true
+	for i, child := range scriptBlock.children {
+		if child == nil || child.Type(lang) != "script_block_body" {
+			continue
+		}
+		for fieldIdx, fieldName := range lang.FieldNames {
+			if fieldName != "script_block_body" {
+				continue
+			}
+			ensureNodeFieldStorage(scriptBlock, len(scriptBlock.children))
+			scriptBlock.fieldIDs[i] = FieldID(fieldIdx)
+			scriptBlock.fieldSources[i] = fieldSourceDirect
+			break
+		}
+		break
+	}
+	functionStatementNamed := int(functionStatementSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[functionStatementSym].Named
+	closeBraceStart := advancePointByBytes(Point{}, source[:closeBracePos])
+	closeBraceLeaf := newLeafNodeInArena(arena, closeBraceSym, false, uint32(closeBracePos), uint32(closeBracePos+1), closeBraceStart, advancePointByBytes(closeBraceStart, source[closeBracePos:closeBracePos+1]))
+	children := []*Node{functionLeaf, functionName, openBrace, scriptBlock, closeBraceLeaf}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(children))
+		copy(buf, children)
+		children = buf
+	}
+	fn := newParentNodeInArena(arena, functionStatementSym, functionStatementNamed, children, nil, 0)
+	fn.hasError = true
+	if functionLeaf.symbol != functionSym {
+		functionLeaf = cloneNodeInArena(arena, functionLeaf)
+		functionLeaf.symbol = functionSym
+		functionLeaf.isNamed = int(functionSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[functionSym].Named
+		fn.children[0] = functionLeaf
+	}
+	extendNodeEndTo(fn, uint32(closeBracePos+1), source)
+	return fn
+}
+
+func recoverPowerShellStatementListChildren(arena *nodeArena, source []byte, lang *Language, nodes []*Node, end int) []*Node {
+	if len(nodes) == 0 || lang == nil || len(source) == 0 {
+		return nodes
+	}
+	flattened := flattenPowerShellStatementListChildren(nodes, lang, nil)
+	out := make([]*Node, 0, len(flattened))
+	tailStart := -1
+	for _, child := range flattened {
+		if child == nil {
+			continue
+		}
+		if powerShellIsStatementListChild(child, lang) {
+			out = append(out, child)
+			continue
+		}
+		tailStart = int(child.startByte)
+		break
+	}
+	if tailStart < 0 {
+		return flattened
+	}
+	rebuilt := buildPowerShellRecoveredStatements(arena, source, lang, tailStart, end, flattened)
+	if len(rebuilt) == 0 {
+		return flattened
+	}
+	out = append(out, rebuilt...)
+	return out
+}
+
+func flattenPowerShellStatementListChildren(nodes []*Node, lang *Language, out []*Node) []*Node {
+	for _, node := range nodes {
+		out = flattenPowerShellStatementListChild(node, lang, out)
+	}
+	return out
+}
+
+func flattenPowerShellStatementListChild(node *Node, lang *Language, out []*Node) []*Node {
+	if node == nil || lang == nil {
+		return out
+	}
+	switch node.Type(lang) {
+	case "_statement":
+		if len(node.children) == 1 && node.children[0] != nil {
+			return flattenPowerShellStatementListChild(node.children[0], lang, out)
+		}
+	case "statement_list_repeat1":
+		for _, child := range node.children {
+			out = flattenPowerShellStatementListChild(child, lang, out)
+		}
+		return out
+	}
+	return append(out, node)
+}
+
+func powerShellIsStatementListChild(node *Node, lang *Language) bool {
+	if node == nil || lang == nil {
+		return false
+	}
+	switch node.Type(lang) {
+	case "comment", "pipeline", "if_statement", "try_statement", "flow_control_statement":
+		return true
+	default:
+		return false
+	}
+}
+
+func buildPowerShellRecoveredStatements(arena *nodeArena, source []byte, lang *Language, start, end int, existing []*Node) []*Node {
+	if lang == nil || len(source) == 0 || start >= end {
+		return nil
+	}
+	commentSym, commentNamed, ok := powerShellSymbolMeta(lang, "comment")
+	if !ok {
+		return nil
+	}
+	out := make([]*Node, 0, 16)
+	i := powerShellSkipTrivia(source, start, end)
+	for i < end {
+		switch {
+		case source[i] == '#':
+			lineEnd := powerShellLineEnd(source, i, end)
+			startPoint := advancePointByBytes(Point{}, source[:i])
+			comment := newLeafNodeInArena(arena, commentSym, commentNamed, uint32(i), uint32(lineEnd), startPoint, advancePointByBytes(startPoint, source[i:lineEnd]))
+			comment.isExtra = true
+			out = append(out, comment)
+			i = powerShellSkipTrivia(source, lineEnd, end)
+		case powerShellKeywordAt(source, i, "if"):
+			stmt, next := buildPowerShellRecoveredIfStatement(arena, source, lang, i, end, existing)
+			if stmt == nil || next <= i {
+				return out
+			}
+			out = append(out, stmt)
+			i = powerShellSkipTrivia(source, next, end)
+		case powerShellKeywordAt(source, i, "try"):
+			stmt, next := buildPowerShellRecoveredTryStatement(arena, source, lang, i, end)
+			if stmt == nil || next <= i {
+				return out
+			}
+			out = append(out, stmt)
+			i = powerShellSkipTrivia(source, next, end)
+		case powerShellKeywordAt(source, i, "throw"):
+			lineEnd := powerShellLineEnd(source, i, end)
+			if stmt := buildPowerShellRecoveredFlowControlStatement(arena, source, lang, i, lineEnd); stmt != nil {
+				out = append(out, stmt)
+			}
+			i = powerShellSkipTrivia(source, lineEnd, end)
+		default:
+			lineEnd := powerShellLineEnd(source, i, end)
+			if stmt := buildPowerShellRecoveredPipeline(arena, source, lang, i, lineEnd); stmt != nil {
+				out = append(out, stmt)
+			}
+			i = powerShellSkipTrivia(source, lineEnd, end)
+		}
+	}
+	return out
+}
+
+func buildPowerShellRecoveredIfStatement(arena *nodeArena, source []byte, lang *Language, start, end int, existing []*Node) (*Node, int) {
+	ifStatementSym, ifStatementNamed, ok := powerShellSymbolMeta(lang, "if_statement")
+	if !ok {
+		return nil, 0
+	}
+	ifSym, ifNamed, ok := powerShellSymbolMeta(lang, "if")
+	if !ok {
+		return nil, 0
+	}
+	openParenSym, _, ok := powerShellSymbolMeta(lang, "(")
+	if !ok {
+		return nil, 0
+	}
+	closeParenSym, _, ok := powerShellSymbolMeta(lang, ")")
+	if !ok {
+		return nil, 0
+	}
+	elseClauseSym, elseClauseNamed, ok := powerShellSymbolMeta(lang, "else_clause")
+	if !ok {
+		return nil, 0
+	}
+	elseSym, elseNamed, ok := powerShellSymbolMeta(lang, "else")
+	if !ok {
+		return nil, 0
+	}
+	openParen := powerShellSkipInlineSpace(source, start+len("if"), end)
+	if openParen >= end || source[openParen] != '(' {
+		return nil, 0
+	}
+	closeParen := findMatchingDelimitedByte(source, openParen, end, '(', ')')
+	if closeParen < 0 {
+		return nil, 0
+	}
+	blockOpen := powerShellSkipTrivia(source, closeParen+1, end)
+	if blockOpen >= end || source[blockOpen] != '{' {
+		return nil, 0
+	}
+	blockClose := findMatchingBraceByte(source, blockOpen, end)
+	if blockClose < 0 {
+		return nil, 0
+	}
+	condPipeline := powerShellReuseExactNode(existing, lang, "pipeline", uint32(openParen+1), uint32(closeParen))
+	reusedCond := condPipeline != nil
+	if condPipeline == nil {
+		condPipeline = buildPowerShellRecoveredConditionPipeline(arena, source, lang, openParen+1, closeParen)
+	}
+	if condPipeline == nil {
+		return nil, 0
+	}
+	thenBlock := powerShellReuseExactNode(existing, lang, "statement_block", uint32(blockOpen), uint32(blockClose+1))
+	reusedThenBlock := thenBlock != nil
+	if thenBlock == nil {
+		thenBlock = buildPowerShellRecoveredStatementBlock(arena, source, lang, blockOpen, blockClose)
+	}
+	if thenBlock == nil {
+		return nil, 0
+	}
+	children := make([]*Node, 0, 6)
+	children = append(children,
+		newLeafNodeInArena(arena, ifSym, ifNamed, uint32(start), uint32(start+len("if")), advancePointByBytes(Point{}, source[:start]), advancePointByBytes(advancePointByBytes(Point{}, source[:start]), source[start:start+len("if")])),
+		newLeafNodeInArena(arena, openParenSym, false, uint32(openParen), uint32(openParen+1), advancePointByBytes(Point{}, source[:openParen]), advancePointByBytes(advancePointByBytes(Point{}, source[:openParen]), source[openParen:openParen+1])),
+		condPipeline,
+		newLeafNodeInArena(arena, closeParenSym, false, uint32(closeParen), uint32(closeParen+1), advancePointByBytes(Point{}, source[:closeParen]), advancePointByBytes(advancePointByBytes(Point{}, source[:closeParen]), source[closeParen:closeParen+1])),
+		thenBlock,
+	)
+	next := powerShellSkipTrivia(source, blockClose+1, end)
+	if powerShellKeywordAt(source, next, "else") {
+		elseStart := next
+		elseBlockOpen := powerShellSkipTrivia(source, elseStart+len("else"), end)
+		if elseBlockOpen >= end || source[elseBlockOpen] != '{' {
+			return nil, 0
+		}
+		elseBlockClose := findMatchingBraceByte(source, elseBlockOpen, end)
+		if elseBlockClose < 0 {
+			return nil, 0
+		}
+		elseBlock := buildPowerShellRecoveredStatementBlock(arena, source, lang, elseBlockOpen, elseBlockClose)
+		if elseBlock == nil {
+			return nil, 0
+		}
+		elseChildren := []*Node{
+			newLeafNodeInArena(arena, elseSym, elseNamed, uint32(elseStart), uint32(elseStart+len("else")), advancePointByBytes(Point{}, source[:elseStart]), advancePointByBytes(advancePointByBytes(Point{}, source[:elseStart]), source[elseStart:elseStart+len("else")])),
+			elseBlock,
+		}
+		if arena != nil {
+			buf := arena.allocNodeSlice(len(elseChildren))
+			copy(buf, elseChildren)
+			elseChildren = buf
+		}
+		children = append(children, newParentNodeInArena(arena, elseClauseSym, elseClauseNamed, elseChildren, nil, 0))
+		next = elseBlockClose + 1
+	}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(children))
+		copy(buf, children)
+		children = buf
+	}
+	stmt := newParentNodeInArena(arena, ifStatementSym, ifStatementNamed, children, nil, 0)
+	for fieldIdx, fieldName := range lang.FieldNames {
+		switch fieldName {
+		case "condition":
+			ensureNodeFieldStorage(stmt, len(stmt.children))
+			stmt.fieldIDs[2] = FieldID(fieldIdx)
+			stmt.fieldSources[2] = fieldSourceDirect
+		case "else_clause":
+			if len(stmt.children) > 5 && stmt.children[5] != nil && stmt.children[5].Type(lang) == "else_clause" {
+				ensureNodeFieldStorage(stmt, len(stmt.children))
+				stmt.fieldIDs[5] = FieldID(fieldIdx)
+				stmt.fieldSources[5] = fieldSourceDirect
+			}
+		}
+	}
+	if reusedCond || reusedThenBlock {
+		stmt.hasError = true
+	}
+	return stmt, next
+}
+
+func buildPowerShellRecoveredStatementBlock(arena *nodeArena, source []byte, lang *Language, openBracePos, closeBracePos int) *Node {
+	statementBlockSym, statementBlockNamed, ok := powerShellSymbolMeta(lang, "statement_block")
+	if !ok {
+		return nil
+	}
+	openBraceSym, _, ok := powerShellSymbolMeta(lang, "{")
+	if !ok {
+		return nil
+	}
+	closeBraceSym, _, ok := powerShellSymbolMeta(lang, "}")
+	if !ok {
+		return nil
+	}
+	statementListSym, statementListNamed, ok := powerShellSymbolMeta(lang, "statement_list")
+	if !ok {
+		return nil
+	}
+	inner := buildPowerShellRecoveredStatements(arena, source, lang, openBracePos+1, closeBracePos, nil)
+	blockChildren := make([]*Node, 0, len(inner)+2)
+	blockChildren = append(blockChildren, newLeafNodeInArena(arena, openBraceSym, false, uint32(openBracePos), uint32(openBracePos+1), advancePointByBytes(Point{}, source[:openBracePos]), advancePointByBytes(advancePointByBytes(Point{}, source[:openBracePos]), source[openBracePos:openBracePos+1])))
+	leadingComments := 0
+	for leadingComments < len(inner) && inner[leadingComments] != nil && inner[leadingComments].Type(lang) == "comment" {
+		blockChildren = append(blockChildren, inner[leadingComments])
+		leadingComments++
+	}
+	if leadingComments < len(inner) {
+		stmtChildren := inner[leadingComments:]
+		if arena != nil {
+			buf := arena.allocNodeSlice(len(stmtChildren))
+			copy(buf, stmtChildren)
+			stmtChildren = buf
+		}
+		blockChildren = append(blockChildren, newParentNodeInArena(arena, statementListSym, statementListNamed, stmtChildren, nil, 0))
+	}
+	blockChildren = append(blockChildren, newLeafNodeInArena(arena, closeBraceSym, false, uint32(closeBracePos), uint32(closeBracePos+1), advancePointByBytes(Point{}, source[:closeBracePos]), advancePointByBytes(advancePointByBytes(Point{}, source[:closeBracePos]), source[closeBracePos:closeBracePos+1])))
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(blockChildren))
+		copy(buf, blockChildren)
+		blockChildren = buf
+	}
+	block := newParentNodeInArena(arena, statementBlockSym, statementBlockNamed, blockChildren, nil, 0)
+	for i, child := range block.children {
+		if child == nil || child.Type(lang) != "statement_list" {
+			continue
+		}
+		for fieldIdx, fieldName := range lang.FieldNames {
+			if fieldName != "statement_list" {
+				continue
+			}
+			ensureNodeFieldStorage(block, len(block.children))
+			block.fieldIDs[i] = FieldID(fieldIdx)
+			block.fieldSources[i] = fieldSourceDirect
+			break
+		}
+		break
+	}
+	return block
+}
+
+func buildPowerShellRecoveredTryStatement(arena *nodeArena, source []byte, lang *Language, start, end int) (*Node, int) {
+	tryStatementSym, tryStatementNamed, ok := powerShellSymbolMeta(lang, "try_statement")
+	if !ok {
+		return nil, 0
+	}
+	trySym, tryNamed, ok := powerShellSymbolMeta(lang, "try")
+	if !ok {
+		return nil, 0
+	}
+	catchClausesSym, catchClausesNamed, ok := powerShellSymbolMeta(lang, "catch_clauses")
+	if !ok {
+		return nil, 0
+	}
+	blockOpen := powerShellSkipTrivia(source, start+len("try"), end)
+	if blockOpen >= end || source[blockOpen] != '{' {
+		return nil, 0
+	}
+	blockClose := findMatchingBraceByte(source, blockOpen, end)
+	if blockClose < 0 {
+		return nil, 0
+	}
+	tryBlock := buildPowerShellRecoveredStatementBlock(arena, source, lang, blockOpen, blockClose)
+	if tryBlock == nil {
+		return nil, 0
+	}
+	catchStart := powerShellSkipTrivia(source, blockClose+1, end)
+	if !powerShellKeywordAt(source, catchStart, "catch") {
+		return nil, 0
+	}
+	catchClause, next := buildPowerShellRecoveredCatchClause(arena, source, lang, catchStart, end)
+	if catchClause == nil || next <= catchStart {
+		return nil, 0
+	}
+	catchChildren := []*Node{catchClause}
+	if arena != nil {
+		buf := arena.allocNodeSlice(1)
+		buf[0] = catchClause
+		catchChildren = buf
+	}
+	children := []*Node{
+		newLeafNodeInArena(arena, trySym, tryNamed, uint32(start), uint32(start+len("try")), advancePointByBytes(Point{}, source[:start]), advancePointByBytes(advancePointByBytes(Point{}, source[:start]), source[start:start+len("try")])),
+		tryBlock,
+		newParentNodeInArena(arena, catchClausesSym, catchClausesNamed, catchChildren, nil, 0),
+	}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(children))
+		copy(buf, children)
+		children = buf
+	}
+	return newParentNodeInArena(arena, tryStatementSym, tryStatementNamed, children, nil, 0), next
+}
+
+func buildPowerShellRecoveredCatchClause(arena *nodeArena, source []byte, lang *Language, start, end int) (*Node, int) {
+	catchClauseSym, catchClauseNamed, ok := powerShellSymbolMeta(lang, "catch_clause")
+	if !ok {
+		return nil, 0
+	}
+	catchSym, catchNamed, ok := powerShellSymbolMeta(lang, "catch")
+	if !ok {
+		return nil, 0
+	}
+	catchTypeListSym, catchTypeListNamed, ok := powerShellSymbolMeta(lang, "catch_type_list")
+	if !ok {
+		return nil, 0
+	}
+	typeLiteralSym, typeLiteralNamed, ok := powerShellSymbolMeta(lang, "type_literal")
+	if !ok {
+		return nil, 0
+	}
+	openBracketSym, _, ok := powerShellSymbolMeta(lang, "[")
+	if !ok {
+		return nil, 0
+	}
+	closeBracketSym, _, ok := powerShellSymbolMeta(lang, "]")
+	if !ok {
+		return nil, 0
+	}
+	typeOpen := powerShellSkipInlineSpace(source, start+len("catch"), end)
+	if typeOpen >= end || source[typeOpen] != '[' {
+		return nil, 0
+	}
+	typeClose := findMatchingDelimitedByte(source, typeOpen, end, '[', ']')
+	if typeClose < 0 {
+		return nil, 0
+	}
+	typeCoreStart, typeCoreEnd := powerShellTrimInlineSpace(source, typeOpen+1, typeClose)
+	if typeCoreStart >= typeCoreEnd {
+		return nil, 0
+	}
+	typeSpec := buildPowerShellTypeSpec(arena, source, lang, typeCoreStart, typeCoreEnd)
+	if typeSpec == nil {
+		return nil, 0
+	}
+	typeLiteralChildren := []*Node{
+		newLeafNodeInArena(arena, openBracketSym, false, uint32(typeOpen), uint32(typeOpen+1), advancePointByBytes(Point{}, source[:typeOpen]), advancePointByBytes(advancePointByBytes(Point{}, source[:typeOpen]), source[typeOpen:typeOpen+1])),
+		typeSpec,
+		newLeafNodeInArena(arena, closeBracketSym, false, uint32(typeClose), uint32(typeClose+1), advancePointByBytes(Point{}, source[:typeClose]), advancePointByBytes(advancePointByBytes(Point{}, source[:typeClose]), source[typeClose:typeClose+1])),
+	}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(typeLiteralChildren))
+		copy(buf, typeLiteralChildren)
+		typeLiteralChildren = buf
+	}
+	typeListChildren := []*Node{newParentNodeInArena(arena, typeLiteralSym, typeLiteralNamed, typeLiteralChildren, nil, 0)}
+	if arena != nil {
+		buf := arena.allocNodeSlice(1)
+		buf[0] = typeListChildren[0]
+		typeListChildren = buf
+	}
+	blockOpen := powerShellSkipTrivia(source, typeClose+1, end)
+	if blockOpen >= end || source[blockOpen] != '{' {
+		return nil, 0
+	}
+	blockClose := findMatchingBraceByte(source, blockOpen, end)
+	if blockClose < 0 {
+		return nil, 0
+	}
+	block := buildPowerShellRecoveredStatementBlock(arena, source, lang, blockOpen, blockClose)
+	if block == nil {
+		return nil, 0
+	}
+	children := []*Node{
+		newLeafNodeInArena(arena, catchSym, catchNamed, uint32(start), uint32(start+len("catch")), advancePointByBytes(Point{}, source[:start]), advancePointByBytes(advancePointByBytes(Point{}, source[:start]), source[start:start+len("catch")])),
+		newParentNodeInArena(arena, catchTypeListSym, catchTypeListNamed, typeListChildren, nil, 0),
+		block,
+	}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(children))
+		copy(buf, children)
+		children = buf
+	}
+	return newParentNodeInArena(arena, catchClauseSym, catchClauseNamed, children, nil, 0), blockClose + 1
+}
+
+func buildPowerShellRecoveredFlowControlStatement(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	flowControlSym, flowControlNamed, ok := powerShellSymbolMeta(lang, "flow_control_statement")
+	if !ok {
+		return nil
+	}
+	throwSym, throwNamed, ok := powerShellSymbolMeta(lang, "throw")
+	if !ok {
+		return nil
+	}
+	valueStart := powerShellSkipInlineSpace(source, start+len("throw"), end)
+	valueEnd := powerShellTrimInlineSpaceRight(source, valueStart, end)
+	if valueStart >= valueEnd {
+		return nil
+	}
+	pipeline := buildPowerShellRecoveredConditionPipeline(arena, source, lang, valueStart, valueEnd)
+	if pipeline == nil {
+		return nil
+	}
+	children := []*Node{
+		newLeafNodeInArena(arena, throwSym, throwNamed, uint32(start), uint32(start+len("throw")), advancePointByBytes(Point{}, source[:start]), advancePointByBytes(advancePointByBytes(Point{}, source[:start]), source[start:start+len("throw")])),
+		pipeline,
+	}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(children))
+		copy(buf, children)
+		children = buf
+	}
+	return newParentNodeInArena(arena, flowControlSym, flowControlNamed, children, nil, 0)
+}
+
+func buildPowerShellRecoveredPipeline(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	if lang == nil || start >= end {
+		return nil
+	}
+	if powerShellFindAssignmentByte(source, start, end) >= 0 {
+		return buildPowerShellRecoveredAssignmentPipeline(arena, source, lang, start, end)
+	}
+	pipelineSym, ok := symbolByName(lang, "pipeline")
+	if !ok {
+		return nil
+	}
+	pipelineChainSym, ok := symbolByName(lang, "pipeline_chain")
+	if !ok {
+		return nil
+	}
+	commandSym, ok := symbolByName(lang, "command")
+	if !ok {
+		return nil
+	}
+	commandNameSym, ok := symbolByName(lang, "command_name")
+	if !ok {
+		return nil
+	}
+	commandElementsSym, ok := symbolByName(lang, "command_elements")
+	if !ok {
+		return nil
+	}
+	commandArgSepSym, ok := symbolByName(lang, "command_argument_sep")
+	if !ok {
+		return nil
+	}
+	commandParameterSym, ok := symbolByName(lang, "command_parameter")
+	if !ok {
+		return nil
+	}
+	arrayLiteralSym, ok := symbolByName(lang, "array_literal_expression")
+	if !ok {
+		return nil
+	}
+	unaryExprSym, ok := symbolByName(lang, "unary_expression")
+	if !ok {
+		return nil
+	}
+	variableSym, ok := symbolByName(lang, "variable")
+	if !ok {
+		return nil
+	}
+	stringLiteralSym, ok := symbolByName(lang, "string_literal")
+	if !ok {
+		return nil
+	}
+	expandableStringSym, ok := symbolByName(lang, "expandable_string_literal")
+	if !ok {
+		return nil
+	}
+	genericTokenSym, ok := symbolByName(lang, "generic_token")
+	if !ok {
+		return nil
+	}
+	spaceSym, ok := symbolByName(lang, " ")
+	if !ok {
+		return nil
+	}
+	return buildPowerShellPipelineFromLine(arena, source, lang, start, end, pipelineSym, pipelineChainSym, commandSym, commandNameSym, commandElementsSym, commandArgSepSym, commandParameterSym, arrayLiteralSym, unaryExprSym, variableSym, stringLiteralSym, expandableStringSym, genericTokenSym, spaceSym)
+}
+
+func buildPowerShellRecoveredAssignmentPipeline(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	pipelineSym, pipelineNamed, ok := powerShellSymbolMeta(lang, "pipeline")
+	if !ok {
+		return nil
+	}
+	assignmentExprSym, assignmentExprNamed, ok := powerShellSymbolMeta(lang, "assignment_expression")
+	if !ok {
+		return nil
+	}
+	assignOpSym, assignOpNamed, ok := powerShellSymbolMeta(lang, "assignement_operator")
+	if !ok {
+		return nil
+	}
+	assignLeafSym, assignLeafNamed, ok := powerShellSymbolMeta(lang, "=")
+	if !ok {
+		assignLeafSym = assignOpSym
+		assignLeafNamed = assignOpNamed
+	}
+	eq := powerShellFindAssignmentByte(source, start, end)
+	if eq < 0 {
+		return nil
+	}
+	lhsStart, lhsEnd := powerShellTrimInlineSpace(source, start, eq)
+	rhsStart, rhsEnd := powerShellTrimInlineSpace(source, eq+1, end)
+	if lhsStart >= lhsEnd || rhsStart >= rhsEnd {
+		return nil
+	}
+	lhs := buildPowerShellLeftAssignmentExpression(arena, source, lang, lhsStart, lhsEnd)
+	if lhs == nil {
+		return nil
+	}
+	assignChildren := []*Node{newLeafNodeInArena(arena, assignLeafSym, assignLeafNamed, uint32(eq), uint32(eq+1), advancePointByBytes(Point{}, source[:eq]), advancePointByBytes(advancePointByBytes(Point{}, source[:eq]), source[eq:eq+1]))}
+	if arena != nil {
+		buf := arena.allocNodeSlice(1)
+		buf[0] = assignChildren[0]
+		assignChildren = buf
+	}
+	assignOp := newParentNodeInArena(arena, assignOpSym, assignOpNamed, assignChildren, nil, 0)
+	rhs := buildPowerShellRecoveredConditionPipeline(arena, source, lang, rhsStart, rhsEnd)
+	if rhs == nil {
+		rhs = buildPowerShellRecoveredPipeline(arena, source, lang, rhsStart, rhsEnd)
+	}
+	if rhs == nil {
+		return nil
+	}
+	children := []*Node{lhs, assignOp, rhs}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(children))
+		copy(buf, children)
+		children = buf
+	}
+	assignExpr := newParentNodeInArena(arena, assignmentExprSym, assignmentExprNamed, children, nil, 0)
+	for fieldIdx, fieldName := range lang.FieldNames {
+		if fieldName != "value" {
+			continue
+		}
+		ensureNodeFieldStorage(assignExpr, len(assignExpr.children))
+		assignExpr.fieldIDs[2] = FieldID(fieldIdx)
+		assignExpr.fieldSources[2] = fieldSourceDirect
+		break
+	}
+	pipelineChildren := []*Node{assignExpr}
+	if arena != nil {
+		buf := arena.allocNodeSlice(1)
+		buf[0] = assignExpr
+		pipelineChildren = buf
+	}
+	return newParentNodeInArena(arena, pipelineSym, pipelineNamed, pipelineChildren, nil, 0)
+}
+
+func buildPowerShellLeftAssignmentExpression(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	if _, _, ok := powerShellSymbolMeta(lang, "left_assignment_expression"); !ok {
+		return nil
+	}
+	core := buildPowerShellExpressionCore(arena, source, lang, start, end)
+	if core == nil {
+		return nil
+	}
+	return wrapPowerShellExpression(arena, lang, core, "unary_expression", "array_literal_expression", "range_expression", "format_expression", "multiplicative_expression", "additive_expression", "comparison_expression", "bitwise_expression", "logical_expression", "left_assignment_expression")
+}
+
+func buildPowerShellRecoveredConditionPipeline(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	pipelineSym, pipelineNamed, ok := powerShellSymbolMeta(lang, "pipeline")
+	if !ok {
+		return nil
+	}
+	pipelineChainSym, pipelineChainNamed, ok := powerShellSymbolMeta(lang, "pipeline_chain")
+	if !ok {
+		return nil
+	}
+	if powerShellLooksLikeCommandText(source, start, end) {
+		if pipeline := buildPowerShellRecoveredPipeline(arena, source, lang, start, end); pipeline != nil {
+			return pipeline
+		}
+	}
+	logical := buildPowerShellLogicalExpression(arena, source, lang, start, end)
+	if logical == nil {
+		return nil
+	}
+	chainChildren := []*Node{logical}
+	if arena != nil {
+		buf := arena.allocNodeSlice(1)
+		buf[0] = logical
+		chainChildren = buf
+	}
+	chain := newParentNodeInArena(arena, pipelineChainSym, pipelineChainNamed, chainChildren, nil, 0)
+	pipelineChildren := []*Node{chain}
+	if arena != nil {
+		buf := arena.allocNodeSlice(1)
+		buf[0] = chain
+		pipelineChildren = buf
+	}
+	return newParentNodeInArena(arena, pipelineSym, pipelineNamed, pipelineChildren, nil, 0)
+}
+
+func buildPowerShellLogicalExpression(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	logicalSym, logicalNamed, ok := powerShellSymbolMeta(lang, "logical_expression")
+	if !ok {
+		return nil
+	}
+	bitwise := buildPowerShellBitwiseExpression(arena, source, lang, start, end)
+	if bitwise == nil {
+		return nil
+	}
+	children := []*Node{bitwise}
+	if arena != nil {
+		buf := arena.allocNodeSlice(1)
+		buf[0] = bitwise
+		children = buf
+	}
+	return newParentNodeInArena(arena, logicalSym, logicalNamed, children, nil, 0)
+}
+
+func buildPowerShellBitwiseExpression(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	bitwiseSym, bitwiseNamed, ok := powerShellSymbolMeta(lang, "bitwise_expression")
+	if !ok {
+		return nil
+	}
+	comparison := buildPowerShellComparisonExpression(arena, source, lang, start, end)
+	if comparison == nil {
+		return nil
+	}
+	children := []*Node{comparison}
+	if arena != nil {
+		buf := arena.allocNodeSlice(1)
+		buf[0] = comparison
+		children = buf
+	}
+	return newParentNodeInArena(arena, bitwiseSym, bitwiseNamed, children, nil, 0)
+}
+
+func buildPowerShellComparisonExpression(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	comparisonSym, comparisonNamed, ok := powerShellSymbolMeta(lang, "comparison_expression")
+	if !ok {
+		return nil
+	}
+	additive := buildPowerShellAdditiveExpression(arena, source, lang, start, end)
+	if additive == nil {
+		return nil
+	}
+	children := []*Node{additive}
+	if arena != nil {
+		buf := arena.allocNodeSlice(1)
+		buf[0] = additive
+		children = buf
+	}
+	return newParentNodeInArena(arena, comparisonSym, comparisonNamed, children, nil, 0)
+}
+
+func buildPowerShellAdditiveExpression(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	additiveSym, additiveNamed, ok := powerShellSymbolMeta(lang, "additive_expression")
+	if !ok {
+		return nil
+	}
+	start, end = powerShellTrimInlineSpace(source, start, end)
+	if start >= end {
+		return nil
+	}
+	if plus := powerShellFindTopLevelPlus(source, start, end); plus >= 0 {
+		left := buildPowerShellAdditiveExpression(arena, source, lang, start, plus)
+		right := buildPowerShellMultiplicativeExpression(arena, source, lang, plus+1, end)
+		plusSym, plusNamed, ok := powerShellSymbolMeta(lang, "+")
+		if !ok || left == nil || right == nil {
+			return nil
+		}
+		children := []*Node{
+			left,
+			newLeafNodeInArena(arena, plusSym, plusNamed, uint32(plus), uint32(plus+1), advancePointByBytes(Point{}, source[:plus]), advancePointByBytes(advancePointByBytes(Point{}, source[:plus]), source[plus:plus+1])),
+			right,
+		}
+		if arena != nil {
+			buf := arena.allocNodeSlice(len(children))
+			copy(buf, children)
+			children = buf
+		}
+		return newParentNodeInArena(arena, additiveSym, additiveNamed, children, nil, 0)
+	}
+	multiplicative := buildPowerShellMultiplicativeExpression(arena, source, lang, start, end)
+	if multiplicative == nil {
+		return nil
+	}
+	children := []*Node{multiplicative}
+	if arena != nil {
+		buf := arena.allocNodeSlice(1)
+		buf[0] = multiplicative
+		children = buf
+	}
+	return newParentNodeInArena(arena, additiveSym, additiveNamed, children, nil, 0)
+}
+
+func buildPowerShellMultiplicativeExpression(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	multiplicativeSym, multiplicativeNamed, ok := powerShellSymbolMeta(lang, "multiplicative_expression")
+	if !ok {
+		return nil
+	}
+	format := buildPowerShellFormatExpression(arena, source, lang, start, end)
+	if format == nil {
+		return nil
+	}
+	children := []*Node{format}
+	if arena != nil {
+		buf := arena.allocNodeSlice(1)
+		buf[0] = format
+		children = buf
+	}
+	return newParentNodeInArena(arena, multiplicativeSym, multiplicativeNamed, children, nil, 0)
+}
+
+func buildPowerShellFormatExpression(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	formatSym, formatNamed, ok := powerShellSymbolMeta(lang, "format_expression")
+	if !ok {
+		return nil
+	}
+	rng := buildPowerShellRangeExpression(arena, source, lang, start, end)
+	if rng == nil {
+		return nil
+	}
+	children := []*Node{rng}
+	if arena != nil {
+		buf := arena.allocNodeSlice(1)
+		buf[0] = rng
+		children = buf
+	}
+	return newParentNodeInArena(arena, formatSym, formatNamed, children, nil, 0)
+}
+
+func buildPowerShellRangeExpression(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	rangeSym, rangeNamed, ok := powerShellSymbolMeta(lang, "range_expression")
+	if !ok {
+		return nil
+	}
+	array := buildPowerShellArrayLiteralExpression(arena, source, lang, start, end)
+	if array == nil {
+		return nil
+	}
+	children := []*Node{array}
+	if arena != nil {
+		buf := arena.allocNodeSlice(1)
+		buf[0] = array
+		children = buf
+	}
+	return newParentNodeInArena(arena, rangeSym, rangeNamed, children, nil, 0)
+}
+
+func buildPowerShellArrayLiteralExpression(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	arraySym, arrayNamed, ok := powerShellSymbolMeta(lang, "array_literal_expression")
+	if !ok {
+		return nil
+	}
+	unary := buildPowerShellUnaryExpression(arena, source, lang, start, end)
+	if unary == nil {
+		return nil
+	}
+	children := []*Node{unary}
+	if arena != nil {
+		buf := arena.allocNodeSlice(1)
+		buf[0] = unary
+		children = buf
+	}
+	return newParentNodeInArena(arena, arraySym, arrayNamed, children, nil, 0)
+}
+
+func buildPowerShellUnaryExpression(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	unarySym, unaryNamed, ok := powerShellSymbolMeta(lang, "unary_expression")
+	if !ok {
+		return nil
+	}
+	core := buildPowerShellExpressionCore(arena, source, lang, start, end)
+	if core == nil {
+		return nil
+	}
+	children := []*Node{core}
+	if arena != nil {
+		buf := arena.allocNodeSlice(1)
+		buf[0] = core
+		children = buf
+	}
+	return newParentNodeInArena(arena, unarySym, unaryNamed, children, nil, 0)
+}
+
+func buildPowerShellExpressionCore(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	start, end = powerShellTrimInlineSpace(source, start, end)
+	if start >= end {
+		return nil
+	}
+	switch source[start] {
+	case '!':
+		exprUnarySym, exprUnaryNamed, ok := powerShellSymbolMeta(lang, "expression_with_unary_operator")
+		if !ok {
+			return nil
+		}
+		bangSym, bangNamed, ok := powerShellSymbolMeta(lang, "!")
+		if !ok {
+			return nil
+		}
+		innerStart := powerShellSkipInlineSpace(source, start+1, end)
+		innerCore := buildPowerShellExpressionCore(arena, source, lang, innerStart, end)
+		if innerCore == nil {
+			return nil
+		}
+		innerUnary := wrapPowerShellExpression(arena, lang, innerCore, "unary_expression")
+		if innerUnary == nil {
+			return nil
+		}
+		children := []*Node{
+			newLeafNodeInArena(arena, bangSym, bangNamed, uint32(start), uint32(start+1), advancePointByBytes(Point{}, source[:start]), advancePointByBytes(advancePointByBytes(Point{}, source[:start]), source[start:start+1])),
+			innerUnary,
+		}
+		if arena != nil {
+			buf := arena.allocNodeSlice(len(children))
+			copy(buf, children)
+			children = buf
+		}
+		return newParentNodeInArena(arena, exprUnarySym, exprUnaryNamed, children, nil, 0)
+	case '(':
+		return buildPowerShellParenthesizedExpression(arena, source, lang, start, end)
+	case '"':
+		stringLiteralSym, stringLiteralNamed, ok := powerShellSymbolMeta(lang, "string_literal")
+		if !ok {
+			return nil
+		}
+		expandable := buildPowerShellExpandableStringLiteral(arena, source, lang, start, end)
+		if expandable == nil {
+			return nil
+		}
+		children := []*Node{expandable}
+		if arena != nil {
+			buf := arena.allocNodeSlice(1)
+			buf[0] = expandable
+			children = buf
+		}
+		return newParentNodeInArena(arena, stringLiteralSym, stringLiteralNamed, children, nil, 0)
+	case '$':
+		variableSym, variableNamed, ok := powerShellSymbolMeta(lang, "variable")
+		if !ok {
+			return nil
+		}
+		if bytes.IndexAny(source[start:end], " \t") >= 0 {
+			genericSym, genericNamed, ok := powerShellSymbolMeta(lang, "generic_token")
+			if !ok {
+				return nil
+			}
+			return newLeafNodeInArena(arena, genericSym, genericNamed, uint32(start), uint32(end), advancePointByBytes(Point{}, source[:start]), advancePointByBytes(advancePointByBytes(Point{}, source[:start]), source[start:end]))
+		}
+		return newLeafNodeInArena(arena, variableSym, variableNamed, uint32(start), uint32(end), advancePointByBytes(Point{}, source[:start]), advancePointByBytes(advancePointByBytes(Point{}, source[:start]), source[start:end]))
+	case '[':
+		if bytes.Contains(source[start:end], []byte("::")) {
+			if end > start && source[end-1] == ')' {
+				if inv := buildPowerShellInvokationExpression(arena, source, lang, start, end); inv != nil {
+					return inv
+				}
+			}
+			if member := buildPowerShellMemberAccessExpression(arena, source, lang, start, end); member != nil {
+				return member
+			}
+		}
+		genericSym, genericNamed, ok := powerShellSymbolMeta(lang, "generic_token")
+		if !ok {
+			return nil
+		}
+		return newLeafNodeInArena(arena, genericSym, genericNamed, uint32(start), uint32(end), advancePointByBytes(Point{}, source[:start]), advancePointByBytes(advancePointByBytes(Point{}, source[:start]), source[start:end]))
+	default:
+		genericSym, genericNamed, ok := powerShellSymbolMeta(lang, "generic_token")
+		if !ok {
+			return nil
+		}
+		return newLeafNodeInArena(arena, genericSym, genericNamed, uint32(start), uint32(end), advancePointByBytes(Point{}, source[:start]), advancePointByBytes(advancePointByBytes(Point{}, source[:start]), source[start:end]))
+	}
+}
+
+func buildPowerShellParenthesizedExpression(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	parenthesizedSym, parenthesizedNamed, ok := powerShellSymbolMeta(lang, "parenthesized_expression")
+	if !ok {
+		return nil
+	}
+	openParenSym, _, ok := powerShellSymbolMeta(lang, "(")
+	if !ok {
+		return nil
+	}
+	closeParenSym, _, ok := powerShellSymbolMeta(lang, ")")
+	if !ok {
+		return nil
+	}
+	if end-start < 2 || source[start] != '(' || source[end-1] != ')' {
+		return nil
+	}
+	innerStart, innerEnd := powerShellTrimInlineSpace(source, start+1, end-1)
+	innerIsCommand := innerStart < innerEnd && powerShellLooksLikeCommandText(source, innerStart, innerEnd)
+	var inner *Node
+	if innerStart < innerEnd {
+		if innerIsCommand {
+			inner = buildPowerShellRecoveredPipeline(arena, source, lang, innerStart, innerEnd)
+		}
+		if inner == nil {
+			inner = buildPowerShellRecoveredConditionPipeline(arena, source, lang, innerStart, innerEnd)
+		}
+	}
+	children := make([]*Node, 0, 3)
+	children = append(children, newLeafNodeInArena(arena, openParenSym, false, uint32(start), uint32(start+1), advancePointByBytes(Point{}, source[:start]), advancePointByBytes(advancePointByBytes(Point{}, source[:start]), source[start:start+1])))
+	if inner != nil {
+		children = append(children, inner)
+	}
+	children = append(children, newLeafNodeInArena(arena, closeParenSym, false, uint32(end-1), uint32(end), advancePointByBytes(Point{}, source[:end-1]), advancePointByBytes(advancePointByBytes(Point{}, source[:end-1]), source[end-1:end])))
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(children))
+		copy(buf, children)
+		children = buf
+	}
+	node := newParentNodeInArena(arena, parenthesizedSym, parenthesizedNamed, children, nil, 0)
+	if !innerIsCommand {
+		node.hasError = true
+	}
+	return node
+}
+
+func buildPowerShellInvokationExpression(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	invocationSym, invocationNamed, ok := powerShellSymbolMeta(lang, "invokation_expression")
+	if !ok {
+		return nil
+	}
+	typeClose := findMatchingDelimitedByte(source, start, end, '[', ']')
+	if typeClose < 0 {
+		return nil
+	}
+	memberStart := typeClose + 1
+	if memberStart+2 >= end || source[memberStart] != ':' || source[memberStart+1] != ':' {
+		return nil
+	}
+	nameStart := memberStart + 2
+	openParen := findMatchingPowerShellToken(source, nameStart, end, '(')
+	if openParen < 0 {
+		return nil
+	}
+	closeParen := findMatchingDelimitedByte(source, openParen, end, '(', ')')
+	if closeParen != end-1 {
+		return nil
+	}
+	typeLiteral := buildPowerShellTypeLiteral(arena, source, lang, start, typeClose+1)
+	memberName := buildPowerShellMemberName(arena, source, lang, nameStart, openParen)
+	argumentList := buildPowerShellArgumentList(arena, source, lang, openParen, closeParen+1)
+	colonColonSym, colonColonNamed, ok := powerShellSymbolMeta(lang, "::")
+	if !ok || typeLiteral == nil || memberName == nil || argumentList == nil {
+		return nil
+	}
+	children := []*Node{
+		typeLiteral,
+		newLeafNodeInArena(arena, colonColonSym, colonColonNamed, uint32(memberStart), uint32(memberStart+2), advancePointByBytes(Point{}, source[:memberStart]), advancePointByBytes(advancePointByBytes(Point{}, source[:memberStart]), source[memberStart:memberStart+2])),
+		memberName,
+		argumentList,
+	}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(children))
+		copy(buf, children)
+		children = buf
+	}
+	return newParentNodeInArena(arena, invocationSym, invocationNamed, children, nil, 0)
+}
+
+func buildPowerShellMemberAccessExpression(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	memberAccessSym, memberAccessNamed, ok := powerShellSymbolMeta(lang, "member_access")
+	if !ok {
+		return nil
+	}
+	typeClose := findMatchingDelimitedByte(source, start, end, '[', ']')
+	if typeClose < 0 {
+		return nil
+	}
+	memberStart := typeClose + 1
+	if memberStart+2 > end || source[memberStart] != ':' || source[memberStart+1] != ':' {
+		return nil
+	}
+	nameStart := memberStart + 2
+	typeLiteral := buildPowerShellTypeLiteral(arena, source, lang, start, typeClose+1)
+	memberName := buildPowerShellMemberName(arena, source, lang, nameStart, end)
+	colonColonSym, colonColonNamed, ok := powerShellSymbolMeta(lang, "::")
+	if !ok || typeLiteral == nil || memberName == nil {
+		return nil
+	}
+	children := []*Node{
+		typeLiteral,
+		newLeafNodeInArena(arena, colonColonSym, colonColonNamed, uint32(memberStart), uint32(memberStart+2), advancePointByBytes(Point{}, source[:memberStart]), advancePointByBytes(advancePointByBytes(Point{}, source[:memberStart]), source[memberStart:memberStart+2])),
+		memberName,
+	}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(children))
+		copy(buf, children)
+		children = buf
+	}
+	return newParentNodeInArena(arena, memberAccessSym, memberAccessNamed, children, nil, 0)
+}
+
+func buildPowerShellTypeLiteral(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	typeLiteralSym, typeLiteralNamed, ok := powerShellSymbolMeta(lang, "type_literal")
+	if !ok {
+		return nil
+	}
+	openBracketSym, openBracketNamed, ok := powerShellSymbolMeta(lang, "[")
+	if !ok {
+		return nil
+	}
+	closeBracketSym, closeBracketNamed, ok := powerShellSymbolMeta(lang, "]")
+	if !ok {
+		return nil
+	}
+	typeSpec := buildPowerShellTypeSpec(arena, source, lang, start+1, end-1)
+	if typeSpec == nil {
+		return nil
+	}
+	children := make([]*Node, 0, 4)
+	children = append(children, newLeafNodeInArena(arena, openBracketSym, openBracketNamed, uint32(start), uint32(start+1), advancePointByBytes(Point{}, source[:start]), advancePointByBytes(advancePointByBytes(Point{}, source[:start]), source[start:start+1])))
+	children = append(children, typeSpec)
+	if plus := powerShellFindTopLevelPlus(source, start+1, end-1); plus >= 0 {
+		plusSym, plusNamed, ok := powerShellSymbolMeta(lang, "+")
+		if !ok {
+			return nil
+		}
+		errChildren := []*Node{
+			newLeafNodeInArena(arena, plusSym, plusNamed, uint32(plus), uint32(plus+1), advancePointByBytes(Point{}, source[:plus]), advancePointByBytes(advancePointByBytes(Point{}, source[:plus]), source[plus:plus+1])),
+		}
+		if simpleName := buildPowerShellSimpleName(arena, source, lang, plus+1, end-1); simpleName != nil {
+			errChildren = append(errChildren, simpleName)
+		}
+		if arena != nil {
+			buf := arena.allocNodeSlice(len(errChildren))
+			copy(buf, errChildren)
+			errChildren = buf
+		}
+		errNode := newParentNodeInArena(arena, errorSymbol, true, errChildren, nil, 0)
+		errNode.hasError = true
+		errNode.isExtra = true
+		children = append(children, errNode)
+	}
+	children = append(children, newLeafNodeInArena(arena, closeBracketSym, closeBracketNamed, uint32(end-1), uint32(end), advancePointByBytes(Point{}, source[:end-1]), advancePointByBytes(advancePointByBytes(Point{}, source[:end-1]), source[end-1:end])))
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(children))
+		copy(buf, children)
+		children = buf
+	}
+	node := newParentNodeInArena(arena, typeLiteralSym, typeLiteralNamed, children, nil, 0)
+	if len(children) == 4 {
+		node.hasError = true
+	}
+	return node
+}
+
+func buildPowerShellTypeSpec(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	typeSpecSym, typeSpecNamed, ok := powerShellSymbolMeta(lang, "type_spec")
+	if !ok {
+		return nil
+	}
+	if plus := powerShellFindTopLevelPlus(source, start, end); plus >= 0 {
+		end = plus
+	}
+	typeName := buildPowerShellTypeName(arena, source, lang, start, end)
+	if typeName == nil {
+		return nil
+	}
+	children := []*Node{typeName}
+	if arena != nil {
+		buf := arena.allocNodeSlice(1)
+		buf[0] = typeName
+		children = buf
+	}
+	return newParentNodeInArena(arena, typeSpecSym, typeSpecNamed, children, nil, 0)
+}
+
+func buildPowerShellTypeName(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	typeNameSym, typeNameNamed, ok := powerShellSymbolMeta(lang, "type_name")
+	if !ok {
+		return nil
+	}
+	typeIdentifierSym, typeIdentifierNamed, ok := powerShellSymbolMeta(lang, "type_identifier")
+	if !ok {
+		return nil
+	}
+	if dot := bytes.LastIndexByte(source[start:end], '.'); dot >= 0 {
+		dot += start
+		left := buildPowerShellTypeName(arena, source, lang, start, dot)
+		right := newLeafNodeInArena(arena, typeIdentifierSym, typeIdentifierNamed, uint32(dot+1), uint32(end), advancePointByBytes(Point{}, source[:dot+1]), advancePointByBytes(advancePointByBytes(Point{}, source[:dot+1]), source[dot+1:end]))
+		dotSym, dotNamed, ok := powerShellSymbolMeta(lang, ".")
+		if !ok || left == nil {
+			return nil
+		}
+		children := []*Node{
+			left,
+			newLeafNodeInArena(arena, dotSym, dotNamed, uint32(dot), uint32(dot+1), advancePointByBytes(Point{}, source[:dot]), advancePointByBytes(advancePointByBytes(Point{}, source[:dot]), source[dot:dot+1])),
+			right,
+		}
+		if arena != nil {
+			buf := arena.allocNodeSlice(len(children))
+			copy(buf, children)
+			children = buf
+		}
+		return newParentNodeInArena(arena, typeNameSym, typeNameNamed, children, nil, 0)
+	}
+	leaf := newLeafNodeInArena(arena, typeIdentifierSym, typeIdentifierNamed, uint32(start), uint32(end), advancePointByBytes(Point{}, source[:start]), advancePointByBytes(advancePointByBytes(Point{}, source[:start]), source[start:end]))
+	children := []*Node{leaf}
+	if arena != nil {
+		buf := arena.allocNodeSlice(1)
+		buf[0] = leaf
+		children = buf
+	}
+	return newParentNodeInArena(arena, typeNameSym, typeNameNamed, children, nil, 0)
+}
+
+func buildPowerShellMemberName(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	memberNameSym, memberNameNamed, ok := powerShellSymbolMeta(lang, "member_name")
+	if !ok {
+		return nil
+	}
+	simpleName := buildPowerShellSimpleName(arena, source, lang, start, end)
+	if simpleName == nil {
+		return nil
+	}
+	children := []*Node{simpleName}
+	if arena != nil {
+		buf := arena.allocNodeSlice(1)
+		buf[0] = simpleName
+		children = buf
+	}
+	return newParentNodeInArena(arena, memberNameSym, memberNameNamed, children, nil, 0)
+}
+
+func buildPowerShellSimpleName(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	simpleNameSym, simpleNameNamed, ok := powerShellSymbolMeta(lang, "simple_name")
+	if !ok {
+		return nil
+	}
+	leaf := newLeafNodeInArena(arena, simpleNameSym, simpleNameNamed, uint32(start), uint32(end), advancePointByBytes(Point{}, source[:start]), advancePointByBytes(advancePointByBytes(Point{}, source[:start]), source[start:end]))
+	return leaf
+}
+
+func buildPowerShellArgumentList(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	argumentListSym, argumentListNamed, ok := powerShellSymbolMeta(lang, "argument_list")
+	if !ok {
+		return nil
+	}
+	argumentExprListSym, argumentExprListNamed, ok := powerShellSymbolMeta(lang, "argument_expression_list")
+	if !ok {
+		return nil
+	}
+	openParenSym, openParenNamed, ok := powerShellSymbolMeta(lang, "(")
+	if !ok {
+		return nil
+	}
+	closeParenSym, closeParenNamed, ok := powerShellSymbolMeta(lang, ")")
+	if !ok {
+		return nil
+	}
+	argStart, argEnd := powerShellTrimInlineSpace(source, start+1, end-1)
+	argument := buildPowerShellArgumentExpression(arena, source, lang, argStart, argEnd)
+	if argument == nil {
+		return nil
+	}
+	listChildren := []*Node{argument}
+	if arena != nil {
+		buf := arena.allocNodeSlice(1)
+		buf[0] = argument
+		listChildren = buf
+	}
+	argumentListChildren := []*Node{
+		newLeafNodeInArena(arena, openParenSym, openParenNamed, uint32(start), uint32(start+1), advancePointByBytes(Point{}, source[:start]), advancePointByBytes(advancePointByBytes(Point{}, source[:start]), source[start:start+1])),
+		newParentNodeInArena(arena, argumentExprListSym, argumentExprListNamed, listChildren, nil, 0),
+		newLeafNodeInArena(arena, closeParenSym, closeParenNamed, uint32(end-1), uint32(end), advancePointByBytes(Point{}, source[:end-1]), advancePointByBytes(advancePointByBytes(Point{}, source[:end-1]), source[end-1:end])),
+	}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(argumentListChildren))
+		copy(buf, argumentListChildren)
+		argumentListChildren = buf
+	}
+	argList := newParentNodeInArena(arena, argumentListSym, argumentListNamed, argumentListChildren, nil, 0)
+	for fieldIdx, fieldName := range lang.FieldNames {
+		if fieldName != "argument_expression_list" {
+			continue
+		}
+		ensureNodeFieldStorage(argList, len(argList.children))
+		argList.fieldIDs[1] = FieldID(fieldIdx)
+		argList.fieldSources[1] = fieldSourceDirect
+		break
+	}
+	return argList
+}
+
+func buildPowerShellArgumentExpression(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	argumentExprSym, argumentExprNamed, ok := powerShellSymbolMeta(lang, "argument_expression")
+	if !ok {
+		return nil
+	}
+	logicalArgSym, logicalArgNamed, ok := powerShellSymbolMeta(lang, "logical_argument_expression")
+	if !ok {
+		return nil
+	}
+	bitwiseArgSym, bitwiseArgNamed, ok := powerShellSymbolMeta(lang, "bitwise_argument_expression")
+	if !ok {
+		return nil
+	}
+	comparisonArgSym, comparisonArgNamed, ok := powerShellSymbolMeta(lang, "comparison_argument_expression")
+	if !ok {
+		return nil
+	}
+	additiveArgSym, additiveArgNamed, ok := powerShellSymbolMeta(lang, "additive_argument_expression")
+	if !ok {
+		return nil
+	}
+	multiplicativeArgSym, multiplicativeArgNamed, ok := powerShellSymbolMeta(lang, "multiplicative_argument_expression")
+	if !ok {
+		return nil
+	}
+	formatArgSym, formatArgNamed, ok := powerShellSymbolMeta(lang, "format_argument_expression")
+	if !ok {
+		return nil
+	}
+	rangeArgSym, rangeArgNamed, ok := powerShellSymbolMeta(lang, "range_argument_expression")
+	if !ok {
+		return nil
+	}
+	core := buildPowerShellExpressionCore(arena, source, lang, start, end)
+	if core == nil {
+		return nil
+	}
+	unary := wrapPowerShellExpression(arena, lang, core, "unary_expression")
+	rangeArg := newParentNodeInArena(arena, rangeArgSym, rangeArgNamed, []*Node{rangeToArenaChild(arena, unary)}, nil, 0)
+	formatArg := newParentNodeInArena(arena, formatArgSym, formatArgNamed, []*Node{rangeToArenaChild(arena, rangeArg)}, nil, 0)
+	multiplicativeArg := newParentNodeInArena(arena, multiplicativeArgSym, multiplicativeArgNamed, []*Node{rangeToArenaChild(arena, formatArg)}, nil, 0)
+	additiveArg := newParentNodeInArena(arena, additiveArgSym, additiveArgNamed, []*Node{rangeToArenaChild(arena, multiplicativeArg)}, nil, 0)
+	comparisonArg := newParentNodeInArena(arena, comparisonArgSym, comparisonArgNamed, []*Node{rangeToArenaChild(arena, additiveArg)}, nil, 0)
+	bitwiseArg := newParentNodeInArena(arena, bitwiseArgSym, bitwiseArgNamed, []*Node{rangeToArenaChild(arena, comparisonArg)}, nil, 0)
+	logicalArg := newParentNodeInArena(arena, logicalArgSym, logicalArgNamed, []*Node{rangeToArenaChild(arena, bitwiseArg)}, nil, 0)
+	children := []*Node{logicalArg}
+	if arena != nil {
+		buf := arena.allocNodeSlice(1)
+		buf[0] = logicalArg
+		children = buf
+	}
+	return newParentNodeInArena(arena, argumentExprSym, argumentExprNamed, children, nil, 0)
+}
+
+func rangeToArenaChild(arena *nodeArena, child *Node) *Node {
+	return child
+}
+
+func findMatchingPowerShellToken(source []byte, start, end int, target byte) int {
+	for i := start; i < end; i++ {
+		if source[i] == target {
+			return i
+		}
+	}
+	return -1
+}
+
+func mustPowerShellSymbol(lang *Language, name string) Symbol {
+	sym, ok := symbolByName(lang, name)
+	if !ok {
+		return 0
+	}
+	return sym
+}
+
+func wrapPowerShellExpression(arena *nodeArena, lang *Language, core *Node, types ...string) *Node {
+	if core == nil || lang == nil {
+		return nil
+	}
+	node := core
+	for _, typeName := range types {
+		sym, named, ok := powerShellSymbolMeta(lang, typeName)
+		if !ok {
+			return nil
+		}
+		children := []*Node{node}
+		if arena != nil {
+			buf := arena.allocNodeSlice(1)
+			buf[0] = node
+			children = buf
+		}
+		node = newParentNodeInArena(arena, sym, named, children, nil, 0)
+	}
+	return node
+}
+
+func powerShellReuseExactNode(nodes []*Node, lang *Language, typ string, start, end uint32) *Node {
+	for _, node := range nodes {
+		if node == nil || node.Type(lang) != typ {
+			continue
+		}
+		if node.startByte == start && node.endByte == end {
+			return node
+		}
+	}
+	return nil
+}
+
+func powerShellSymbolMeta(lang *Language, name string) (Symbol, bool, bool) {
+	if lang == nil {
+		return 0, false, false
+	}
+	sym, ok := symbolByName(lang, name)
+	if !ok {
+		return 0, false, false
+	}
+	named := false
+	if int(sym) < len(lang.SymbolMetadata) {
+		named = lang.SymbolMetadata[sym].Named
+	}
+	return sym, named, true
+}
+
+func powerShellKeywordAt(source []byte, pos int, kw string) bool {
+	if pos < 0 || pos+len(kw) > len(source) || !bytes.HasPrefix(source[pos:], []byte(kw)) {
+		return false
+	}
+	if pos > 0 {
+		if prev := source[pos-1]; (prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') || prev == '_' {
+			return false
+		}
+	}
+	if pos+len(kw) < len(source) {
+		if next := source[pos+len(kw)]; (next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') || next == '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func powerShellSkipTrivia(source []byte, start, end int) int {
+	for start < end {
+		switch source[start] {
+		case ' ', '\t', '\r', '\n':
+			start++
+		default:
+			return start
+		}
+	}
+	return start
+}
+
+func powerShellSkipInlineSpace(source []byte, start, end int) int {
+	for start < end && (source[start] == ' ' || source[start] == '\t') {
+		start++
+	}
+	return start
+}
+
+func powerShellTrimInlineSpace(source []byte, start, end int) (int, int) {
+	start = powerShellSkipInlineSpace(source, start, end)
+	return start, powerShellTrimInlineSpaceRight(source, start, end)
+}
+
+func powerShellTrimInlineSpaceRight(source []byte, start, end int) int {
+	for end > start && (source[end-1] == ' ' || source[end-1] == '\t') {
+		end--
+	}
+	return end
+}
+
+func powerShellLineEnd(source []byte, start, end int) int {
+	for start < end && source[start] != '\n' {
+		start++
+	}
+	return start
+}
+
+func powerShellFindAssignmentByte(source []byte, start, end int) int {
+	inString := false
+	depthParen := 0
+	depthBracket := 0
+	for i := start; i < end; i++ {
+		switch source[i] {
+		case '"':
+			if !isEscapedQuote(source, uint32(i)) {
+				inString = !inString
+			}
+		case '(':
+			if !inString {
+				depthParen++
+			}
+		case ')':
+			if !inString && depthParen > 0 {
+				depthParen--
+			}
+		case '[':
+			if !inString {
+				depthBracket++
+			}
+		case ']':
+			if !inString && depthBracket > 0 {
+				depthBracket--
+			}
+		case '=':
+			if !inString && depthParen == 0 && depthBracket == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func powerShellFindTopLevelPlus(source []byte, start, end int) int {
+	inString := false
+	depthParen := 0
+	depthBracket := 0
+	for i := start; i < end; i++ {
+		switch source[i] {
+		case '"':
+			if !isEscapedQuote(source, uint32(i)) {
+				inString = !inString
+			}
+		case '(':
+			if !inString {
+				depthParen++
+			}
+		case ')':
+			if !inString && depthParen > 0 {
+				depthParen--
+			}
+		case '[':
+			if !inString {
+				depthBracket++
+			}
+		case ']':
+			if !inString && depthBracket > 0 {
+				depthBracket--
+			}
+		case '+':
+			if !inString && depthParen == 0 && depthBracket == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func powerShellLooksLikeCommandText(source []byte, start, end int) bool {
+	start, end = powerShellTrimInlineSpace(source, start, end)
+	if start >= end {
+		return false
+	}
+	switch source[start] {
+	case '$', '"', '!', '(':
+		return false
+	}
+	if !((source[start] >= 'a' && source[start] <= 'z') || (source[start] >= 'A' && source[start] <= 'Z') || source[start] == '_') {
+		return false
+	}
+	return bytes.IndexAny(source[start:end], " \t") >= 0
+}
+
+func findMatchingDelimitedByte(source []byte, openPos, limit int, open, close byte) int {
+	if openPos < 0 || openPos >= len(source) {
+		return -1
+	}
+	if limit > len(source) {
+		limit = len(source)
+	}
+	depth := 0
+	inString := false
+	for i := openPos; i < limit; i++ {
+		switch source[i] {
+		case '"':
+			if !isEscapedQuote(source, uint32(i)) {
+				inString = !inString
+			}
+		default:
+			if inString {
+				continue
+			}
+			if source[i] == open {
+				depth++
+			} else if source[i] == close {
+				depth--
+				if depth == 0 {
+					return i
+				}
+			}
+		}
+	}
+	return -1
+}
+
+func buildPowerShellTrailingPipelines(arena *nodeArena, source []byte, lang *Language, start, end uint32, pipelineSym, pipelineChainSym, commandSym, commandNameSym, commandElementsSym, commandArgSepSym, commandParameterSym, arrayLiteralSym, unaryExprSym, variableSym, stringLiteralSym, expandableStringSym, genericTokenSym, spaceSym Symbol) []*Node {
+	out := make([]*Node, 0, 4)
+	i := int(start)
+	limit := int(end)
+	for i < limit {
+		for i < limit && (source[i] == ' ' || source[i] == '\t' || source[i] == '\r' || source[i] == '\n') {
+			i++
+		}
+		if i >= limit {
+			break
+		}
+		lineStart := i
+		for i < limit && source[i] != '\n' {
+			i++
+		}
+		lineEnd := i
+		if pipeline := buildPowerShellPipelineFromLine(arena, source, lang, lineStart, lineEnd, pipelineSym, pipelineChainSym, commandSym, commandNameSym, commandElementsSym, commandArgSepSym, commandParameterSym, arrayLiteralSym, unaryExprSym, variableSym, stringLiteralSym, expandableStringSym, genericTokenSym, spaceSym); pipeline != nil {
+			out = append(out, pipeline)
+		}
+	}
+	if arena != nil && len(out) > 0 {
+		buf := arena.allocNodeSlice(len(out))
+		copy(buf, out)
+		out = buf
+	}
+	return out
+}
+
+func buildPowerShellPipelineFromLine(arena *nodeArena, source []byte, lang *Language, start, end int, pipelineSym, pipelineChainSym, commandSym, commandNameSym, commandElementsSym, commandArgSepSym, commandParameterSym, arrayLiteralSym, unaryExprSym, variableSym, stringLiteralSym, expandableStringSym, genericTokenSym, spaceSym Symbol) *Node {
+	if start >= end {
+		return nil
+	}
+	commandNameEnd := start
+	for commandNameEnd < end && source[commandNameEnd] != ' ' && source[commandNameEnd] != '\t' {
+		commandNameEnd++
+	}
+	if commandNameEnd == start {
+		return nil
+	}
+	commandNameStartPoint := advancePointByBytes(Point{}, source[:start])
+	commandNameEndPoint := advancePointByBytes(commandNameStartPoint, source[start:commandNameEnd])
+	commandNameNamed := int(commandNameSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[commandNameSym].Named
+	commandName := newLeafNodeInArena(arena, commandNameSym, commandNameNamed, uint32(start), uint32(commandNameEnd), commandNameStartPoint, commandNameEndPoint)
+
+	commandChildren := []*Node{commandName}
+	elements := buildPowerShellCommandElements(arena, source, lang, commandNameEnd, end, commandElementsSym, commandArgSepSym, commandParameterSym, arrayLiteralSym, unaryExprSym, variableSym, stringLiteralSym, expandableStringSym, genericTokenSym, spaceSym)
+	if elements != nil {
+		commandChildren = append(commandChildren, elements)
+	}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(commandChildren))
+		copy(buf, commandChildren)
+		commandChildren = buf
+	}
+	commandNamed := int(commandSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[commandSym].Named
+	command := newParentNodeInArena(arena, commandSym, commandNamed, commandChildren, nil, 0)
+	command.endByte = uint32(end)
+	command.endPoint = advancePointByBytes(command.startPoint, source[start:end])
+	for fieldIdx, fieldName := range lang.FieldNames {
+		switch fieldName {
+		case "command_name":
+			ensureNodeFieldStorage(command, len(command.children))
+			command.fieldIDs[0] = FieldID(fieldIdx)
+			command.fieldSources[0] = fieldSourceDirect
+		case "command_elements":
+			if len(command.children) > 1 {
+				ensureNodeFieldStorage(command, len(command.children))
+				command.fieldIDs[1] = FieldID(fieldIdx)
+				command.fieldSources[1] = fieldSourceDirect
+			}
+		}
+	}
+
+	chainChildren := []*Node{command}
+	if arena != nil {
+		buf := arena.allocNodeSlice(1)
+		buf[0] = command
+		chainChildren = buf
+	}
+	pipelineChainNamed := int(pipelineChainSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[pipelineChainSym].Named
+	chain := newParentNodeInArena(arena, pipelineChainSym, pipelineChainNamed, chainChildren, nil, 0)
+	pipelineChildren := []*Node{chain}
+	if arena != nil {
+		buf := arena.allocNodeSlice(1)
+		buf[0] = chain
+		pipelineChildren = buf
+	}
+	pipelineNamed := int(pipelineSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[pipelineSym].Named
+	return newParentNodeInArena(arena, pipelineSym, pipelineNamed, pipelineChildren, nil, 0)
+}
+
+func buildPowerShellCommandElements(arena *nodeArena, source []byte, lang *Language, start, end int, commandElementsSym, commandArgSepSym, commandParameterSym, arrayLiteralSym, unaryExprSym, variableSym, stringLiteralSym, expandableStringSym, genericTokenSym, spaceSym Symbol) *Node {
+	children := make([]*Node, 0, 8)
+	i := start
+	for i < end {
+		sepStart := i
+		for i < end && (source[i] == ' ' || source[i] == '\t') {
+			i++
+		}
+		if i == sepStart {
+			break
+		}
+		sepLeafStart := advancePointByBytes(Point{}, source[:sepStart])
+		sepLeafEnd := advancePointByBytes(sepLeafStart, source[sepStart:i])
+		spaceLeaf := newLeafNodeInArena(arena, spaceSym, false, uint32(sepStart), uint32(i), sepLeafStart, sepLeafEnd)
+		sepChildren := []*Node{spaceLeaf}
+		if arena != nil {
+			buf := arena.allocNodeSlice(1)
+			buf[0] = spaceLeaf
+			sepChildren = buf
+		}
+		sepNamed := int(commandArgSepSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[commandArgSepSym].Named
+		sep := newParentNodeInArena(arena, commandArgSepSym, sepNamed, sepChildren, nil, 0)
+		children = append(children, sep)
+
+		tokenStart := i
+		tokenEnd := powerShellTokenEnd(source, i, end)
+		if tokenEnd <= tokenStart {
+			break
+		}
+		children = append(children, buildPowerShellCommandElement(arena, source, lang, tokenStart, tokenEnd, commandParameterSym, arrayLiteralSym, unaryExprSym, variableSym, stringLiteralSym, expandableStringSym, genericTokenSym))
+		i = tokenEnd
+	}
+	if len(children) == 0 {
+		return nil
+	}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(children))
+		copy(buf, children)
+		children = buf
+	}
+	elementsNamed := int(commandElementsSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[commandElementsSym].Named
+	return newParentNodeInArena(arena, commandElementsSym, elementsNamed, children, nil, 0)
+}
+
+func buildPowerShellCommandElement(arena *nodeArena, source []byte, lang *Language, start, end int, commandParameterSym, arrayLiteralSym, unaryExprSym, variableSym, stringLiteralSym, expandableStringSym, genericTokenSym Symbol) *Node {
+	startPoint := advancePointByBytes(Point{}, source[:start])
+	endPoint := advancePointByBytes(startPoint, source[start:end])
+	if source[start] == '-' {
+		named := int(commandParameterSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[commandParameterSym].Named
+		return newLeafNodeInArena(arena, commandParameterSym, named, uint32(start), uint32(end), startPoint, endPoint)
+	}
+	if source[start] == '$' {
+		variable := buildPowerShellVariableMemberAccess(arena, source, lang, start, end)
+		if variable == nil {
+			variableNamed := int(variableSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[variableSym].Named
+			variable = newLeafNodeInArena(arena, variableSym, variableNamed, uint32(start), uint32(end), startPoint, endPoint)
+		}
+		unaryChildren := []*Node{variable}
+		if arena != nil {
+			buf := arena.allocNodeSlice(1)
+			buf[0] = variable
+			unaryChildren = buf
+		}
+		unaryNamed := int(unaryExprSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[unaryExprSym].Named
+		unary := newParentNodeInArena(arena, unaryExprSym, unaryNamed, unaryChildren, nil, 0)
+		arrayChildren := []*Node{unary}
+		if arena != nil {
+			buf := arena.allocNodeSlice(1)
+			buf[0] = unary
+			arrayChildren = buf
+		}
+		arrayNamed := int(arrayLiteralSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[arrayLiteralSym].Named
+		return newParentNodeInArena(arena, arrayLiteralSym, arrayNamed, arrayChildren, nil, 0)
+	}
+	if source[start] == '(' && source[end-1] == ')' {
+		parenthesized := buildPowerShellParenthesizedExpression(arena, source, lang, start, end)
+		if parenthesized != nil {
+			unaryChildren := []*Node{parenthesized}
+			if arena != nil {
+				buf := arena.allocNodeSlice(1)
+				buf[0] = parenthesized
+				unaryChildren = buf
+			}
+			unaryNamed := int(unaryExprSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[unaryExprSym].Named
+			unary := newParentNodeInArena(arena, unaryExprSym, unaryNamed, unaryChildren, nil, 0)
+			arrayChildren := []*Node{unary}
+			if arena != nil {
+				buf := arena.allocNodeSlice(1)
+				buf[0] = unary
+				arrayChildren = buf
+			}
+			arrayNamed := int(arrayLiteralSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[arrayLiteralSym].Named
+			return newParentNodeInArena(arena, arrayLiteralSym, arrayNamed, arrayChildren, nil, 0)
+		}
+	}
+	if source[start] == '"' && source[end-1] == '"' {
+		expandable := buildPowerShellExpandableStringLiteralFromSymbol(arena, source, lang, start, end, expandableStringSym)
+		if expandable == nil {
+			return nil
+		}
+		stringChildren := []*Node{expandable}
+		if arena != nil {
+			buf := arena.allocNodeSlice(1)
+			buf[0] = expandable
+			stringChildren = buf
+		}
+		stringNamed := int(stringLiteralSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[stringLiteralSym].Named
+		stringNode := newParentNodeInArena(arena, stringLiteralSym, stringNamed, stringChildren, nil, 0)
+		unaryChildren := []*Node{stringNode}
+		if arena != nil {
+			buf := arena.allocNodeSlice(1)
+			buf[0] = stringNode
+			unaryChildren = buf
+		}
+		unaryNamed := int(unaryExprSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[unaryExprSym].Named
+		unary := newParentNodeInArena(arena, unaryExprSym, unaryNamed, unaryChildren, nil, 0)
+		arrayChildren := []*Node{unary}
+		if arena != nil {
+			buf := arena.allocNodeSlice(1)
+			buf[0] = unary
+			arrayChildren = buf
+		}
+		arrayNamed := int(arrayLiteralSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[arrayLiteralSym].Named
+		return newParentNodeInArena(arena, arrayLiteralSym, arrayNamed, arrayChildren, nil, 0)
+	}
+	genericNamed := int(genericTokenSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[genericTokenSym].Named
+	return newLeafNodeInArena(arena, genericTokenSym, genericNamed, uint32(start), uint32(end), startPoint, endPoint)
+}
+
+func buildPowerShellVariableMemberAccess(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	memberAccessSym, memberAccessNamed, ok := powerShellSymbolMeta(lang, "member_access")
+	if !ok {
+		return nil
+	}
+	variableSym, variableNamed, ok := powerShellSymbolMeta(lang, "variable")
+	if !ok {
+		return nil
+	}
+	backslashSym, backslashNamed, ok := powerShellSymbolMeta(lang, "\\")
+	if !ok {
+		return nil
+	}
+	dotSym, dotNamed, ok := powerShellSymbolMeta(lang, ".")
+	if !ok {
+		return nil
+	}
+	varEnd := start + 1
+	for varEnd < end {
+		b := source[varEnd]
+		if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_' {
+			varEnd++
+			continue
+		}
+		break
+	}
+	if varEnd >= end || source[varEnd] != '\\' {
+		return nil
+	}
+	dot := bytes.LastIndexByte(source[varEnd:end], '.')
+	if dot < 0 {
+		return nil
+	}
+	dot += varEnd
+	variable := newLeafNodeInArena(arena, variableSym, variableNamed, uint32(start), uint32(varEnd), advancePointByBytes(Point{}, source[:start]), advancePointByBytes(advancePointByBytes(Point{}, source[:start]), source[start:varEnd]))
+	pathName := buildPowerShellSimpleName(arena, source, lang, varEnd+1, dot)
+	memberName := buildPowerShellMemberName(arena, source, lang, dot+1, end)
+	if pathName == nil || memberName == nil {
+		return nil
+	}
+	errChildren := []*Node{
+		newLeafNodeInArena(arena, backslashSym, backslashNamed, uint32(varEnd), uint32(varEnd+1), advancePointByBytes(Point{}, source[:varEnd]), advancePointByBytes(advancePointByBytes(Point{}, source[:varEnd]), source[varEnd:varEnd+1])),
+		pathName,
+	}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(errChildren))
+		copy(buf, errChildren)
+		errChildren = buf
+	}
+	errNode := newParentNodeInArena(arena, errorSymbol, true, errChildren, nil, 0)
+	errNode.hasError = true
+	errNode.isExtra = true
+	children := []*Node{
+		variable,
+		errNode,
+		newLeafNodeInArena(arena, dotSym, dotNamed, uint32(dot), uint32(dot+1), advancePointByBytes(Point{}, source[:dot]), advancePointByBytes(advancePointByBytes(Point{}, source[:dot]), source[dot:dot+1])),
+		memberName,
+	}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(children))
+		copy(buf, children)
+		children = buf
+	}
+	return newParentNodeInArena(arena, memberAccessSym, memberAccessNamed, children, nil, 0)
+}
+
+func buildPowerShellExpandableStringLiteral(arena *nodeArena, source []byte, lang *Language, start, end int) *Node {
+	expandableSym, _, ok := powerShellSymbolMeta(lang, "expandable_string_literal")
+	if !ok {
+		return nil
+	}
+	return buildPowerShellExpandableStringLiteralFromSymbol(arena, source, lang, start, end, expandableSym)
+}
+
+func buildPowerShellExpandableStringLiteralFromSymbol(arena *nodeArena, source []byte, lang *Language, start, end int, expandableSym Symbol) *Node {
+	if start >= end {
+		return nil
+	}
+	expandableNamed := int(expandableSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[expandableSym].Named
+	variableSym, variableNamed, ok := powerShellSymbolMeta(lang, "variable")
+	if !ok {
+		return newLeafNodeInArena(arena, expandableSym, expandableNamed, uint32(start), uint32(end), advancePointByBytes(Point{}, source[:start]), advancePointByBytes(advancePointByBytes(Point{}, source[:start]), source[start:end]))
+	}
+	var children []*Node
+	for i := start + 1; i < end-1; i++ {
+		if source[i] != '$' {
+			continue
+		}
+		j := i + 1
+		for j < end-1 {
+			b := source[j]
+			if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_' {
+				j++
+				continue
+			}
+			break
+		}
+		if j == i+1 {
+			continue
+		}
+		children = append(children, newLeafNodeInArena(arena, variableSym, variableNamed, uint32(i), uint32(j), advancePointByBytes(Point{}, source[:i]), advancePointByBytes(advancePointByBytes(Point{}, source[:i]), source[i:j])))
+		i = j - 1
+	}
+	if len(children) == 0 {
+		return newLeafNodeInArena(arena, expandableSym, expandableNamed, uint32(start), uint32(end), advancePointByBytes(Point{}, source[:start]), advancePointByBytes(advancePointByBytes(Point{}, source[:start]), source[start:end]))
+	}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(children))
+		copy(buf, children)
+		children = buf
+	}
+	node := newParentNodeInArena(arena, expandableSym, expandableNamed, children, nil, 0)
+	node.startByte = uint32(start)
+	node.endByte = uint32(end)
+	node.startPoint = advancePointByBytes(Point{}, source[:start])
+	node.endPoint = advancePointByBytes(node.startPoint, source[start:end])
+	return node
+}
+
+func powerShellTokenEnd(source []byte, start, end int) int {
+	if start >= end {
+		return start
+	}
+	if source[start] == '"' {
+		for i := start + 1; i < end; i++ {
+			if source[i] == '"' && !isEscapedQuote(source, uint32(i)) {
+				return i + 1
+			}
+		}
+		return end
+	}
+	if source[start] == '(' {
+		if close := findMatchingDelimitedByte(source, start, end, '(', ')'); close >= 0 {
+			return close + 1
+		}
+		return end
+	}
+	i := start
+	for i < end && source[i] != ' ' && source[i] != '\t' {
+		i++
+	}
+	return i
+}
+
+func findMatchingBraceByte(source []byte, openPos, limit int) int {
+	if openPos < 0 || openPos >= len(source) {
+		return -1
+	}
+	if limit > len(source) {
+		limit = len(source)
+	}
+	depth := 0
+	for i := openPos; i < limit; i++ {
+		switch source[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 func normalizeCSharpTypeConstraintKeywords(root *Node, lang *Language) {
