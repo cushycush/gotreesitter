@@ -250,6 +250,55 @@ func TestParseCMultilineFunctionLikeMacro(t *testing.T) {
 	}
 }
 
+func TestParseCppUsingDeclarationKeepsScopeFieldOffSeparator(t *testing.T) {
+	lang := CppLanguage()
+	parser := gotreesitter.NewParser(lang)
+	src := []byte(`namespace tree_sitter {
+namespace rules {
+using std::move;
+}
+}
+`)
+
+	ts, err := NewCTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewCTokenSource failed: %v", err)
+	}
+
+	tree, err := parser.ParseWithTokenSource(src, ts)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	root := tree.RootNode()
+	if root == nil {
+		t.Fatal("nil root")
+	}
+	if root.HasError() {
+		t.Fatalf("parse has errors; root sexpr = %s; tokens = %v", root.SExpr(lang), dumpCTokenSourceTokens(t, src, lang))
+	}
+
+	var qual *gotreesitter.Node
+	gotreesitter.Walk(root, func(node *gotreesitter.Node, depth int) gotreesitter.WalkAction {
+		if node.Type(lang) == "qualified_identifier" {
+			qual = node
+			return gotreesitter.WalkStop
+		}
+		return gotreesitter.WalkContinue
+	})
+	if qual == nil {
+		t.Fatalf("missing qualified_identifier in %s", root.SExpr(lang))
+	}
+	if got, want := qual.FieldNameForChild(0, lang), "scope"; got != want {
+		t.Fatalf("child 0 field = %q, want %q in %s", got, want, qual.SExpr(lang))
+	}
+	if got := qual.FieldNameForChild(1, lang); got != "" {
+		t.Fatalf("child 1 field = %q, want empty in %s", got, qual.SExpr(lang))
+	}
+	if got, want := qual.FieldNameForChild(2, lang), "name"; got != want {
+		t.Fatalf("child 2 field = %q, want %q in %s", got, want, qual.SExpr(lang))
+	}
+}
+
 func dumpCTokenSourceTokens(t *testing.T, src []byte, lang *gotreesitter.Language) []string {
 	t.Helper()
 
