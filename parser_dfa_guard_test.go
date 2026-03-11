@@ -499,3 +499,58 @@ func TestNextGLRUnionDFATokenPrefersLongerVisibleTokenOverShorterMorePopularPref
 		t.Fatalf("token symbol = %d (%q), want %d (%q)", got, lang.SymbolNames[got], want, lang.SymbolNames[want])
 	}
 }
+
+func TestNextGLRUnionDFATokenHandlesNoLookaheadLexState(t *testing.T) {
+	lang := &Language{
+		SymbolNames: []string{"end", "identifier"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "end", Visible: false, Named: false},
+			{Name: "identifier", Visible: true, Named: true},
+		},
+		SymbolCount:     2,
+		TokenCount:      2,
+		StateCount:      3,
+		LargeStateCount: 3,
+		InitialState:    1,
+		LexStates: []LexState{
+			{Default: -1, EOF: -1},
+			{AcceptToken: 1, Default: -1, EOF: -1},
+		},
+		LexModes: []LexMode{
+			{LexState: 0},
+			{LexState: noLookaheadLexState},
+			{LexState: 1},
+		},
+		ParseTable: [][]uint16{
+			{0, 0},
+			{1, 0},
+			{1, 0},
+		},
+		ParseActions: []ParseActionEntry{
+			{Actions: nil},
+			{Actions: []ParseAction{{Type: ParseActionReduce, Symbol: 1, ChildCount: 0}}},
+		},
+	}
+	parser := NewParser(lang)
+	d := &dfaTokenSource{
+		lexer:             NewLexer(lang.LexStates, []byte("x")),
+		language:          lang,
+		state:             1,
+		glrStates:         []StateID{1, 2},
+		lookupActionIndex: parser.lookupActionIndex,
+	}
+
+	tok, ok := d.nextGLRUnionDFAToken()
+	if !ok {
+		t.Fatal("nextGLRUnionDFAToken returned ok=false, want true")
+	}
+	if !tok.NoLookahead {
+		t.Fatalf("token NoLookahead = false, want true: %#v", tok)
+	}
+	if got, want := tok.StartByte, uint32(0); got != want {
+		t.Fatalf("token start = %d, want %d", got, want)
+	}
+	if got, want := tok.EndByte, uint32(0); got != want {
+		t.Fatalf("token end = %d, want %d", got, want)
+	}
+}
