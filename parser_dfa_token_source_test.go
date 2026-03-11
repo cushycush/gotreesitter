@@ -58,6 +58,14 @@ func TestNextExternalTokenPrefersCandidateUsableByPrimaryState(t *testing.T) {
 	ts.SetParserState(2)
 	ts.SetGLRStates([]StateID{2, 1})
 
+	scored, ok := ts.nextGLRScoredExternalToken([]StateID{2, 1})
+	if !ok {
+		t.Fatal("expected scored external token")
+	}
+	if got, want := scored.Symbol, Symbol(2); got != want {
+		t.Fatalf("scored external token symbol = %d, want %d", got, want)
+	}
+
 	tok, ok := ts.nextExternalToken()
 	if !ok {
 		t.Fatal("expected external token")
