@@ -2342,6 +2342,78 @@ func TestNormalizeDModuleDefinitionBoundsSnapToStructuralChildren(t *testing.T) 
 	}
 }
 
+func TestNormalizeHCLConfigFileRootDropsTopLevelWhitespace(t *testing.T) {
+	lang := &Language{
+		Name:        "hcl",
+		SymbolNames: []string{"EOF", "config_file", "comment", "_whitespace", "body"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF", Visible: false, Named: false},
+			{Name: "config_file", Visible: true, Named: true},
+			{Name: "comment", Visible: true, Named: true},
+			{Name: "_whitespace", Visible: false, Named: false},
+			{Name: "body", Visible: true, Named: true},
+		},
+	}
+
+	arena := newNodeArena(arenaClassFull)
+	comment := newLeafNodeInArena(arena, 2, true, 0, 4, Point{}, Point{Column: 4})
+	ws1 := newLeafNodeInArena(arena, 3, false, 4, 5, Point{Column: 4}, Point{Row: 1})
+	body := newLeafNodeInArena(arena, 4, true, 5, 9, Point{Row: 1}, Point{Row: 1, Column: 4})
+	ws2 := newLeafNodeInArena(arena, 3, false, 9, 10, Point{Row: 1, Column: 4}, Point{Row: 2})
+	root := newParentNodeInArena(arena, 1, true, []*Node{comment, ws1, body, ws2}, nil, 0)
+
+	normalizeHCLConfigFileRoot(root, lang)
+
+	if got, want := len(root.children), 2; got != want {
+		t.Fatalf("len(root.children) = %d, want %d", got, want)
+	}
+	if got, want := root.children[0].Type(lang), "comment"; got != want {
+		t.Fatalf("root.children[0].Type = %q, want %q", got, want)
+	}
+	if got, want := root.children[1].Type(lang), "body"; got != want {
+		t.Fatalf("root.children[1].Type = %q, want %q", got, want)
+	}
+}
+
+func TestNormalizeHCLConfigFileRootSnapsBodyToStructuralChildren(t *testing.T) {
+	lang := &Language{
+		Name:        "hcl",
+		SymbolNames: []string{"EOF", "config_file", "body", "block", "comment"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF", Visible: false, Named: false},
+			{Name: "config_file", Visible: true, Named: true},
+			{Name: "body", Visible: true, Named: true},
+			{Name: "block", Visible: true, Named: true},
+			{Name: "comment", Visible: true, Named: true},
+		},
+	}
+
+	arena := newNodeArena(arenaClassFull)
+	block := newLeafNodeInArena(arena, 3, true, 10, 20, Point{Row: 1}, Point{Row: 1, Column: 10})
+	comment := newLeafNodeInArena(arena, 4, true, 22, 30, Point{Row: 2}, Point{Row: 2, Column: 8})
+	body := newParentNodeInArena(arena, 2, true, []*Node{block, comment}, nil, 0)
+	body.startByte = 0
+	body.startPoint = Point{}
+	body.endByte = 40
+	body.endPoint = Point{Row: 4}
+	root := newParentNodeInArena(arena, 1, true, []*Node{body}, nil, 0)
+
+	normalizeHCLConfigFileRoot(root, lang)
+
+	if got, want := body.startByte, uint32(10); got != want {
+		t.Fatalf("body.startByte = %d, want %d", got, want)
+	}
+	if got, want := body.endByte, uint32(30); got != want {
+		t.Fatalf("body.endByte = %d, want %d", got, want)
+	}
+	if got, want := body.startPoint, (Point{Row: 1}); got != want {
+		t.Fatalf("body.startPoint = %#v, want %#v", got, want)
+	}
+	if got, want := body.endPoint, (Point{Row: 2, Column: 8}); got != want {
+		t.Fatalf("body.endPoint = %#v, want %#v", got, want)
+	}
+}
+
 func TestNormalizeDSourceFileLeadingTriviaSnapsToFirstChild(t *testing.T) {
 	lang := &Language{
 		Name:        "d",
