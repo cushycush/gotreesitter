@@ -222,11 +222,6 @@ func (ts *CTokenSource) Next() gotreesitter.Token {
 			}
 		}
 
-		if b == '#' {
-			if tok, ok := ts.directiveToken(); ok {
-				return tok
-			}
-		}
 		if ts.preprocState == cPreprocAfterInclude {
 			if tok, ok := ts.systemLibStringToken(); ok {
 				return tok
