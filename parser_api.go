@@ -105,6 +105,20 @@ func treeParseClean(tree *Tree) bool {
 	return rt.StopReason == ParseStopAccepted && !rt.Truncated && !rt.TokenSourceEOFEarly
 }
 
+func rootOrNil(tree *Tree) *Node {
+	if tree == nil {
+		return nil
+	}
+	return tree.RootNode()
+}
+
+func normalizeReturnedTree(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil {
+		return
+	}
+	normalizeHTMLRecoveredNestedCustomTagRanges(root, source, lang)
+}
+
 func retryTreeEndByte(tree *Tree) uint32 {
 	if tree == nil {
 		return 0
@@ -588,6 +602,7 @@ func (p *Parser) Parse(source []byte) (*Tree, error) {
 		tree != nil {
 		tree = p.retryFullParseWithDFA(source, initialMaxStacks, deterministicExternalConflicts, tree)
 	}
+	normalizeReturnedTree(rootOrNil(tree), source, p.language)
 	return tree, nil
 }
 
@@ -611,6 +626,7 @@ func (p *Parser) ParseWithTokenSource(source []byte, ts TokenSource) (*Tree, err
 		tree != nil {
 		tree = p.retryFullParseWithTokenSource(source, ts, initialMaxStacks, deterministicExternalConflicts, tree)
 	}
+	normalizeReturnedTree(rootOrNil(tree), source, p.language)
 	return tree, nil
 }
 
@@ -629,7 +645,9 @@ func (p *Parser) ParseIncremental(source []byte, oldTree *Tree) (*Tree, error) {
 	}
 	lexer := NewLexer(p.language.LexStates, source)
 	ts := acquireDFATokenSource(lexer, p.language, p.lookupActionIndex, p.hasKeywordState)
-	return p.parseIncrementalInternal(source, oldTree, p.wrapIncludedRanges(ts), nil), nil
+	tree := p.parseIncrementalInternal(source, oldTree, p.wrapIncludedRanges(ts), nil)
+	normalizeReturnedTree(rootOrNil(tree), source, p.language)
+	return tree, nil
 }
 
 // ParseIncrementalWithTokenSource is like ParseIncremental but uses a custom
@@ -641,7 +659,9 @@ func (p *Parser) ParseIncrementalWithTokenSource(source []byte, oldTree *Tree, t
 	if canReuseUnchangedTree(source, oldTree, p.language) {
 		return oldTree, nil
 	}
-	return p.parseIncrementalInternal(source, oldTree, p.wrapIncludedRanges(ts), nil), nil
+	tree := p.parseIncrementalInternal(source, oldTree, p.wrapIncludedRanges(ts), nil)
+	normalizeReturnedTree(rootOrNil(tree), source, p.language)
+	return tree, nil
 }
 
 // ParseIncrementalProfiled is like ParseIncremental and also returns runtime
@@ -660,6 +680,7 @@ func (p *Parser) ParseIncrementalProfiled(source []byte, oldTree *Tree) (*Tree, 
 	ts := acquireDFATokenSource(lexer, p.language, p.lookupActionIndex, p.hasKeywordState)
 	timing := &incrementalParseTiming{}
 	tree := p.parseIncrementalInternal(source, oldTree, p.wrapIncludedRanges(ts), timing)
+	normalizeReturnedTree(rootOrNil(tree), source, p.language)
 	return tree, timing.toProfile(), nil
 }
 
@@ -674,6 +695,7 @@ func (p *Parser) ParseIncrementalWithTokenSourceProfiled(source []byte, oldTree 
 	}
 	timing := &incrementalParseTiming{}
 	tree := p.parseIncrementalInternal(source, oldTree, p.wrapIncludedRanges(ts), timing)
+	normalizeReturnedTree(rootOrNil(tree), source, p.language)
 	return tree, timing.toProfile(), nil
 }
 
