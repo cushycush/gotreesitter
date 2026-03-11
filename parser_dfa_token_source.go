@@ -302,6 +302,18 @@ func (d *dfaTokenSource) nextDFAToken() Token {
 	return tok
 }
 
+func (d *dfaTokenSource) nextTokenForLexState(lexState uint16) Token {
+	if d == nil || d.lexer == nil {
+		return Token{}
+	}
+	if lexState == noLookaheadLexState {
+		tok := d.eofTokenAtLexerPos()
+		tok.NoLookahead = true
+		return tok
+	}
+	return d.lexer.Next(lexState)
+}
+
 func (d *dfaTokenSource) shouldForceEOFLookahead() bool {
 	if d == nil || d.language == nil {
 		return false
