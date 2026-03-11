@@ -137,6 +137,8 @@ func init() {
 	// in each grammar's parser.c. These provide precise external token
 	// validity per parser state, matching C tree-sitter behavior.
 	externalLexStates := map[string][][]bool{
+		// Bash: generated from tree-sitter-bash ts_external_scanner_states.
+		"bash": bashExternalLexStates,
 		// SCSS: 6 external lex states, 4 external tokens
 		// [0]=_descendant_operator [1]=_pseudo_class_selector_colon
 		// [2]=__error_recovery [3]=_concat

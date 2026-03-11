@@ -40,7 +40,7 @@ const maxConsecutiveZeroWidthTokens = 4
 const maxConsecutiveZeroWidthTokensExternal = 128
 const maxConsecutiveZeroWidthTokensRepeatableExternal = 4096
 const noLookaheadLexState = ^uint16(0)
-const externalScannerSerializationBufferSize = 1024
+const externalScannerSerializationBufferSize = 4096
 
 var dfaTokenSourcePool = sync.Pool{
 	New: func() any {
@@ -628,6 +628,9 @@ func (d *dfaTokenSource) nextExternalToken() (Token, bool) {
 	if len(states) == 0 {
 		states = []StateID{d.state}
 	}
+	if tok, ok := d.nextGLRScoredExternalToken(states); ok {
+		return tok, true
+	}
 
 	if len(d.language.ExternalLexStates) > 0 {
 		// Use the precise external lex states table (matches C tree-sitter's
@@ -719,6 +722,166 @@ func (d *dfaTokenSource) nextExternalToken() (Token, bool) {
 	d.lexer.row = tok.EndPoint.Row
 	d.lexer.col = tok.EndPoint.Column
 	return tok, true
+}
+
+func (d *dfaTokenSource) nextGLRScoredExternalToken(states []StateID) (Token, bool) {
+	if d == nil || d.language == nil || d.language.ExternalScanner == nil || d.lookupActionIndex == nil {
+		return Token{}, false
+	}
+	if len(states) <= 1 || len(d.language.ExternalLexStates) == 0 {
+		return Token{}, false
+	}
+
+	primaryELS := -1
+	if int(d.state) < len(d.language.LexModes) {
+		primaryELS = int(d.language.LexModes[d.state].ExternalLexState)
+	}
+
+	elsOrder := make([]int, 0, len(states))
+	seen := make(map[int]struct{}, len(states))
+	addELS := func(st StateID) {
+		if int(st) >= len(d.language.LexModes) {
+			return
+		}
+		elsID := int(d.language.LexModes[st].ExternalLexState)
+		if elsID < 0 || elsID >= len(d.language.ExternalLexStates) {
+			return
+		}
+		if _, ok := seen[elsID]; ok {
+			return
+		}
+		seen[elsID] = struct{}{}
+		elsOrder = append(elsOrder, elsID)
+	}
+	addELS(d.state)
+	for _, st := range states {
+		addELS(st)
+	}
+	if len(elsOrder) <= 1 {
+		return Token{}, false
+	}
+
+	startPos := d.lexer.pos
+	startRow := d.lexer.row
+	startCol := d.lexer.col
+	snapshot := d.captureExternalScannerState()
+
+	bestFound := false
+	bestELS := -1
+	bestTok := Token{}
+	bestEndPos := startPos
+	bestEndRow := startRow
+	bestEndCol := startCol
+	bestSupport := -1
+	bestOriginActions := -1
+	bestSpecificity := -1
+	bestPrimaryHasAction := false
+
+	for _, elsID := range elsOrder {
+		row := d.language.ExternalLexStates[elsID]
+		d.restoreExternalScannerState(snapshot)
+
+		el := newExternalLexer(d.lexer.source, startPos, startRow, startCol)
+		if !d.runExternalScannerWithRetry(el, row) {
+			continue
+		}
+		tok, ok := el.token()
+		if !ok {
+			continue
+		}
+
+		support := 0
+		originActions := 0
+		primaryHasAction := d.lookupActionIndex(d.state, tok.Symbol) != 0
+		for _, st := range states {
+			idx := d.lookupActionIndex(st, tok.Symbol)
+			if idx == 0 {
+				continue
+			}
+			support++
+			if int(st) < len(d.language.LexModes) && int(d.language.LexModes[st].ExternalLexState) == elsID &&
+				int(idx) < len(d.language.ParseActions) {
+				if n := len(d.language.ParseActions[idx].Actions); n > originActions {
+					originActions = n
+				}
+			}
+		}
+		if support == 0 {
+			continue
+		}
+
+		specificity := tokenSymbolSpecificity(d.language, tok.Symbol)
+		better := !bestFound ||
+			support > bestSupport ||
+			(support == bestSupport && primaryHasAction && !bestPrimaryHasAction) ||
+			(support == bestSupport && primaryHasAction == bestPrimaryHasAction && originActions > bestOriginActions) ||
+			(support == bestSupport && primaryHasAction == bestPrimaryHasAction && originActions == bestOriginActions &&
+				primaryELS == elsID && primaryELS != bestELS) ||
+			(support == bestSupport && primaryHasAction == bestPrimaryHasAction && originActions == bestOriginActions &&
+				primaryELS == bestELS && specificity > bestSpecificity) ||
+			(support == bestSupport && primaryHasAction == bestPrimaryHasAction && originActions == bestOriginActions &&
+				primaryELS == bestELS && specificity == bestSpecificity && tok.StartByte < bestTok.StartByte) ||
+			(support == bestSupport && primaryHasAction == bestPrimaryHasAction && originActions == bestOriginActions &&
+				primaryELS == bestELS && specificity == bestSpecificity && tok.StartByte == bestTok.StartByte && tok.EndByte > bestTok.EndByte) ||
+			(support == bestSupport && primaryHasAction == bestPrimaryHasAction && originActions == bestOriginActions &&
+				primaryELS == bestELS && specificity == bestSpecificity && tok.StartByte == bestTok.StartByte &&
+				tok.EndByte == bestTok.EndByte &&
+				(int(tok.EndByte) > bestEndPos || tok.EndPoint.Row > bestEndRow || (tok.EndPoint.Row == bestEndRow && tok.EndPoint.Column > bestEndCol)))
+		if !better {
+			continue
+		}
+
+		bestFound = true
+		bestELS = elsID
+		bestTok = tok
+		bestEndPos = int(tok.EndByte)
+		bestEndRow = tok.EndPoint.Row
+		bestEndCol = tok.EndPoint.Column
+		bestSupport = support
+		bestOriginActions = originActions
+		bestSpecificity = specificity
+		bestPrimaryHasAction = primaryHasAction
+	}
+
+	d.restoreExternalScannerState(snapshot)
+	if !bestFound {
+		return Token{}, false
+	}
+
+	el := newExternalLexer(d.lexer.source, startPos, startRow, startCol)
+	if !d.runExternalScannerWithRetry(el, d.language.ExternalLexStates[bestELS]) {
+		d.restoreExternalScannerState(snapshot)
+		return Token{}, false
+	}
+	tok, ok := el.token()
+	if !ok {
+		d.restoreExternalScannerState(snapshot)
+		return Token{}, false
+	}
+
+	d.trackZeroWidthExternalToken(tok)
+	d.lexer.pos = int(tok.EndByte)
+	d.lexer.row = tok.EndPoint.Row
+	d.lexer.col = tok.EndPoint.Column
+	return tok, true
+}
+
+func tokenSymbolSpecificity(lang *Language, sym Symbol) int {
+	if lang == nil || int(sym) < 0 || int(sym) >= len(lang.SymbolNames) {
+		return 0
+	}
+	name := lang.SymbolNames[sym]
+	switch name {
+	case "", "word", "identifier", "_special_character", "string_content":
+		return 0
+	}
+	if name[0] == '_' {
+		return 1
+	}
+	if len(name) == 1 {
+		return 3
+	}
+	return 2
 }
 
 func (d *dfaTokenSource) runExternalScannerWithRetry(el *ExternalLexer, valid []bool) bool {
