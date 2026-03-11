@@ -3551,3 +3551,72 @@ func TestReservedWordSetIDZeroDoesNotBlock(t *testing.T) {
 		t.Fatalf("setID=0: got symbol %d, want 2 (KW_IF — promoted)", got.Symbol)
 	}
 }
+
+func TestNormalizeErlangSourceFileFormsSetsFormsOnlyAndSnapsBounds(t *testing.T) {
+	lang := &Language{
+		Name:        "erlang",
+		FieldNames:  []string{"", "forms_only"},
+		SymbolNames: []string{"EOF", "source_file", "comment", "fun_decl", "function_clause", "."},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF", Visible: false, Named: false},
+			{Name: "source_file", Visible: true, Named: true},
+			{Name: "comment", Visible: true, Named: true},
+			{Name: "fun_decl", Visible: true, Named: true},
+			{Name: "function_clause", Visible: true, Named: true},
+			{Name: ".", Visible: true, Named: false},
+		},
+	}
+
+	arena := newNodeArena(arenaClassFull)
+	comment := newLeafNodeInArena(arena, 2, true, 0, 10, Point{}, Point{Column: 10})
+	comment.isExtra = true
+	clause := newLeafNodeInArena(arena, 4, true, 12, 20, Point{Row: 1}, Point{Row: 1, Column: 8})
+	innerComment := newLeafNodeInArena(arena, 2, true, 21, 30, Point{Row: 2}, Point{Row: 2, Column: 9})
+	innerComment.isExtra = true
+	dot := newLeafNodeInArena(arena, 5, false, 31, 32, Point{Row: 3}, Point{Row: 3, Column: 1})
+	funDecl := newParentNodeInArena(arena, 3, true, []*Node{clause, innerComment, dot}, nil, 0)
+	funDecl.startByte = 0
+	funDecl.startPoint = Point{}
+	root := newParentNodeInArena(arena, 1, true, []*Node{comment, funDecl}, nil, 0)
+
+	normalizeErlangSourceFileForms(root, lang)
+
+	if got, want := root.FieldNameForChild(1, lang), "forms_only"; got != want {
+		t.Fatalf("root.FieldNameForChild(1) = %q, want %q", got, want)
+	}
+	if got, want := root.FieldNameForChild(0, lang), ""; got != want {
+		t.Fatalf("root.FieldNameForChild(0) = %q, want empty", got)
+	}
+	if got, want := funDecl.startByte, clause.startByte; got != want {
+		t.Fatalf("funDecl.startByte = %d, want %d", got, want)
+	}
+	if got, want := funDecl.endByte, dot.endByte; got != want {
+		t.Fatalf("funDecl.endByte = %d, want %d", got, want)
+	}
+}
+
+func TestNormalizeErlangSourceFileFormsSkipsExprsMode(t *testing.T) {
+	lang := &Language{
+		Name:        "erlang",
+		FieldNames:  []string{"", "forms_only"},
+		SymbolNames: []string{"EOF", "source_file", "comment", "atom"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF", Visible: false, Named: false},
+			{Name: "source_file", Visible: true, Named: true},
+			{Name: "comment", Visible: true, Named: true},
+			{Name: "atom", Visible: true, Named: true},
+		},
+	}
+
+	arena := newNodeArena(arenaClassFull)
+	comment := newLeafNodeInArena(arena, 2, true, 0, 2, Point{}, Point{Column: 2})
+	comment.isExtra = true
+	expr := newLeafNodeInArena(arena, 3, true, 3, 7, Point{Column: 3}, Point{Column: 7})
+	root := newParentNodeInArena(arena, 1, true, []*Node{comment, expr}, nil, 0)
+
+	normalizeErlangSourceFileForms(root, lang)
+
+	if got := root.FieldNameForChild(1, lang); got != "" {
+		t.Fatalf("root.FieldNameForChild(1) = %q, want empty", got)
+	}
+}
