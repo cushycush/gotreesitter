@@ -4,11 +4,12 @@ import "sort"
 
 // HighlightRange represents a styled range of source code, mapping a byte span
 // to a capture name from a highlight query. The editor maps capture names
-// (e.g., "keyword", "string", "function") to FSS style classes.
+// (e.g., "keyword", "string", "function") to CSS style classes.
 type HighlightRange struct {
-	StartByte uint32
-	EndByte   uint32
-	Capture   string // "keyword", "string", "function", etc.
+	StartByte    uint32
+	EndByte      uint32
+	Capture      string // "keyword", "string", "function", etc.
+	PatternIndex int    // query pattern index; later patterns override earlier for identical ranges
 }
 
 // Highlighter is a high-level API that takes source code and returns styled
@@ -110,9 +111,10 @@ func (h *Highlighter) highlightTree(tree *Tree) []HighlightRange {
 				continue
 			}
 			ranges = append(ranges, HighlightRange{
-				StartByte: node.StartByte(),
-				EndByte:   node.EndByte(),
-				Capture:   c.Name,
+				StartByte:    node.StartByte(),
+				EndByte:      node.EndByte(),
+				Capture:      c.Name,
+				PatternIndex: m.PatternIndex,
 			})
 		}
 	}
@@ -127,7 +129,11 @@ func (h *Highlighter) highlightTree(tree *Tree) []HighlightRange {
 		}
 		wi := ranges[i].EndByte - ranges[i].StartByte
 		wj := ranges[j].EndByte - ranges[j].StartByte
-		return wi > wj
+		if wi != wj {
+			return wi > wj // wider (outer) ranges first
+		}
+		// Identical ranges: later patterns override earlier (more specific wins).
+		return ranges[i].PatternIndex < ranges[j].PatternIndex
 	})
 
 	return resolveOverlaps(ranges)
