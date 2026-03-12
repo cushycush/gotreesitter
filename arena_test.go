@@ -83,3 +83,67 @@ func TestArenaResetRetainsOverflowWithinBudget(t *testing.T) {
 		t.Fatalf("retained overflow capacity = %d, limit = %d", retained, limit)
 	}
 }
+
+func TestArenaResetRetainsChildSlabsWithinBudget(t *testing.T) {
+	arena := newNodeArena(arenaClassFull)
+	base := defaultChildSliceCap(arena.class)
+	if base <= 0 {
+		t.Fatal("expected positive child slab capacity")
+	}
+
+	for i := 0; i < 32; i++ {
+		s := arena.allocNodeSlice(base)
+		if len(s) != base {
+			t.Fatalf("allocNodeSlice len = %d, want %d", len(s), base)
+		}
+	}
+	if len(arena.childSlabs) < 2 {
+		t.Fatalf("expected multiple child slabs before reset, got %d", len(arena.childSlabs))
+	}
+
+	arena.reset()
+
+	retained := 0
+	for i, slab := range arena.childSlabs {
+		if slab.used != 0 {
+			t.Fatalf("child slab %d used after reset = %d, want 0", i, slab.used)
+		}
+		retained += len(slab.data)
+	}
+	limit := maxRetainedChildSliceCapacityForClass(arena.class)
+	if retained > limit {
+		t.Fatalf("retained child slab capacity = %d, limit = %d", retained, limit)
+	}
+}
+
+func TestArenaResetRetainsFieldSlabsWithinBudget(t *testing.T) {
+	arena := newNodeArena(arenaClassFull)
+	base := defaultFieldSliceCap(arena.class)
+	if base <= 0 {
+		t.Fatal("expected positive field slab capacity")
+	}
+
+	for i := 0; i < 32; i++ {
+		s := arena.allocFieldIDSlice(base)
+		if len(s) != base {
+			t.Fatalf("allocFieldIDSlice len = %d, want %d", len(s), base)
+		}
+	}
+	if len(arena.fieldSlabs) < 2 {
+		t.Fatalf("expected multiple field slabs before reset, got %d", len(arena.fieldSlabs))
+	}
+
+	arena.reset()
+
+	retained := 0
+	for i, slab := range arena.fieldSlabs {
+		if slab.used != 0 {
+			t.Fatalf("field slab %d used after reset = %d, want 0", i, slab.used)
+		}
+		retained += len(slab.data)
+	}
+	limit := maxRetainedFieldSliceCapacityForClass(arena.class)
+	if retained > limit {
+		t.Fatalf("retained field slab capacity = %d, limit = %d", retained, limit)
+	}
+}

@@ -1,5 +1,7 @@
 package gotreesitter
 
+import "unsafe"
+
 // glrStack is one version of the parse stack in a GLR parser.
 // When the parse table has multiple actions for a (state, symbol) pair,
 // the parser forks: one glrStack per alternative. Stacks that hit errors
@@ -78,10 +80,11 @@ type glrMergeSlot struct {
 }
 
 type glrEntryScratch struct {
-	slabs      []stackEntrySlab
-	slabCursor int
-	usedTotal  int
-	peakUsed   int
+	slabs          []stackEntrySlab
+	slabCursor     int
+	usedTotal      int
+	peakUsed       int
+	allocatedBytes int64
 }
 
 type stackEntrySlab struct {
@@ -98,6 +101,7 @@ func (s *glrEntryScratch) ensureInitialCap(minEntries int) {
 		capacity = minEntries
 	}
 	s.slabs = append(s.slabs, stackEntrySlab{data: make([]stackEntry, capacity)})
+	s.allocatedBytes += stackEntryBytesForCap(capacity)
 	s.slabCursor = 0
 }
 
@@ -1043,6 +1047,7 @@ func (s *glrEntryScratch) allocWithCap(length, capacity int) []stackEntry {
 			capacity = n
 		}
 		s.slabs = append(s.slabs, stackEntrySlab{data: make([]stackEntry, capacity)})
+		s.allocatedBytes += stackEntryBytesForCap(capacity)
 		s.slabCursor = 0
 	}
 	if s.slabCursor < 0 || s.slabCursor >= len(s.slabs) {
@@ -1062,6 +1067,7 @@ func (s *glrEntryScratch) allocWithCap(length, capacity int) []stackEntry {
 				capacity = n
 			}
 			s.slabs = append(s.slabs, stackEntrySlab{data: make([]stackEntry, capacity)})
+			s.allocatedBytes += stackEntryBytesForCap(capacity)
 		}
 		slab := &s.slabs[i]
 		if len(slab.data)-slab.used < n {
@@ -1106,6 +1112,7 @@ func (s *glrEntryScratch) reset() {
 	if len(s.slabs) == 0 {
 		s.usedTotal = 0
 		s.peakUsed = 0
+		s.allocatedBytes = 0
 		return
 	}
 
@@ -1138,6 +1145,7 @@ func (s *glrEntryScratch) reset() {
 		s.slabCursor = 0
 		s.usedTotal = 0
 		s.peakUsed = 0
+		s.recomputeAllocatedBytes()
 		return
 	}
 
@@ -1149,6 +1157,7 @@ func (s *glrEntryScratch) reset() {
 	s.slabCursor = 0
 	s.usedTotal = 0
 	s.peakUsed = 0
+	s.recomputeAllocatedBytes()
 }
 
 func (s *glrEntryScratch) peakEntriesUsed() int {
@@ -1156,4 +1165,22 @@ func (s *glrEntryScratch) peakEntriesUsed() int {
 		return 0
 	}
 	return s.peakUsed
+}
+
+func stackEntryBytesForCap(n int) int64 {
+	if n <= 0 {
+		return 0
+	}
+	return int64(n) * int64(unsafe.Sizeof(stackEntry{}))
+}
+
+func (s *glrEntryScratch) recomputeAllocatedBytes() {
+	if s == nil {
+		return
+	}
+	var total int64
+	for i := range s.slabs {
+		total += stackEntryBytesForCap(len(s.slabs[i].data))
+	}
+	s.allocatedBytes = total
 }

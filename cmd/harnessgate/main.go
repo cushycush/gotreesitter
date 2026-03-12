@@ -28,36 +28,41 @@ type stepResult struct {
 
 func main() {
 	var (
-		mode                   string
-		outDir                 string
-		runRootTests           bool
-		runCgoParity           bool
-		runPerf                bool
-		parityRunRegex         string
-		parityTags             string
-		benchRegex             string
-		benchCount             int
-		benchBenchtime         string
-		benchBase              string
-		maxNSRegression        float64
-		maxBytesRegression     float64
-		maxAllocsRegression    float64
-		goMaxProcs             int
-		realCorpusDir          string
-		realCorpusLangs        string
-		realCorpusManifest     string
-		realCorpusResultPath   string
-		realCorpusArtifactDir  string
-		realCorpusScoreboardMD string
-		realCorpusBoardJSON    string
-		realCorpusBoardMD      string
-		realCorpusL4Limit      int
-		realCorpusL4Languages  string
-		confidenceManifestPath string
-		confidenceProfile      string
-		confidenceResultsPath  string
-		confidenceMinScore     float64
-		confidenceIgnoreMiss   bool
+		mode                    string
+		outDir                  string
+		runRootTests            bool
+		runCgoParity            bool
+		runPerf                 bool
+		parityRunRegex          string
+		parityTags              string
+		benchRegex              string
+		benchCount              int
+		benchBenchtime          string
+		benchBase               string
+		maxNSRegression         float64
+		maxBytesRegression      float64
+		maxAllocsRegression     float64
+		goMaxProcs              int
+		realCorpusDir           string
+		realCorpusLangs         string
+		realCorpusManifest      string
+		realCorpusResultPath    string
+		realCorpusArtifactDir   string
+		realCorpusArtifactMode  string
+		realCorpusOracleTimeout int
+		realCorpusGCAfterFile   bool
+		realCorpusSplitByLang   bool
+		realCorpusSkipOracleErr bool
+		realCorpusScoreboardMD  string
+		realCorpusBoardJSON     string
+		realCorpusBoardMD       string
+		realCorpusL4Limit       int
+		realCorpusL4Languages   string
+		confidenceManifestPath  string
+		confidenceProfile       string
+		confidenceResultsPath   string
+		confidenceMinScore      float64
+		confidenceIgnoreMiss    bool
 	)
 
 	flag.StringVar(&mode, "mode", "all", "one of: all, correctness, perf")
@@ -80,6 +85,11 @@ func main() {
 	flag.StringVar(&realCorpusManifest, "real-corpus-manifest", "", "optional manifest.json used to build an L3/L4 real corpus board after parity")
 	flag.StringVar(&realCorpusResultPath, "real-corpus-out", "", "optional explicit corpus JSONL output path")
 	flag.StringVar(&realCorpusArtifactDir, "real-corpus-artifacts", "", "optional explicit corpus artifact dir")
+	flag.StringVar(&realCorpusArtifactMode, "real-corpus-artifact-mode", "failures", "artifact emission mode passed to corpus_parity: all|failures")
+	flag.IntVar(&realCorpusOracleTimeout, "real-corpus-oracle-timeout-ms", 5000, "if >0, set a per-file timeout for pinned C oracle parses during real-corpus parity so pathological oracle runs become exclusions instead of board stoppers")
+	flag.BoolVar(&realCorpusGCAfterFile, "real-corpus-gc-after-file", true, "when true, ask corpus_parity to force GC after each real-corpus file to reduce peak RSS")
+	flag.BoolVar(&realCorpusSplitByLang, "real-corpus-split-by-language", true, "when true and -real-corpus-langs is an explicit language list, run corpus_parity once per language and append into one combined JSONL")
+	flag.BoolVar(&realCorpusSkipOracleErr, "real-corpus-skip-go-on-oracle-error", true, "when true, skip gotreesitter parsing for real-corpus files whose C oracle root already has parse errors")
 	flag.StringVar(&realCorpusScoreboardMD, "real-corpus-scoreboard", "", "optional explicit corpus scoreboard markdown path")
 	flag.StringVar(&realCorpusBoardJSON, "real-corpus-board-json", "", "optional explicit real corpus board JSON output path")
 	flag.StringVar(&realCorpusBoardMD, "real-corpus-board-md", "", "optional explicit real corpus board markdown output path")
@@ -118,6 +128,14 @@ func main() {
 	}
 	if realCorpusL4Limit < 0 {
 		fatalf("-real-corpus-l4-limit must be >= 0")
+	}
+	switch mode := strings.TrimSpace(realCorpusArtifactMode); mode {
+	case "", "all", "failures":
+	default:
+		fatalf("invalid -real-corpus-artifact-mode %q (want all|failures)", realCorpusArtifactMode)
+	}
+	if realCorpusOracleTimeout < 0 {
+		fatalf("-real-corpus-oracle-timeout-ms must be >= 0")
 	}
 	if realCorpusL4Limit > 0 && strings.TrimSpace(realCorpusL4Languages) != "" {
 		fatalf("set only one of -real-corpus-l4-limit or -real-corpus-l4-languages")
@@ -161,30 +179,96 @@ func main() {
 		if strings.TrimSpace(artifactDir) == "" {
 			artifactDir = harnessSubprocessOutputPath(outDir, "03_real_corpus_dump_v1")
 		}
+		artifactDir = mustAbs(artifactDir)
 		scoreboard := realCorpusScoreboardMD
 		if strings.TrimSpace(scoreboard) == "" {
 			scoreboard = harnessSubprocessOutputPath(outDir, "03_real_corpus_PARITY.md")
 		}
-		appendResult(runStep(step{
-			Name: "cgo-real-corpus-parity",
-			Dir:  "cgo_harness",
-			Command: []string{
-				"go", "run", "-tags", parityTags, "./cmd/corpus_parity",
-				"--lang", realCorpusLangs,
-				"--corpus", realCorpusDir,
-				"--out", outJSONL,
-				"--artifact-dir", artifactDir,
-				"--scoreboard", scoreboard,
-			},
-			LogPath: filepath.Join(outDir, "03_cgo_real_corpus.log"),
-		}))
-
 		manifestPath := strings.TrimSpace(realCorpusManifest)
 		if manifestPath == "" {
 			candidate := filepath.Join(realCorpusDir, "manifest.json")
 			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 				manifestPath = candidate
 			}
+		}
+		splitLangs := resolveRealCorpusSplitLanguages(realCorpusLangs)
+		if realCorpusSplitByLang && len(splitLangs) > 1 {
+			if err := os.Remove(resolvedRealCorpusOut); err != nil && !errors.Is(err, os.ErrNotExist) {
+				fatalf("remove %s: %v", resolvedRealCorpusOut, err)
+			}
+			for i, lang := range splitLangs {
+				langOut := mustAbs(filepath.Join(outDir, fmt.Sprintf("03_real_corpus_results_%02d_%s.jsonl", i+1, safeStepName(lang))))
+				langLog := filepath.Join(outDir, fmt.Sprintf("03_cgo_real_corpus_%02d_%s.log", i+1, safeStepName(lang)))
+				langStep := step{
+					Name: fmt.Sprintf("cgo-real-corpus-parity/%s", lang),
+					Dir:  "cgo_harness",
+					Command: []string{
+						"go", "run", "-tags", parityTags, "./cmd/corpus_parity",
+						"--lang", lang,
+						"--corpus", realCorpusDir,
+						"--out", langOut,
+						"--artifact-dir", artifactDir,
+						"--artifact-mode", realCorpusArtifactMode,
+						"--scoreboard", "",
+					},
+					LogPath: langLog,
+				}
+				if realCorpusOracleTimeout > 0 {
+					langStep.Command = append(langStep.Command, "--oracle-timeout-ms", fmt.Sprintf("%d", realCorpusOracleTimeout))
+				}
+				if realCorpusSkipOracleErr {
+					langStep.Command = append(langStep.Command, "--skip-go-on-oracle-error")
+				}
+				if realCorpusGCAfterFile {
+					langStep.Command = append(langStep.Command, "--gc-after-file")
+				}
+				langRes := runStep(langStep)
+				appendResult(langRes)
+				if langRes.Err != nil {
+					break
+				}
+				if err := appendFileContents(resolvedRealCorpusOut, langOut); err != nil {
+					appendResult(stepResult{
+						Step: step{
+							Name:    fmt.Sprintf("cgo-real-corpus-append/%s", lang),
+							LogPath: langLog,
+						},
+						Err: err,
+					})
+					break
+				}
+			}
+			if strings.TrimSpace(scoreboard) != "" {
+				scoreboard = mustAbs(scoreboard)
+				if err := writeSplitRealCorpusScoreboard(scoreboard, splitLangs, resolvedRealCorpusOut); err != nil {
+					fatalf("write split real corpus scoreboard: %v", err)
+				}
+			}
+		} else {
+			realCorpusStep := step{
+				Name: "cgo-real-corpus-parity",
+				Dir:  "cgo_harness",
+				Command: []string{
+					"go", "run", "-tags", parityTags, "./cmd/corpus_parity",
+					"--lang", realCorpusLangs,
+					"--corpus", realCorpusDir,
+					"--out", resolvedRealCorpusOut,
+					"--artifact-dir", artifactDir,
+					"--artifact-mode", realCorpusArtifactMode,
+					"--scoreboard", mustAbs(scoreboard),
+				},
+				LogPath: filepath.Join(outDir, "03_cgo_real_corpus.log"),
+			}
+			if realCorpusOracleTimeout > 0 {
+				realCorpusStep.Command = append(realCorpusStep.Command, "--oracle-timeout-ms", fmt.Sprintf("%d", realCorpusOracleTimeout))
+			}
+			if realCorpusSkipOracleErr {
+				realCorpusStep.Command = append(realCorpusStep.Command, "--skip-go-on-oracle-error")
+			}
+			if realCorpusGCAfterFile {
+				realCorpusStep.Command = append(realCorpusStep.Command, "--gc-after-file")
+			}
+			appendResult(runStep(realCorpusStep))
 		}
 		if manifestPath != "" {
 			manifestPath = mustAbs(manifestPath)
@@ -198,7 +282,7 @@ func main() {
 				boardMD = filepath.Join(outDir, "03_real_corpus_board.md")
 			}
 			boardMD = mustAbs(boardMD)
-			outJSONL = mustAbs(outJSONL)
+			outJSONL = resolvedRealCorpusOut
 			cmd := []string{
 				"go", "run", "./cmd/real_corpus_board",
 				"--manifest", manifestPath,
@@ -363,6 +447,86 @@ func mustAbs(path string) string {
 		fatalf("resolve absolute path for %q: %v", path, err)
 	}
 	return abs
+}
+
+func resolveRealCorpusSplitLanguages(raw string) []string {
+	value := strings.TrimSpace(raw)
+	switch value {
+	case "", "top", "top10", "top50":
+		return nil
+	default:
+		return parseCSVList(raw)
+	}
+}
+
+func parseCSVList(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 16)
+	for _, part := range strings.Split(raw, ",") {
+		name := strings.TrimSpace(part)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
+func safeStepName(name string) string {
+	s := strings.TrimSpace(name)
+	if s == "" {
+		return "unnamed"
+	}
+	s = strings.ReplaceAll(s, "/", "_")
+	s = strings.ReplaceAll(s, "\\", "_")
+	s = strings.ReplaceAll(s, " ", "_")
+	s = strings.ReplaceAll(s, ":", "_")
+	return s
+}
+
+func appendFileContents(dst, src string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
+}
+
+func writeSplitRealCorpusScoreboard(path string, langs []string, resultsPath string) error {
+	var b strings.Builder
+	b.WriteString("# PARITY\n\n")
+	b.WriteString("_Generated by harnessgate split-by-language real-corpus run._\n\n")
+	b.WriteString("Combined results JSONL: `")
+	b.WriteString(resultsPath)
+	b.WriteString("`\n\n")
+	if len(langs) > 0 {
+		b.WriteString("Languages:\n")
+		for _, lang := range langs {
+			b.WriteString("- `")
+			b.WriteString(lang)
+			b.WriteString("`\n")
+		}
+	}
+	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
 func harnessSubprocessOutputPath(outDir, name string) string {

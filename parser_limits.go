@@ -33,6 +33,19 @@ func parseNodeLimit(sourceLen int) int {
 	return limit * scale
 }
 
+func parseMemoryBudget(sourceLen int) int64 {
+	mb := parseMemoryBudgetMB()
+	if mb <= 0 {
+		return 0
+	}
+	// Keep the budget source-length aware so callers can lower it to zero for
+	// tests without introducing an unused-parameter path here.
+	if sourceLen < 0 {
+		sourceLen = 0
+	}
+	return int64(mb) * 1024 * 1024
+}
+
 func parseFullArenaNodeCapacity(sourceLen, hint int) int {
 	base := nodeCapacityForClass(arenaClassFull)
 	if hint > 0 {

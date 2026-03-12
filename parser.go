@@ -17,30 +17,32 @@ import (
 // Parser is not safe for concurrent use. Use one parser per goroutine, a
 // ParserPool, or guard shared parser instances with external synchronization.
 type Parser struct {
-	language          *Language
-	reuseCursor       reuseCursor
-	reuseScratch      reuseScratch
-	reuseMu           sync.Mutex
-	fullArenaHint     uint32
-	rootSymbol        Symbol
-	hasRootSymbol     bool
-	hasRecoverState   []bool
-	hasRecoverSymbol  []bool
-	recoverByState    [][]recoverSymbolAction
-	hasKeywordState   []bool
-	forceRawSpanAll   bool
-	forceRawSpanTable []bool
-	included          []Range
-	logger            ParserLogger
-	glrTrace          bool // temporary: verbose GLR stack tracing
-	maxConflictWidth  int  // widest N-way conflict in the parse table
-	timeoutMicros     uint64
-	cancellationFlag  *uint32
-	denseLimit        int
-	smallBase         int
-	smallLookup       [][]smallActionPair
-	reduceAliasSeq    [][]Symbol
-	reduceHasFields   []bool
+	language            *Language
+	reuseCursor         reuseCursor
+	reuseScratch        reuseScratch
+	reuseMu             sync.Mutex
+	reparseFactory      normalizationTokenSourceFactory
+	skipRecoveryReparse bool
+	fullArenaHint       uint32
+	rootSymbol          Symbol
+	hasRootSymbol       bool
+	hasRecoverState     []bool
+	hasRecoverSymbol    []bool
+	recoverByState      [][]recoverSymbolAction
+	hasKeywordState     []bool
+	forceRawSpanAll     bool
+	forceRawSpanTable   []bool
+	included            []Range
+	logger              ParserLogger
+	glrTrace            bool // temporary: verbose GLR stack tracing
+	maxConflictWidth    int  // widest N-way conflict in the parse table
+	timeoutMicros       uint64
+	cancellationFlag    *uint32
+	denseLimit          int
+	smallBase           int
+	smallLookup         [][]smallActionPair
+	reduceAliasSeq      [][]Symbol
+	reduceHasFields     []bool
 }
 
 type smallActionPair struct {
@@ -798,6 +800,21 @@ func (p *Parser) logf(kind ParserLogType, format string, args ...any) {
 	p.logger(kind, fmt.Sprintf(format, args...))
 }
 
+func resolveParseMaxStacks(configuredMaxStacks, maxStacksOverride, conflictWidth int) (maxStacks int, retryPass bool) {
+	maxStacks = configuredMaxStacks
+	if maxStacks <= 0 {
+		maxStacks = maxGLRStacks
+	}
+	if maxStacksOverride > 0 {
+		maxStacks = maxStacksOverride
+		retryPass = maxStacksOverride > configuredMaxStacks
+	}
+	if conflictWidth > maxStacks {
+		maxStacks = conflictWidth
+	}
+	return maxStacks, retryPass
+}
+
 // parseInternal is the core GLR parsing loop shared by Parse and
 // ParseWithTokenSource.
 //
@@ -853,6 +870,8 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		arena.ensureNodeCapacity(parseIncrementalArenaNodeCapacity(len(source)))
 		scratch.entries.ensureInitialCap(parseIncrementalEntryScratchCapacity(len(source)))
 	}
+	arena.setBudget(parseMemoryBudget(len(source)))
+	scratch.setBudget(parseMemoryBudget(len(source)))
 	var reuseState parseReuseState
 	nodeCount := 0
 	iterationsUsed := 0
@@ -868,11 +887,33 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		expectedEOFByte = p.included[len(p.included)-1].EndByte
 	}
 	parseRuntime := ParseRuntime{
-		StopReason:      ParseStopNone,
-		SourceLen:       uint32(len(source)),
-		ExpectedEOFByte: expectedEOFByte,
+		StopReason:        ParseStopNone,
+		SourceLen:         uint32(len(source)),
+		ExpectedEOFByte:   expectedEOFByte,
+		MemoryBudgetBytes: arena.budgetBytes,
+	}
+	arenaStatsCaptured := false
+	captureArenaStats := func() {
+		if arenaStatsCaptured || arena == nil {
+			return
+		}
+		parseRuntime.ArenaBytesAllocated = arena.allocatedBytes
+		parseRuntime.MemoryBudgetBytes = arena.budgetBytes
+		arenaStatsCaptured = true
+	}
+	scratchStatsCaptured := false
+	captureScratchStats := func() {
+		if scratchStatsCaptured || scratch == nil {
+			return
+		}
+		parseRuntime.ScratchBytesAllocated = scratch.allocatedBytes()
+		parseRuntime.EntryScratchBytesAllocated = scratch.entries.allocatedBytes
+		parseRuntime.GSSBytesAllocated = scratch.gss.allocatedBytes
+		scratchStatsCaptured = true
 	}
 	finalizeTree := func(tree *Tree, stopReason ParseStopReason) *Tree {
+		captureArenaStats()
+		captureScratchStats()
 		if tokenSourceEOFEarly && (stopReason == ParseStopAccepted || stopReason == ParseStopNone) {
 			stopReason = ParseStopTokenSourceEOF
 		}
@@ -908,14 +949,17 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		return tree
 	}
 	finalize := func(stacks []glrStack, stopReason ParseStopReason) *Tree {
+		captureArenaStats()
 		tree := p.buildResultFromGLR(stacks, source, arena, oldTree, &reuseState, &scratch.nodeLinks)
 		return finalizeTree(tree, stopReason)
 	}
 	finalizeErrorTree := func(stopReason ParseStopReason) *Tree {
+		captureArenaStats()
 		arena.Release()
 		return finalizeTree(parseErrorTree(source, p.language), stopReason)
 	}
 	finalizeRecoveredNodes := func(nodes []*Node) *Tree {
+		captureArenaStats()
 		tree := p.buildResultFromNodes(nodes, source, arena, oldTree, &reuseState, &scratch.nodeLinks)
 		if root := tree.RootNode(); root != nil {
 			normalizeSQLRecoveredMissingNull(root, arena, p.language)
@@ -949,17 +993,8 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 	if timing != nil && timing.maxStacksSeen < len(stacks) {
 		timing.maxStacksSeen = len(stacks)
 	}
-	maxStacks := parseMaxGLRStacksValue()
-	if maxStacksOverride > 0 && maxStacksOverride > maxStacks {
-		maxStacks = maxStacksOverride
-	}
-	// Ensure the stack cap is at least as wide as the grammar's widest
-	// N-way conflict. Without this, retainTopStacks silently drops correct
-	// parse paths, producing wrong trees instead of triggering error recovery.
-	if p.maxConflictWidth > maxStacks {
-		maxStacks = p.maxConflictWidth
-	}
-	mergePerKeyCap := maxStacksPerMergeKey
+	maxStacks, retryPass := resolveParseMaxStacks(parseMaxGLRStacksValue(), maxStacksOverride, p.maxConflictWidth)
+	mergePerKeyCap := parseMaxMergePerKeyValue()
 	if maxMergePerKeyOverride > mergePerKeyCap {
 		mergePerKeyCap = maxMergePerKeyOverride
 	}
@@ -1007,6 +1042,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 	parseRuntime.IterationLimit = maxIter
 	parseRuntime.StackDepthLimit = maxDepth
 	parseRuntime.NodeLimit = maxNodes
+	parseRuntime.MemoryBudgetBytes = arena.budgetBytes
 
 	needToken := true
 	var tok Token
@@ -1152,6 +1188,12 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		if nodeCount > maxNodes {
 			return finalize(stacks, ParseStopNodeLimit)
 		}
+		if arena.budgetExhausted() {
+			return finalize(stacks, ParseStopMemoryBudget)
+		}
+		if scratch.budgetExhausted() {
+			return finalize(stacks, ParseStopMemoryBudget)
+		}
 
 		// Use the primary (first) stack's state for DFA lex mode selection.
 		// Pass all active GLR stack states so external scanner valid symbols
@@ -1242,6 +1284,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		// We iterate by index because forks may append to `stacks`.
 		numStacks := len(stacks)
 		anyReduced := false
+		forceAdvanceAfterReduce := false
 
 		if p.glrTrace {
 			symName := "?"
@@ -1448,7 +1491,9 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				act := actions[0]
 				disableBashReduceChain := p.language != nil && p.language.Name == "bash" && s.gss.head != nil
 				if act.Type == ParseActionReduce && !disableBashReduceChain {
-					p.applyActionWithReduceChain(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks, &trackChildErrors)
+					if p.applyActionWithReduceChain(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks, &trackChildErrors) {
+						forceAdvanceAfterReduce = true
+					}
 				} else {
 					p.applyAction(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks, &trackChildErrors)
 				}
@@ -1466,7 +1511,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		// avoid suppressing the first-pass → retry escalation path. On
 		// the first pass, letting all stacks die triggers a retry at a
 		// higher stack cap, which often produces cleaner trees.
-		if numStacks > 1 && maxStacksOverride > 0 {
+		if numStacks > 1 && retryPass {
 			allDead := true
 			for si := 0; si < len(stacks); si++ {
 				if !stacks[si].dead {
@@ -1524,7 +1569,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		// stacks have new top states and need to re-check the action for
 		// the current lookahead). Otherwise, advance to next token.
 		if anyReduced {
-			needToken = tok.NoLookahead
+			needToken = tok.NoLookahead || forceAdvanceAfterReduce
 
 			// Infinite-reduce detection (for the primary stack).
 			if !tok.NoLookahead && len(stacks) > 0 && !stacks[0].dead {

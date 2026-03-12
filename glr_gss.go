@@ -1,9 +1,11 @@
 package gotreesitter
 
+import "unsafe"
+
 const (
 	defaultGSSNodeSlabCap   = 4 * 1024
 	fullParseGSSNodeSlabCap = 32 * 1024
-	maxRetainedGSSNodes   = 256 * 1024
+	maxRetainedGSSNodes     = 256 * 1024
 )
 
 type gssNode struct {
@@ -20,10 +22,11 @@ type gssStack struct {
 }
 
 type gssScratch struct {
-	slabs      []gssNodeSlab
-	slabCursor int
-	initialCap int
-	skipClear  bool
+	slabs          []gssNodeSlab
+	slabCursor     int
+	initialCap     int
+	skipClear      bool
+	allocatedBytes int64
 }
 
 type gssNodeSlab struct {
@@ -190,6 +193,7 @@ func (s *gssScratch) allocNode(entry stackEntry, prev *gssNode, depth int) *gssN
 			capacity = s.initialCap
 		}
 		s.slabs = append(s.slabs, gssNodeSlab{data: make([]gssNode, capacity)})
+		s.allocatedBytes += gssNodeBytesForCap(capacity)
 		s.slabCursor = 0
 	}
 	if s.slabCursor < 0 || s.slabCursor >= len(s.slabs) {
@@ -206,6 +210,7 @@ func (s *gssScratch) allocNode(entry stackEntry, prev *gssNode, depth int) *gssN
 				capacity = defaultGSSNodeSlabCap
 			}
 			s.slabs = append(s.slabs, gssNodeSlab{data: make([]gssNode, capacity)})
+			s.allocatedBytes += gssNodeBytesForCap(capacity)
 		}
 		slab := &s.slabs[i]
 		if slab.used >= len(slab.data) {
@@ -226,6 +231,7 @@ func (s *gssScratch) allocNode(entry stackEntry, prev *gssNode, depth int) *gssN
 func (s *gssScratch) reset() {
 	if len(s.slabs) == 0 {
 		s.skipClear = false
+		s.allocatedBytes = 0
 		return
 	}
 	total := 0
@@ -254,6 +260,7 @@ func (s *gssScratch) reset() {
 		}
 		s.slabCursor = 0
 		s.skipClear = false
+		s.recomputeAllocatedBytes()
 		return
 	}
 	for i := range s.slabs {
@@ -263,6 +270,7 @@ func (s *gssScratch) reset() {
 	}
 	s.slabCursor = 0
 	s.skipClear = false
+	s.recomputeAllocatedBytes()
 }
 
 func (s *glrStack) toGSS(scratch *gssScratch) gssStack {
@@ -270,4 +278,22 @@ func (s *glrStack) toGSS(scratch *gssScratch) gssStack {
 		return s.gss.clone()
 	}
 	return buildGSSStack(s.entries, scratch)
+}
+
+func gssNodeBytesForCap(n int) int64 {
+	if n <= 0 {
+		return 0
+	}
+	return int64(n) * int64(unsafe.Sizeof(gssNode{}))
+}
+
+func (s *gssScratch) recomputeAllocatedBytes() {
+	if s == nil {
+		return
+	}
+	var total int64
+	for i := range s.slabs {
+		total += gssNodeBytesForCap(len(s.slabs[i].data))
+	}
+	s.allocatedBytes = total
 }

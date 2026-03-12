@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Range is a span of source text.
@@ -40,13 +41,22 @@ type Node struct {
 }
 
 func defaultFieldSources(fieldIDs []FieldID) []uint8 {
+	return defaultFieldSourcesInArena(nil, fieldIDs)
+}
+
+func defaultFieldSourcesInArena(arena *nodeArena, fieldIDs []FieldID) []uint8 {
 	if len(fieldIDs) == 0 {
 		return nil
 	}
-	out := make([]uint8, len(fieldIDs))
+	var out []uint8
+	if arena != nil {
+		out = arena.allocFieldSourceSlice(len(fieldIDs))
+	} else {
+		out = make([]uint8, len(fieldIDs))
+	}
 	for i, fid := range fieldIDs {
 		if fid != 0 {
-			out[i] = 1
+			out[i] = fieldSourceDirect
 		}
 	}
 	return out
@@ -65,27 +75,33 @@ const (
 	ParseStopIterationLimit  ParseStopReason = "iteration_limit"
 	ParseStopStackDepthLimit ParseStopReason = "stack_depth_limit"
 	ParseStopNodeLimit       ParseStopReason = "node_limit"
+	ParseStopMemoryBudget    ParseStopReason = "memory_budget"
 )
 
 // ParseRuntime captures parser-loop diagnostics for a completed tree.
 type ParseRuntime struct {
-	StopReason          ParseStopReason
-	SourceLen           uint32
-	ExpectedEOFByte     uint32
-	RootEndByte         uint32
-	Truncated           bool
-	TokenSourceEOFEarly bool
-	TokensConsumed      uint64
-	LastTokenEndByte    uint32
-	LastTokenSymbol     Symbol
-	LastTokenWasEOF     bool
-	IterationLimit      int
-	StackDepthLimit     int
-	NodeLimit           int
-	Iterations          int
-	NodesAllocated      int
-	PeakStackDepth      int
-	MaxStacksSeen       int
+	StopReason                 ParseStopReason
+	SourceLen                  uint32
+	ExpectedEOFByte            uint32
+	RootEndByte                uint32
+	Truncated                  bool
+	TokenSourceEOFEarly        bool
+	TokensConsumed             uint64
+	LastTokenEndByte           uint32
+	LastTokenSymbol            Symbol
+	LastTokenWasEOF            bool
+	IterationLimit             int
+	StackDepthLimit            int
+	NodeLimit                  int
+	MemoryBudgetBytes          int64
+	Iterations                 int
+	NodesAllocated             int
+	ArenaBytesAllocated        int64
+	ScratchBytesAllocated      int64
+	EntryScratchBytesAllocated int64
+	GSSBytesAllocated          int64
+	PeakStackDepth             int
+	MaxStacksSeen              int
 }
 
 // Summary returns a stable one-line diagnostic string for parse-runtime stats.
@@ -95,10 +111,12 @@ func (rt ParseRuntime) Summary() string {
 		stopReason = ParseStopNone
 	}
 	return fmt.Sprintf(
-		"truncated=%v stopReason=%s tokenEOFEarly=%v tokens=%d lastTokenEnd=%d expectedEOF=%d lastTokenSymbol=%d lastTokenEOF=%v iterations=%d/%d nodes=%d/%d peakDepth=%d/%d maxStacks=%d",
+		"truncated=%v stopReason=%s tokenEOFEarly=%v tokens=%d lastTokenEnd=%d expectedEOF=%d lastTokenSymbol=%d lastTokenEOF=%v iterations=%d/%d nodes=%d/%d arena=%d/%d scratch=%d(entry=%d gss=%d)/%d peakDepth=%d/%d maxStacks=%d",
 		rt.Truncated, stopReason, rt.TokenSourceEOFEarly, rt.TokensConsumed,
 		rt.LastTokenEndByte, rt.ExpectedEOFByte, rt.LastTokenSymbol, rt.LastTokenWasEOF,
 		rt.Iterations, rt.IterationLimit, rt.NodesAllocated, rt.NodeLimit,
+		rt.ArenaBytesAllocated, rt.MemoryBudgetBytes,
+		rt.ScratchBytesAllocated, rt.EntryScratchBytesAllocated, rt.GSSBytesAllocated, rt.MemoryBudgetBytes,
 		rt.PeakStackDepth, rt.StackDepthLimit, rt.MaxStacksSeen,
 	)
 }
@@ -326,16 +344,35 @@ func unescapePunctuationSymbolName(name string) string {
 	if !strings.Contains(name, "\\") {
 		return name
 	}
-	candidate := strings.ReplaceAll(name, "\\", "")
-	if candidate == "" {
+	var b strings.Builder
+	b.Grow(len(name))
+	changed := false
+	for i := 0; i < len(name); {
+		r, size := utf8.DecodeRuneInString(name[i:])
+		if r != '\\' {
+			b.WriteRune(r)
+			i += size
+			continue
+		}
+		if i+size >= len(name) {
+			b.WriteRune(r)
+			i += size
+			continue
+		}
+		next, nextSize := utf8.DecodeRuneInString(name[i+size:])
+		if next == '\\' || unicode.IsLetter(next) || unicode.IsDigit(next) {
+			b.WriteRune(r)
+			i += size
+			continue
+		}
+		changed = true
+		b.WriteRune(next)
+		i += size + nextSize
+	}
+	if !changed {
 		return name
 	}
-	for _, r := range candidate {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsSpace(r) || r == '_' {
-			return name
-		}
-	}
-	return candidate
+	return b.String()
 }
 
 func pointLessThan(a, b Point) bool {
@@ -577,7 +614,7 @@ func newParentNode(arena *nodeArena, sym Symbol, named bool, children []*Node, f
 	n.isNamed = named
 	n.children = children
 	n.fieldIDs = fieldIDs
-	n.fieldSources = defaultFieldSources(fieldIDs)
+	n.fieldSources = defaultFieldSourcesInArena(arena, fieldIDs)
 	n.productionID = productionID
 	n.childIndex = -1
 	populateParentNode(n, children)
@@ -636,7 +673,7 @@ func newParentNodeInArena(arena *nodeArena, sym Symbol, named bool, children []*
 	n.isNamed = named
 	n.children = children
 	n.fieldIDs = fieldIDs
-	n.fieldSources = defaultFieldSources(fieldIDs)
+	n.fieldSources = defaultFieldSourcesInArena(arena, fieldIDs)
 	n.productionID = productionID
 	n.childIndex = -1
 	populateParentNode(n, children)
@@ -656,7 +693,7 @@ func newParentNodeInArenaNoLinks(arena *nodeArena, sym Symbol, named bool, child
 	n.isNamed = named
 	n.children = children
 	n.fieldIDs = fieldIDs
-	n.fieldSources = defaultFieldSources(fieldIDs)
+	n.fieldSources = defaultFieldSourcesInArena(arena, fieldIDs)
 	n.productionID = productionID
 	n.childIndex = -1
 	populateParentNodeNoLinks(n, children, trackChildErrors)
@@ -898,7 +935,7 @@ func cloneTreeNodesIntoArena(root *Node, arena *nodeArena) *Node {
 			newNode.fieldIDs = fieldIDs
 		}
 		if n := len(oldNode.fieldSources); n > 0 {
-			fieldSources := make([]uint8, n)
+			fieldSources := arena.allocFieldSourceSlice(n)
 			copy(fieldSources, oldNode.fieldSources)
 			newNode.fieldSources = fieldSources
 		}
@@ -1011,7 +1048,7 @@ func (t *Tree) ParseStopReason() ParseStopReason {
 // ParseStoppedEarly reports whether parsing hit an early-stop condition.
 func (t *Tree) ParseStoppedEarly() bool {
 	switch t.ParseStopReason() {
-	case ParseStopIterationLimit, ParseStopStackDepthLimit, ParseStopNodeLimit, ParseStopTokenSourceEOF, ParseStopTimeout, ParseStopCancelled:
+	case ParseStopIterationLimit, ParseStopStackDepthLimit, ParseStopNodeLimit, ParseStopMemoryBudget, ParseStopTokenSourceEOF, ParseStopTimeout, ParseStopCancelled:
 		return true
 	default:
 		return false

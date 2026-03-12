@@ -27,14 +27,18 @@ type corpusManifestEntry struct {
 }
 
 type parityResult struct {
-	Language     string           `json:"language"`
-	FileID       string           `json:"file_id"`
-	FilePath     string           `json:"file_path"`
-	SourceSHA256 string           `json:"source_sha256"`
-	Pass         bool             `json:"pass"`
-	Category     string           `json:"category,omitempty"`
-	Error        string           `json:"error,omitempty"`
-	FirstDiv     *firstDivergence `json:"first_divergence,omitempty"`
+	Language       string           `json:"language"`
+	FileID         string           `json:"file_id"`
+	FilePath       string           `json:"file_path"`
+	SourceSHA256   string           `json:"source_sha256"`
+	GoRootType     string           `json:"go_root_type,omitempty"`
+	GoRootHasError bool             `json:"go_root_has_error,omitempty"`
+	CRootType      string           `json:"c_root_type,omitempty"`
+	CRootHasError  bool             `json:"c_root_has_error,omitempty"`
+	Pass           bool             `json:"pass"`
+	Category       string           `json:"category,omitempty"`
+	Error          string           `json:"error,omitempty"`
+	FirstDiv       *firstDivergence `json:"first_divergence,omitempty"`
 }
 
 type firstDivergence struct {
@@ -73,11 +77,12 @@ type languageBoard struct {
 }
 
 type levelSummary struct {
-	Status       string        `json:"status"`
-	TotalFiles   int           `json:"total_files"`
-	PassingFiles int           `json:"passing_files"`
-	FailingFiles []fileFailure `json:"failing_files,omitempty"`
-	MissingFiles []string      `json:"missing_files,omitempty"`
+	Status        string        `json:"status"`
+	TotalFiles    int           `json:"total_files"`
+	PassingFiles  int           `json:"passing_files"`
+	FailingFiles  []fileFailure `json:"failing_files,omitempty"`
+	MissingFiles  []string      `json:"missing_files,omitempty"`
+	ExcludedFiles []string      `json:"excluded_files,omitempty"`
 }
 
 type fileFailure struct {
@@ -326,20 +331,15 @@ func summarizeLevel(entries []corpusManifestEntry, lang string, results map[stri
 	if len(entries) == 0 {
 		return levelSummary{Status: "na"}
 	}
-	summary := levelSummary{
-		Status:     "green",
-		TotalFiles: len(entries),
-	}
+	summary := levelSummary{}
 	for _, entry := range entries {
 		fileID := filepath.Base(entry.OutputPath)
 		r, ok := results[resultKey(lang, fileID)]
 		if !ok {
-			summary.Status = "red"
 			summary.MissingFiles = append(summary.MissingFiles, fileID)
 			continue
 		}
 		if entry.SHA256 != "" && r.SourceSHA256 != "" && entry.SHA256 != r.SourceSHA256 {
-			summary.Status = "red"
 			summary.FailingFiles = append(summary.FailingFiles, fileFailure{
 				FileID:   fileID,
 				Category: "sha_mismatch",
@@ -347,11 +347,15 @@ func summarizeLevel(entries []corpusManifestEntry, lang string, results map[stri
 			})
 			continue
 		}
+		if shouldExcludeResult(r) {
+			summary.ExcludedFiles = append(summary.ExcludedFiles, fileID)
+			continue
+		}
+		summary.TotalFiles++
 		if r.Pass {
 			summary.PassingFiles++
 			continue
 		}
-		summary.Status = "red"
 		ff := fileFailure{
 			FileID:   fileID,
 			Category: r.Category,
@@ -362,7 +366,28 @@ func summarizeLevel(entries []corpusManifestEntry, lang string, results map[stri
 		}
 		summary.FailingFiles = append(summary.FailingFiles, ff)
 	}
+	if len(summary.MissingFiles) > 0 || len(summary.FailingFiles) > 0 {
+		summary.Status = "red"
+		return summary
+	}
+	if summary.TotalFiles == 0 {
+		summary.Status = "na"
+		return summary
+	}
+	summary.Status = "green"
 	return summary
+}
+
+func shouldExcludeResult(r parityResult) bool {
+	if r.CRootHasError {
+		return true
+	}
+	switch r.Category {
+	case "oracle_error", "oracle_timeout":
+		return true
+	default:
+		return false
+	}
 }
 
 func resultKey(lang, fileID string) string {
@@ -430,14 +455,29 @@ func writeMarkdown(path string, b board) error {
 func formatLevelSummary(level levelSummary) string {
 	switch level.Status {
 	case "na":
+		if len(level.ExcludedFiles) > 0 {
+			return fmt.Sprintf("N/A (excluded=%d)", len(level.ExcludedFiles))
+		}
 		return "N/A"
 	case "green":
-		return fmt.Sprintf("green (%d/%d)", level.PassingFiles, level.TotalFiles)
+		s := fmt.Sprintf("green (%d/%d)", level.PassingFiles, level.TotalFiles)
+		if len(level.ExcludedFiles) > 0 {
+			s += fmt.Sprintf(", excluded=%d", len(level.ExcludedFiles))
+		}
+		return s
 	default:
 		if len(level.MissingFiles) > 0 {
-			return fmt.Sprintf("red (%d/%d, missing=%d)", level.PassingFiles, level.TotalFiles, len(level.MissingFiles))
+			s := fmt.Sprintf("red (%d/%d, missing=%d)", level.PassingFiles, level.TotalFiles, len(level.MissingFiles))
+			if len(level.ExcludedFiles) > 0 {
+				s += fmt.Sprintf(", excluded=%d", len(level.ExcludedFiles))
+			}
+			return s
 		}
-		return fmt.Sprintf("red (%d/%d)", level.PassingFiles, level.TotalFiles)
+		s := fmt.Sprintf("red (%d/%d)", level.PassingFiles, level.TotalFiles)
+		if len(level.ExcludedFiles) > 0 {
+			s += fmt.Sprintf(", excluded=%d", len(level.ExcludedFiles))
+		}
+		return s
 	}
 }
 

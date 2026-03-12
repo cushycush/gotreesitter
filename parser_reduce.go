@@ -2,12 +2,22 @@ package gotreesitter
 
 import "fmt"
 
-func (p *Parser) applyActionWithReduceChain(s *glrStack, act ParseAction, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, deferParentLinks bool, trackChildErrors *bool) {
+type reduceChainSignature struct {
+	state        StateID
+	depth        int
+	symbol       Symbol
+	childCount   uint8
+	productionID uint16
+}
+
+const maxRepeatedReduceChainSignature = 32
+
+func (p *Parser) applyActionWithReduceChain(s *glrStack, act ParseAction, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, deferParentLinks bool, trackChildErrors *bool) bool {
 	p.applyAction(s, act, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, deferParentLinks, trackChildErrors)
 	if act.Type != ParseActionReduce || tok.NoLookahead || s == nil || s.dead || s.accepted || s.shifted {
-		return
+		return false
 	}
-	p.chainSingleReduceActions(s, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, deferParentLinks, trackChildErrors)
+	return p.chainSingleReduceActions(s, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, deferParentLinks, trackChildErrors)
 }
 
 func (p *Parser) pushOrExtendErrorNode(s *glrStack, state StateID, tok Token, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, trackChildErrors *bool) {
@@ -48,18 +58,41 @@ func (p *Parser) pushOrExtendErrorNode(s *glrStack, state StateID, tok Token, no
 	}
 }
 
-func (p *Parser) chainSingleReduceActions(s *glrStack, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, deferParentLinks bool, trackChildErrors *bool) {
+func reduceChainSignatureFor(state StateID, depth int, act ParseAction) reduceChainSignature {
+	return reduceChainSignature{
+		state:        state,
+		depth:        depth,
+		symbol:       act.Symbol,
+		childCount:   act.ChildCount,
+		productionID: act.ProductionID,
+	}
+}
+
+func noteRepeatedReduceChainSignature(prev reduceChainSignature, prevCount int, next reduceChainSignature) (reduceChainSignature, int, bool) {
+	if prev == next {
+		prevCount++
+	} else {
+		prev = next
+		prevCount = 1
+	}
+	return prev, prevCount, prevCount > maxRepeatedReduceChainSignature
+}
+
+func (p *Parser) chainSingleReduceActions(s *glrStack, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, deferParentLinks bool, trackChildErrors *bool) bool {
 	if s == nil || s.dead || s.accepted || s.shifted {
-		return
+		return false
 	}
 	const maxInlineReduceChain = 256
 	parseActions := p.language.ParseActions
 	chainLen := 0
+	var lastSig reduceChainSignature
+	repeatedSigCount := 0
 	for chainLen < maxInlineReduceChain {
 		currentState := s.top().state
+		currentDepth := s.depth()
 		actionIdx := p.lookupActionIndex(currentState, tok.Symbol)
 		if actionIdx == 0 || int(actionIdx) >= len(parseActions) {
-			return
+			return false
 		}
 
 		actions := parseActions[actionIdx].Actions
@@ -67,37 +100,47 @@ func (p *Parser) chainSingleReduceActions(s *glrStack, tok Token, anyReduced *bo
 			if perfCountersEnabled {
 				perfRecordReduceChainBreakMulti()
 			}
-			return
+			return false
 		}
 
 		next := actions[0]
 		switch next.Type {
 		case ParseActionReduce:
+			var repeated bool
+			lastSig, repeatedSigCount, repeated = noteRepeatedReduceChainSignature(lastSig, repeatedSigCount, reduceChainSignatureFor(currentState, currentDepth, next))
+			if repeated {
+				if p != nil && p.glrTrace {
+					fmt.Printf("      -> REDUCE-CHAIN CYCLE state=%d depth=%d sym=%d prod=%d count=%d\n",
+						currentState, currentDepth, next.Symbol, next.ProductionID, repeatedSigCount)
+				}
+				return true
+			}
 			chainLen++
 			if perfCountersEnabled {
 				perfRecordReduceChainStep(chainLen)
 			}
 			p.applyAction(s, next, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, deferParentLinks, trackChildErrors)
 			if s.dead || s.accepted || s.shifted {
-				return
+				return false
 			}
 		case ParseActionShift:
 			if perfCountersEnabled {
 				perfRecordReduceChainBreakShift()
 			}
-			return
+			return false
 		case ParseActionAccept:
 			if perfCountersEnabled {
 				perfRecordReduceChainBreakAccept()
 			}
-			return
+			return false
 		default:
 			if perfCountersEnabled {
 				perfRecordReduceChainBreakMulti()
 			}
-			return
+			return false
 		}
 	}
+	return false
 }
 
 // applyAction applies a single parse action to a GLR stack.
@@ -729,7 +772,7 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 	var fieldSources []uint8
 	if rawFieldIDs != nil || needsFlattenedFieldCarry {
 		fieldIDs = arena.allocFieldIDSlice(normalizedCount)
-		fieldSources = make([]uint8, normalizedCount)
+		fieldSources = arena.allocFieldSourceSlice(normalizedCount)
 	}
 
 	out := 0
@@ -1551,7 +1594,7 @@ func materializeHiddenNodeForAlias(arena *nodeArena, lang *Language, n *Node) *N
 	var fieldSources []uint8
 	if hiddenTreeHasFieldIDs(n) {
 		fieldIDs = arena.allocFieldIDSlice(normalizedCount)
-		fieldSources = make([]uint8, normalizedCount)
+		fieldSources = arena.allocFieldSourceSlice(normalizedCount)
 	}
 	out := appendFlattenedHiddenChildrenWithFields(children, fieldIDs, fieldSources, 0, n, symbolMeta)
 	cloned.children = children[:out]

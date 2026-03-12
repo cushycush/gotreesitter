@@ -25,12 +25,15 @@ const (
 	maxRetainedArenaFactor = 4
 	// Full-parse node slabs are much larger; keep more headroom so capacity
 	// growth does not thrash between parses.
-	maxRetainedFullNodeArenaFactor = 16
+	maxRetainedFullNodeArenaFactor  = 16
+	maxRetainedFullSliceArenaFactor = 16
 
 	// Absolute node-cap retention ceilings to avoid repeated large reallocation
 	// on warm edit/full-parse workloads.
-	maxRetainedIncrementalNodeCap = 1 * 1024 * 1024
-	maxRetainedFullNodeCap        = 2 * 1024 * 1024
+	maxRetainedIncrementalNodeCap  = 1 * 1024 * 1024
+	maxRetainedFullNodeCap         = 2 * 1024 * 1024
+	maxRetainedIncrementalSliceCap = 32 * 1024
+	maxRetainedFullSliceCap        = 1 * 1024 * 1024
 )
 
 type arenaClass uint8
@@ -48,6 +51,10 @@ type nodeArena struct {
 	nodes []Node
 	used  int
 	refs  atomic.Int32
+	// budgetBytes is a soft per-parse cap for retained arena backing storage.
+	// A value of 0 disables budget checks.
+	budgetBytes    int64
+	allocatedBytes int64
 	// skipChildClear allows reset() to skip child-slab pointer clearing when
 	// a parse did not borrow any external nodes (full parse without reuse).
 	skipChildClear bool
@@ -55,10 +62,12 @@ type nodeArena struct {
 	nodeSlabs      []nodeSlab
 	nodeSlabCursor int
 
-	childSlabs      []childSliceSlab
-	fieldSlabs      []fieldSliceSlab
-	childSlabCursor int
-	fieldSlabCursor int
+	childSlabs            []childSliceSlab
+	fieldSlabs            []fieldSliceSlab
+	fieldSourceSlabs      []fieldSourceSliceSlab
+	childSlabCursor       int
+	fieldSlabCursor       int
+	fieldSourceSlabCursor int
 }
 
 type nodeSlab struct {
@@ -73,6 +82,11 @@ type childSliceSlab struct {
 
 type fieldSliceSlab struct {
 	data []FieldID
+	used int
+}
+
+type fieldSourceSliceSlab struct {
+	data []uint8
 	used int
 }
 
@@ -91,7 +105,7 @@ type nodeArenaPool struct {
 	mu      sync.Mutex
 	class   arenaClass
 	maxSize int
-	free      []*nodeArena
+	free    []*nodeArena
 }
 
 // ArenaProfile captures node arena allocation statistics.
@@ -187,16 +201,21 @@ func nodeCapacityForBytes(slabBytes int) int {
 func newNodeArena(class arenaClass) *nodeArena {
 	childCap := fullChildSliceCap
 	fieldCap := fullFieldSliceCap
+	fieldSourceCap := fullFieldSliceCap
 	if class == arenaClassIncremental {
 		childCap = incrementalChildSliceCap
 		fieldCap = incrementalFieldSliceCap
+		fieldSourceCap = incrementalFieldSliceCap
 	}
-	return &nodeArena{
-		class:      class,
-		nodes:      make([]Node, nodeCapacityForClass(class)),
-		childSlabs: []childSliceSlab{{data: make([]*Node, childCap)}},
-		fieldSlabs: []fieldSliceSlab{{data: make([]FieldID, fieldCap)}},
+	a := &nodeArena{
+		class:            class,
+		nodes:            make([]Node, nodeCapacityForClass(class)),
+		childSlabs:       []childSliceSlab{{data: make([]*Node, childCap)}},
+		fieldSlabs:       []fieldSliceSlab{{data: make([]FieldID, fieldCap)}},
+		fieldSourceSlabs: []fieldSourceSliceSlab{{data: make([]uint8, fieldSourceCap)}},
 	}
+	a.recomputeAllocatedBytes()
+	return a
 }
 
 func acquireNodeArena(class arenaClass) *nodeArena {
@@ -208,6 +227,7 @@ func acquireNodeArena(class arenaClass) *nodeArena {
 		a = fullArenaPool.acquire()
 	}
 	a.refs.Store(1)
+	a.clearBudget()
 	return a
 }
 
@@ -265,6 +285,29 @@ func (a *nodeArena) reset() {
 	}
 	a.nodeSlabCursor = 0
 
+	if len(a.childSlabs) > 0 {
+		retained := 0
+		keep := 0
+		limit := maxRetainedChildSliceCapacityForClass(a.class)
+		for i := 0; i < len(a.childSlabs); i++ {
+			capacity := len(a.childSlabs[i].data)
+			if capacity <= 0 {
+				break
+			}
+			if keep > 0 && retained+capacity > limit {
+				break
+			}
+			retained += capacity
+			keep = i + 1
+		}
+		if keep == 0 {
+			keep = 1
+		}
+		for i := keep; i < len(a.childSlabs); i++ {
+			a.childSlabs[i] = childSliceSlab{}
+		}
+		a.childSlabs = a.childSlabs[:keep]
+	}
 	for i := range a.childSlabs {
 		slab := &a.childSlabs[i]
 		if !a.skipChildClear {
@@ -273,11 +316,61 @@ func (a *nodeArena) reset() {
 		slab.used = 0
 	}
 	a.skipChildClear = false
+	if len(a.fieldSlabs) > 0 {
+		retained := 0
+		keep := 0
+		limit := maxRetainedFieldSliceCapacityForClass(a.class)
+		for i := 0; i < len(a.fieldSlabs); i++ {
+			capacity := len(a.fieldSlabs[i].data)
+			if capacity <= 0 {
+				break
+			}
+			if keep > 0 && retained+capacity > limit {
+				break
+			}
+			retained += capacity
+			keep = i + 1
+		}
+		if keep == 0 {
+			keep = 1
+		}
+		for i := keep; i < len(a.fieldSlabs); i++ {
+			a.fieldSlabs[i] = fieldSliceSlab{}
+		}
+		a.fieldSlabs = a.fieldSlabs[:keep]
+	}
 	for i := range a.fieldSlabs {
 		a.fieldSlabs[i].used = 0
 	}
+	if len(a.fieldSourceSlabs) > 0 {
+		retained := 0
+		keep := 0
+		limit := maxRetainedFieldSourceSliceCapacityForClass(a.class)
+		for i := 0; i < len(a.fieldSourceSlabs); i++ {
+			capacity := len(a.fieldSourceSlabs[i].data)
+			if capacity <= 0 {
+				break
+			}
+			if keep > 0 && retained+capacity > limit {
+				break
+			}
+			retained += capacity
+			keep = i + 1
+		}
+		if keep == 0 {
+			keep = 1
+		}
+		for i := keep; i < len(a.fieldSourceSlabs); i++ {
+			a.fieldSourceSlabs[i] = fieldSourceSliceSlab{}
+		}
+		a.fieldSourceSlabs = a.fieldSourceSlabs[:keep]
+	}
+	for i := range a.fieldSourceSlabs {
+		a.fieldSourceSlabs[i].used = 0
+	}
 	a.childSlabCursor = 0
 	a.fieldSlabCursor = 0
+	a.fieldSourceSlabCursor = 0
 
 	if len(a.nodes) > maxRetainedNodeCapacityForClass(a.class) {
 		a.nodes = make([]Node, nodeCapacityForClass(a.class))
@@ -288,6 +381,10 @@ func (a *nodeArena) reset() {
 	if len(a.fieldSlabs) == 0 {
 		a.fieldSlabs = []fieldSliceSlab{{data: make([]FieldID, defaultFieldSliceCap(a.class))}}
 	}
+	if len(a.fieldSourceSlabs) == 0 {
+		a.fieldSourceSlabs = []fieldSourceSliceSlab{{data: make([]uint8, defaultFieldSliceCap(a.class))}}
+	}
+	a.clearBudget()
 }
 
 func (a *nodeArena) allocNode() *Node {
@@ -310,6 +407,7 @@ func (a *nodeArena) allocNodeSlow() *Node {
 	if len(a.nodeSlabs) == 0 {
 		capacity := max(nodeCapacityForClass(a.class), minArenaNodeCap)
 		a.nodeSlabs = append(a.nodeSlabs, nodeSlab{data: make([]Node, capacity)})
+		a.allocatedBytes += nodeBytesForCap(capacity)
 		a.nodeSlabCursor = 0
 	}
 	if a.nodeSlabCursor < 0 || a.nodeSlabCursor >= len(a.nodeSlabs) {
@@ -320,6 +418,7 @@ func (a *nodeArena) allocNodeSlow() *Node {
 			lastCap := len(a.nodeSlabs[len(a.nodeSlabs)-1].data)
 			capacity := max(lastCap*2, minArenaNodeCap)
 			a.nodeSlabs = append(a.nodeSlabs, nodeSlab{data: make([]Node, capacity)})
+			a.allocatedBytes += nodeBytesForCap(capacity)
 		}
 
 		slab := &a.nodeSlabs[i]
@@ -351,6 +450,7 @@ func (a *nodeArena) ensureNodeCapacity(min int) {
 	a.used = 0
 	a.nodeSlabs = nil
 	a.nodeSlabCursor = 0
+	a.recomputeAllocatedBytes()
 }
 
 func (a *nodeArena) allocNodeSlice(n int) []*Node {
@@ -373,6 +473,7 @@ func (a *nodeArena) allocNodeSlice(n int) []*Node {
 		if i >= len(a.childSlabs) {
 			capacity := max(defaultChildSliceCap(a.class), n)
 			a.childSlabs = append(a.childSlabs, childSliceSlab{data: make([]*Node, capacity)})
+			a.allocatedBytes += childSliceBytesForCap(capacity)
 		}
 
 		slab := &a.childSlabs[i]
@@ -406,6 +507,7 @@ func (a *nodeArena) allocFieldIDSlice(n int) []FieldID {
 		if i >= len(a.fieldSlabs) {
 			capacity := max(defaultFieldSliceCap(a.class), n)
 			a.fieldSlabs = append(a.fieldSlabs, fieldSliceSlab{data: make([]FieldID, capacity)})
+			a.allocatedBytes += fieldSliceBytesForCap(capacity)
 		}
 
 		slab := &a.fieldSlabs[i]
@@ -415,6 +517,43 @@ func (a *nodeArena) allocFieldIDSlice(n int) []FieldID {
 		start := slab.used
 		slab.used += n
 		a.fieldSlabCursor = i
+		out := slab.data[start:slab.used]
+		clear(out)
+		return out
+	}
+}
+
+func (a *nodeArena) allocFieldSourceSlice(n int) []uint8 {
+	if n <= 0 {
+		return nil
+	}
+	if a == nil {
+		return make([]uint8, n)
+	}
+
+	if len(a.fieldSourceSlabs) == 0 {
+		a.fieldSourceSlabs = append(a.fieldSourceSlabs, fieldSourceSliceSlab{data: make([]uint8, defaultFieldSliceCap(a.class))})
+		a.allocatedBytes += fieldSourceSliceBytesForCap(defaultFieldSliceCap(a.class))
+		a.fieldSourceSlabCursor = 0
+	}
+	if a.fieldSourceSlabCursor < 0 || a.fieldSourceSlabCursor >= len(a.fieldSourceSlabs) {
+		a.fieldSourceSlabCursor = 0
+	}
+
+	for i := a.fieldSourceSlabCursor; ; i++ {
+		if i >= len(a.fieldSourceSlabs) {
+			capacity := max(defaultFieldSliceCap(a.class), n)
+			a.fieldSourceSlabs = append(a.fieldSourceSlabs, fieldSourceSliceSlab{data: make([]uint8, capacity)})
+			a.allocatedBytes += fieldSourceSliceBytesForCap(capacity)
+		}
+
+		slab := &a.fieldSourceSlabs[i]
+		if len(slab.data)-slab.used < n {
+			continue
+		}
+		start := slab.used
+		slab.used += n
+		a.fieldSourceSlabCursor = i
 		out := slab.data[start:slab.used]
 		clear(out)
 		return out
@@ -442,6 +581,76 @@ func nodeCapacityForClass(class arenaClass) int {
 	return nodeCapacityForBytes(fullParseArenaSlab)
 }
 
+func nodeBytesForCap(n int) int64 {
+	if n <= 0 {
+		return 0
+	}
+	return int64(n) * int64(unsafe.Sizeof(Node{}))
+}
+
+func childSliceBytesForCap(n int) int64 {
+	if n <= 0 {
+		return 0
+	}
+	return int64(n) * int64(unsafe.Sizeof((*Node)(nil)))
+}
+
+func fieldSliceBytesForCap(n int) int64 {
+	if n <= 0 {
+		return 0
+	}
+	return int64(n) * int64(unsafe.Sizeof(FieldID(0)))
+}
+
+func fieldSourceSliceBytesForCap(n int) int64 {
+	if n <= 0 {
+		return 0
+	}
+	return int64(n)
+}
+
+func (a *nodeArena) recomputeAllocatedBytes() {
+	if a == nil {
+		return
+	}
+	total := nodeBytesForCap(len(a.nodes))
+	for i := range a.nodeSlabs {
+		total += nodeBytesForCap(len(a.nodeSlabs[i].data))
+	}
+	for i := range a.childSlabs {
+		total += childSliceBytesForCap(len(a.childSlabs[i].data))
+	}
+	for i := range a.fieldSlabs {
+		total += fieldSliceBytesForCap(len(a.fieldSlabs[i].data))
+	}
+	for i := range a.fieldSourceSlabs {
+		total += fieldSourceSliceBytesForCap(len(a.fieldSourceSlabs[i].data))
+	}
+	a.allocatedBytes = total
+}
+
+func (a *nodeArena) clearBudget() {
+	if a == nil {
+		return
+	}
+	a.budgetBytes = 0
+	a.recomputeAllocatedBytes()
+}
+
+func (a *nodeArena) setBudget(bytes int64) {
+	if a == nil {
+		return
+	}
+	a.budgetBytes = bytes
+}
+
+func (a *nodeArena) budgetExhausted() bool {
+	if a == nil || a.budgetBytes <= 0 {
+		return false
+	}
+	return a.allocatedBytes >= a.budgetBytes
+}
+
 func maxRetainedNodeCapacityForClass(class arenaClass) int {
 	factor := maxRetainedArenaFactor
 	floor := maxRetainedIncrementalNodeCap
@@ -456,3 +665,32 @@ func maxRetainedOverflowNodeCapacityForClass(class arenaClass) int {
 	return max(maxRetainedNodeCapacityForClass(class)/2, nodeCapacityForClass(class))
 }
 
+func maxRetainedChildSliceCapacityForClass(class arenaClass) int {
+	factor := maxRetainedArenaFactor
+	floor := maxRetainedIncrementalSliceCap
+	if class == arenaClassFull {
+		factor = maxRetainedFullSliceArenaFactor
+		floor = maxRetainedFullSliceCap
+	}
+	return max(defaultChildSliceCap(class)*factor, floor)
+}
+
+func maxRetainedFieldSliceCapacityForClass(class arenaClass) int {
+	factor := maxRetainedArenaFactor
+	floor := maxRetainedIncrementalSliceCap
+	if class == arenaClassFull {
+		factor = maxRetainedFullSliceArenaFactor
+		floor = maxRetainedFullSliceCap
+	}
+	return max(defaultFieldSliceCap(class)*factor, floor)
+}
+
+func maxRetainedFieldSourceSliceCapacityForClass(class arenaClass) int {
+	factor := maxRetainedArenaFactor
+	floor := maxRetainedIncrementalSliceCap
+	if class == arenaClassFull {
+		factor = maxRetainedFullSliceArenaFactor
+		floor = maxRetainedFullSliceCap
+	}
+	return max(defaultFieldSliceCap(class)*factor, floor)
+}

@@ -11,6 +11,8 @@ type parseConfig struct {
 	profiling   bool
 }
 
+type normalizationTokenSourceFactory func([]byte) (TokenSource, error)
+
 // ParserLogType categorizes parser log messages.
 type ParserLogType uint8
 
@@ -116,7 +118,52 @@ func normalizeReturnedTree(root *Node, source []byte, lang *Language) {
 	if root == nil || lang == nil {
 		return
 	}
+	normalizeGoGroupedSpecListSemicolons(root, source, lang)
+	normalizeGoStatementListEnds(root, source, lang)
+	normalizeGoCaseClauseEnds(root, source, lang)
+	normalizeScalaTemplateBodyObjectFragments(root, source, lang)
+	normalizeScalaRecoveredObjectTemplateBodies(root, source, lang)
+	normalizeScalaDefinitionFields(root, source, lang)
+	normalizeScalaTemplateBodyFunctionAnnotations(root, source, lang)
+	normalizeScalaTemplateBodyFunctionEnds(root, source, lang)
+	normalizeScalaCaseClauseEnds(root, source, lang)
 	normalizeHTMLRecoveredNestedCustomTagRanges(root, source, lang)
+	normalizeRootEOFNewlineSpan(root, source, lang)
+}
+
+func (p *Parser) dfaReparseFactory() normalizationTokenSourceFactory {
+	if p == nil || p.language == nil || len(p.language.LexStates) == 0 {
+		return nil
+	}
+	return func(source []byte) (TokenSource, error) {
+		lexer := NewLexer(p.language.LexStates, source)
+		return acquireDFATokenSource(lexer, p.language, p.lookupActionIndex, p.hasKeywordState), nil
+	}
+}
+
+func (p *Parser) tokenSourceReparseFactory(ts TokenSource) normalizationTokenSourceFactory {
+	if rebuilder, ok := ts.(TokenSourceRebuilder); ok {
+		return func(source []byte) (TokenSource, error) {
+			return rebuilder.RebuildTokenSource(source, p.language)
+		}
+	}
+	return nil
+}
+
+func (p *Parser) parseForRecovery(source []byte) (*Tree, error) {
+	if p == nil || p.language == nil {
+		return nil, ErrNoLanguage
+	}
+	parser := NewParser(p.language)
+	parser.skipRecoveryReparse = true
+	if p.reparseFactory != nil {
+		ts, err := p.reparseFactory(source)
+		if err != nil {
+			return nil, err
+		}
+		return parser.ParseWithTokenSource(source, ts)
+	}
+	return parser.Parse(source)
 }
 
 func retryTreeEndByte(tree *Tree) uint32 {
@@ -227,8 +274,40 @@ func effectiveFullParseInitialMaxStacks(lang *Language, initialMaxStacks int) in
 	if initialMaxStacks <= 0 {
 		initialMaxStacks = maxGLRStacks
 	}
-	if lang != nil && lang.Name == "bash" && initialMaxStacks < 256 {
-		initialMaxStacks = 256
+	if lang == nil {
+		return initialMaxStacks
+	}
+	switch lang.Name {
+	case "bash":
+		if initialMaxStacks < 256 {
+			initialMaxStacks = 256
+		}
+	case "css", "scss":
+		// Large stylesheet corpora spend most of their time churning on the
+		// same RS conflicts without needing a wide steady-state stack budget.
+		// Keep the built-in default tight, but preserve explicit caller/env
+		// overrides for diagnostics and experiments.
+		if initialMaxStacks == maxGLRStacks {
+			initialMaxStacks = 2
+		}
+	case "javascript", "typescript", "tsx":
+		// React-heavy TSX files reach parity more reliably with a slightly
+		// narrower initial survivor budget; the default cap of 8 preserves
+		// too many equivalent branches and turns real-corpus parses into a
+		// wrong-tree family without improving the chosen tree. The same lower
+		// default also improves large JavaScript/TypeScript corpus files while
+		// preserving explicit caller/env overrides for diagnostics.
+		if initialMaxStacks == maxGLRStacks {
+			initialMaxStacks = 6
+		}
+	case "rust":
+		// Rust's large real-corpus impl/match sites converge more reliably with
+		// a much narrower initial survivor budget. Wider defaults preserve the
+		// wrong branch through complex arm interactions and produce stable
+		// wrong-tree failures without improving accepted parses.
+		if initialMaxStacks == maxGLRStacks {
+			initialMaxStacks = 2
+		}
 	}
 	return initialMaxStacks
 }
@@ -301,10 +380,11 @@ func fullParseRetryMergePerKeyOverride(tree *Tree, sourceLen int, initialMaxStac
 func (p *Parser) retryFullParseWithDFA(source []byte, initialMaxStacks int, deterministicExternalConflicts bool, tree *Tree) *Tree {
 	maxStacksOverride := fullParseRetryMaxStacksOverride(tree, len(source), initialMaxStacks)
 	maxNodesOverride := fullParseRetryNodeLimitOverride(tree, len(source))
-	if maxStacksOverride == 0 && maxNodesOverride == 0 {
-		return tree
+	retryMaxStacks := initialMaxStacks
+	if maxStacksOverride > 0 {
+		retryMaxStacks = maxStacksOverride
 	}
-	runRetry := func(maxMergePerKeyOverride int, maxNodes int) *Tree {
+	runRetry := func(maxStacks int, maxMergePerKeyOverride int, maxNodes int) *Tree {
 		retryLexer := NewLexer(p.language.LexStates, source)
 		retryTS := acquireDFATokenSource(retryLexer, p.language, p.lookupActionIndex, p.hasKeywordState)
 		return p.parseInternal(
@@ -314,22 +394,37 @@ func (p *Parser) retryFullParseWithDFA(source []byte, initialMaxStacks int, dete
 			nil,
 			arenaClassFull,
 			nil,
-			maxStacksOverride,
+			maxStacks,
 			maxNodes,
 			maxMergePerKeyOverride,
 			deterministicExternalConflicts,
 		)
 	}
 	bestTree := tree
-	retryTree := runRetry(0, maxNodesOverride)
-	if preferRetryTree(retryTree, bestTree) {
-		bestTree = retryTree
+	if initialMergePerKey := fullParseRetryMergePerKeyOverride(tree, len(source), initialMaxStacks); initialMergePerKey > 0 {
+		mergeRetryTree := runRetry(initialMaxStacks, initialMergePerKey, 0)
+		if preferRetryTree(mergeRetryTree, bestTree) {
+			bestTree = mergeRetryTree
+		}
+		if treeParseClean(bestTree) {
+			return bestTree
+		}
 	}
-	nodeRetryTree := retryTree
-	if extraNodeLimit := fullParseRetrySecondaryNodeLimitOverride(retryTree, len(source)); extraNodeLimit > 0 {
-		nodeRetryTree = runRetry(0, extraNodeLimit)
-		if preferRetryTree(nodeRetryTree, bestTree) {
-			bestTree = nodeRetryTree
+	nodeRetryTree := tree
+	if maxStacksOverride == 0 && maxNodesOverride == 0 {
+		return bestTree
+	}
+	if maxStacksOverride > 0 || maxNodesOverride > 0 {
+		retryTree := runRetry(retryMaxStacks, 0, maxNodesOverride)
+		if preferRetryTree(retryTree, bestTree) {
+			bestTree = retryTree
+		}
+		nodeRetryTree = retryTree
+		if extraNodeLimit := fullParseRetrySecondaryNodeLimitOverride(retryTree, len(source)); extraNodeLimit > 0 {
+			nodeRetryTree = runRetry(retryMaxStacks, 0, extraNodeLimit)
+			if preferRetryTree(nodeRetryTree, bestTree) {
+				bestTree = nodeRetryTree
+			}
 		}
 	}
 	if treeParseClean(bestTree) {
@@ -339,7 +434,7 @@ func (p *Parser) retryFullParseWithDFA(source []byte, initialMaxStacks int, dete
 	if maxMergePerKeyOverride == 0 {
 		return bestTree
 	}
-	mergeRetryTree := runRetry(maxMergePerKeyOverride, maxNodesOverride)
+	mergeRetryTree := runRetry(retryMaxStacks, maxMergePerKeyOverride, maxNodesOverride)
 	if preferRetryTree(mergeRetryTree, bestTree) {
 		bestTree = mergeRetryTree
 	}
@@ -349,14 +444,15 @@ func (p *Parser) retryFullParseWithDFA(source []byte, initialMaxStacks int, dete
 func (p *Parser) retryFullParseWithTokenSource(source []byte, ts TokenSource, initialMaxStacks int, deterministicExternalConflicts bool, tree *Tree) *Tree {
 	maxStacksOverride := fullParseRetryMaxStacksOverride(tree, len(source), initialMaxStacks)
 	maxNodesOverride := fullParseRetryNodeLimitOverride(tree, len(source))
-	if maxStacksOverride == 0 && maxNodesOverride == 0 {
-		return tree
+	retryMaxStacks := initialMaxStacks
+	if maxStacksOverride > 0 {
+		retryMaxStacks = maxStacksOverride
 	}
 	resettable, ok := ts.(resettableTokenSource)
 	if !ok {
 		return tree
 	}
-	runRetry := func(maxMergePerKeyOverride int, maxNodes int) *Tree {
+	runRetry := func(maxStacks int, maxMergePerKeyOverride int, maxNodes int) *Tree {
 		resettable.Reset(source)
 		return p.parseInternal(
 			source,
@@ -365,22 +461,37 @@ func (p *Parser) retryFullParseWithTokenSource(source []byte, ts TokenSource, in
 			nil,
 			arenaClassFull,
 			nil,
-			maxStacksOverride,
+			maxStacks,
 			maxNodes,
 			maxMergePerKeyOverride,
 			deterministicExternalConflicts,
 		)
 	}
 	bestTree := tree
-	retryTree := runRetry(0, maxNodesOverride)
-	if preferRetryTree(retryTree, bestTree) {
-		bestTree = retryTree
+	if initialMergePerKey := fullParseRetryMergePerKeyOverride(tree, len(source), initialMaxStacks); initialMergePerKey > 0 {
+		mergeRetryTree := runRetry(initialMaxStacks, initialMergePerKey, 0)
+		if preferRetryTree(mergeRetryTree, bestTree) {
+			bestTree = mergeRetryTree
+		}
+		if treeParseClean(bestTree) {
+			return bestTree
+		}
 	}
-	nodeRetryTree := retryTree
-	if extraNodeLimit := fullParseRetrySecondaryNodeLimitOverride(retryTree, len(source)); extraNodeLimit > 0 {
-		nodeRetryTree = runRetry(0, extraNodeLimit)
-		if preferRetryTree(nodeRetryTree, bestTree) {
-			bestTree = nodeRetryTree
+	nodeRetryTree := tree
+	if maxStacksOverride == 0 && maxNodesOverride == 0 {
+		return bestTree
+	}
+	if maxStacksOverride > 0 || maxNodesOverride > 0 {
+		retryTree := runRetry(retryMaxStacks, 0, maxNodesOverride)
+		if preferRetryTree(retryTree, bestTree) {
+			bestTree = retryTree
+		}
+		nodeRetryTree = retryTree
+		if extraNodeLimit := fullParseRetrySecondaryNodeLimitOverride(retryTree, len(source)); extraNodeLimit > 0 {
+			nodeRetryTree = runRetry(retryMaxStacks, 0, extraNodeLimit)
+			if preferRetryTree(nodeRetryTree, bestTree) {
+				bestTree = nodeRetryTree
+			}
 		}
 	}
 	if treeParseClean(bestTree) {
@@ -390,7 +501,7 @@ func (p *Parser) retryFullParseWithTokenSource(source []byte, ts TokenSource, in
 	if maxMergePerKeyOverride == 0 {
 		return bestTree
 	}
-	mergeRetryTree := runRetry(maxMergePerKeyOverride, maxNodesOverride)
+	mergeRetryTree := runRetry(retryMaxStacks, maxMergePerKeyOverride, maxNodesOverride)
 	if preferRetryTree(mergeRetryTree, bestTree) {
 		bestTree = mergeRetryTree
 	}
@@ -533,6 +644,14 @@ type TokenSource interface {
 	Next() Token
 }
 
+// TokenSourceRebuilder is an optional extension for token sources that can
+// build a fresh equivalent token source for another source buffer. Result
+// normalization uses this to reparse isolated fragments with the same lexer
+// backend as the original parse.
+type TokenSourceRebuilder interface {
+	RebuildTokenSource(source []byte, lang *Language) (TokenSource, error)
+}
+
 // ByteSkippableTokenSource can jump to a byte offset and return the first
 // token at or after that position.
 type ByteSkippableTokenSource interface {
@@ -587,6 +706,11 @@ func (p *Parser) Parse(source []byte) (*Tree, error) {
 	if err := p.checkDFALexer(); err != nil {
 		return nil, err
 	}
+	prevFactory := p.reparseFactory
+	p.reparseFactory = p.dfaReparseFactory()
+	defer func() {
+		p.reparseFactory = prevFactory
+	}()
 	lexer := NewLexer(p.language.LexStates, source)
 	ts := acquireDFATokenSource(lexer, p.language, p.lookupActionIndex, p.hasKeywordState)
 	deterministicExternalConflicts := p.language != nil &&
@@ -596,7 +720,7 @@ func (p *Parser) Parse(source []byte) (*Tree, error) {
 	if p.maxConflictWidth > initialMaxStacks {
 		initialMaxStacks = p.maxConflictWidth
 	}
-	tree := p.parseInternal(source, p.wrapIncludedRanges(ts), nil, nil, arenaClassFull, nil, 0, 0, 0, deterministicExternalConflicts)
+	tree := p.parseInternal(source, p.wrapIncludedRanges(ts), nil, nil, arenaClassFull, nil, initialMaxStacks, 0, 0, deterministicExternalConflicts)
 	tree = p.retryFullParseWithDFA(source, initialMaxStacks, deterministicExternalConflicts, tree)
 	if p.language.ExternalScanner != nil &&
 		tree != nil {
@@ -613,6 +737,11 @@ func (p *Parser) ParseWithTokenSource(source []byte, ts TokenSource) (*Tree, err
 	if err := p.checkLanguageCompatible(); err != nil {
 		return nil, err
 	}
+	prevFactory := p.reparseFactory
+	p.reparseFactory = p.tokenSourceReparseFactory(ts)
+	defer func() {
+		p.reparseFactory = prevFactory
+	}()
 	deterministicExternalConflicts := p.language != nil &&
 		p.language.ExternalScanner != nil &&
 		(p.language.Name == "yaml" || p.language.Name == "scala")
@@ -620,7 +749,7 @@ func (p *Parser) ParseWithTokenSource(source []byte, ts TokenSource) (*Tree, err
 	if p.maxConflictWidth > initialMaxStacks {
 		initialMaxStacks = p.maxConflictWidth
 	}
-	tree := p.parseInternal(source, p.wrapIncludedRanges(ts), nil, nil, arenaClassFull, nil, 0, 0, 0, deterministicExternalConflicts)
+	tree := p.parseInternal(source, p.wrapIncludedRanges(ts), nil, nil, arenaClassFull, nil, initialMaxStacks, 0, 0, deterministicExternalConflicts)
 	tree = p.retryFullParseWithTokenSource(source, ts, initialMaxStacks, deterministicExternalConflicts, tree)
 	if p.language.ExternalScanner != nil &&
 		tree != nil {
@@ -643,6 +772,11 @@ func (p *Parser) ParseIncremental(source []byte, oldTree *Tree) (*Tree, error) {
 	if err := p.checkDFALexer(); err != nil {
 		return nil, err
 	}
+	prevFactory := p.reparseFactory
+	p.reparseFactory = p.dfaReparseFactory()
+	defer func() {
+		p.reparseFactory = prevFactory
+	}()
 	lexer := NewLexer(p.language.LexStates, source)
 	ts := acquireDFATokenSource(lexer, p.language, p.lookupActionIndex, p.hasKeywordState)
 	tree := p.parseIncrementalInternal(source, oldTree, p.wrapIncludedRanges(ts), nil)
@@ -659,6 +793,11 @@ func (p *Parser) ParseIncrementalWithTokenSource(source []byte, oldTree *Tree, t
 	if canReuseUnchangedTree(source, oldTree, p.language) {
 		return oldTree, nil
 	}
+	prevFactory := p.reparseFactory
+	p.reparseFactory = p.tokenSourceReparseFactory(ts)
+	defer func() {
+		p.reparseFactory = prevFactory
+	}()
 	tree := p.parseIncrementalInternal(source, oldTree, p.wrapIncludedRanges(ts), nil)
 	normalizeReturnedTree(rootOrNil(tree), source, p.language)
 	return tree, nil
@@ -676,6 +815,11 @@ func (p *Parser) ParseIncrementalProfiled(source []byte, oldTree *Tree) (*Tree, 
 	if err := p.checkDFALexer(); err != nil {
 		return nil, IncrementalParseProfile{}, err
 	}
+	prevFactory := p.reparseFactory
+	p.reparseFactory = p.dfaReparseFactory()
+	defer func() {
+		p.reparseFactory = prevFactory
+	}()
 	lexer := NewLexer(p.language.LexStates, source)
 	ts := acquireDFATokenSource(lexer, p.language, p.lookupActionIndex, p.hasKeywordState)
 	timing := &incrementalParseTiming{}
@@ -693,6 +837,11 @@ func (p *Parser) ParseIncrementalWithTokenSourceProfiled(source []byte, oldTree 
 	if canReuseUnchangedTree(source, oldTree, p.language) {
 		return oldTree, IncrementalParseProfile{}, nil
 	}
+	prevFactory := p.reparseFactory
+	p.reparseFactory = p.tokenSourceReparseFactory(ts)
+	defer func() {
+		p.reparseFactory = prevFactory
+	}()
 	timing := &incrementalParseTiming{}
 	tree := p.parseIncrementalInternal(source, oldTree, p.wrapIncludedRanges(ts), timing)
 	normalizeReturnedTree(rootOrNil(tree), source, p.language)

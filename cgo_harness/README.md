@@ -205,6 +205,7 @@ go run -tags treesitter_c_parity ./cmd/corpus_parity \
   --corpus ./corpus \
   --out ./parity_out/results.jsonl \
   --artifact-dir ./parity_out/dump_v1 \
+  --artifact-mode failures \
   --scoreboard ./PARITY.md
 ```
 
@@ -213,6 +214,7 @@ Notes:
 - `--lang` accepts `top10` (default), a single language (`go`), or a comma-separated list.
 - For multiple languages, corpus layout is `--corpus/<language>/**`.
 - For a single language (`--lang go`), `--corpus` can point directly at that language directory.
+- `--artifact-mode failures` is recommended for large real-corpus sweeps; it keeps dump artifacts only for failing files.
 
 ## Build Real Corpus (Lock-Pinned)
 

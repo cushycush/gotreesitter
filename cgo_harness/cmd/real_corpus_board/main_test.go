@@ -75,6 +75,148 @@ func TestSummarizeLevelFlagsMissingFiles(t *testing.T) {
 	}
 }
 
+func TestSummarizeLevelExcludesOracleErrorFiles(t *testing.T) {
+	entries := []corpusManifestEntry{
+		{Language: "awk", Bucket: "medium", SHA256: "a", OutputPath: "/tmp/awk/medium__a.awk"},
+	}
+	results := map[string]parityResult{
+		resultKey("awk", "medium__a.awk"): {
+			Language:       "awk",
+			FileID:         "medium__a.awk",
+			SourceSHA256:   "a",
+			Pass:           false,
+			Category:       "type",
+			CRootType:      "program",
+			CRootHasError:  true,
+			GoRootType:     "ERROR",
+			GoRootHasError: true,
+		},
+	}
+
+	summary := summarizeLevel(entries, "awk", results)
+	if got, want := summary.Status, "na"; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := summary.TotalFiles, 0; got != want {
+		t.Fatalf("TotalFiles = %d, want %d", got, want)
+	}
+	if got, want := len(summary.ExcludedFiles), 1; got != want || summary.ExcludedFiles[0] != "medium__a.awk" {
+		t.Fatalf("ExcludedFiles = %#v, want medium__a.awk", summary.ExcludedFiles)
+	}
+}
+
+func TestBuildBoardSkipsOracleErrorFilesFromAggregates(t *testing.T) {
+	manifest := &corpusManifest{
+		Languages: []string{"awk", "go"},
+		Entries: []corpusManifestEntry{
+			{Language: "awk", Bucket: "medium", SHA256: "a1", OutputPath: "/tmp/awk/medium__a.awk"},
+			{Language: "go", Bucket: "medium", SHA256: "g1", OutputPath: "/tmp/go/medium__a.go"},
+		},
+	}
+	results := []parityResult{
+		{
+			Language:       "awk",
+			FileID:         "medium__a.awk",
+			SourceSHA256:   "a1",
+			Pass:           false,
+			Category:       "type",
+			CRootType:      "program",
+			CRootHasError:  true,
+			GoRootType:     "ERROR",
+			GoRootHasError: true,
+		},
+		{Language: "go", FileID: "medium__a.go", SourceSHA256: "g1", Pass: true},
+	}
+
+	board := buildBoard("manifest.json", "results.jsonl", manifest, results, boardOptions{})
+	if got, want := board.L3.ApplicableLangs, 1; got != want {
+		t.Fatalf("L3.ApplicableLangs = %d, want %d", got, want)
+	}
+	if got, want := board.L3.GreenLangs, 1; got != want {
+		t.Fatalf("L3.GreenLangs = %d, want %d", got, want)
+	}
+	for _, lang := range board.Languages {
+		switch lang.Language {
+		case "awk":
+			if got, want := lang.L3.Status, "na"; got != want {
+				t.Fatalf("awk L3 status = %q, want %q", got, want)
+			}
+		case "go":
+			if got, want := lang.L3.Status, "green"; got != want {
+				t.Fatalf("go L3 status = %q, want %q", got, want)
+			}
+		}
+	}
+}
+
+func TestSummarizeLevelExcludesOracleTimeoutFiles(t *testing.T) {
+	entries := []corpusManifestEntry{
+		{Language: "d", Bucket: "large", SHA256: "d1", OutputPath: "/tmp/d/large__date.d"},
+	}
+	results := map[string]parityResult{
+		resultKey("d", "large__date.d"): {
+			Language:     "d",
+			FileID:       "large__date.d",
+			SourceSHA256: "d1",
+			Pass:         false,
+			Category:     "oracle_timeout",
+			Error:        "C oracle parse aborted after 5000ms timeout",
+		},
+	}
+
+	summary := summarizeLevel(entries, "d", results)
+	if got, want := summary.Status, "na"; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := summary.TotalFiles, 0; got != want {
+		t.Fatalf("TotalFiles = %d, want %d", got, want)
+	}
+	if got, want := len(summary.ExcludedFiles), 1; got != want || summary.ExcludedFiles[0] != "large__date.d" {
+		t.Fatalf("ExcludedFiles = %#v, want large__date.d", summary.ExcludedFiles)
+	}
+}
+
+func TestBuildBoardSkipsOracleTimeoutFilesFromAggregates(t *testing.T) {
+	manifest := &corpusManifest{
+		Languages: []string{"d", "go"},
+		Entries: []corpusManifestEntry{
+			{Language: "d", Bucket: "large", SHA256: "d1", OutputPath: "/tmp/d/large__date.d"},
+			{Language: "go", Bucket: "large", SHA256: "g1", OutputPath: "/tmp/go/large__a.go"},
+		},
+	}
+	results := []parityResult{
+		{
+			Language:     "d",
+			FileID:       "large__date.d",
+			SourceSHA256: "d1",
+			Pass:         false,
+			Category:     "oracle_timeout",
+			Error:        "C oracle parse aborted after 5000ms timeout",
+		},
+		{Language: "go", FileID: "large__a.go", SourceSHA256: "g1", Pass: true},
+	}
+
+	board := buildBoard("manifest.json", "results.jsonl", manifest, results, boardOptions{})
+	if got, want := board.L4.ApplicableLangs, 1; got != want {
+		t.Fatalf("L4.ApplicableLangs = %d, want %d", got, want)
+	}
+	if got, want := board.L4.GreenLangs, 1; got != want {
+		t.Fatalf("L4.GreenLangs = %d, want %d", got, want)
+	}
+	for _, lang := range board.Languages {
+		switch lang.Language {
+		case "d":
+			if got, want := lang.L4.Status, "na"; got != want {
+				t.Fatalf("d L4 status = %q, want %q", got, want)
+			}
+		case "go":
+			if got, want := lang.L4.Status, "green"; got != want {
+				t.Fatalf("go L4 status = %q, want %q", got, want)
+			}
+		}
+	}
+}
+
 func TestBuildBoardL4LimitSelectsLargestLanguages(t *testing.T) {
 	manifest := &corpusManifest{
 		Languages: []string{"go", "rust", "yaml", "swift"},
