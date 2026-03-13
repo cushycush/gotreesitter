@@ -1837,21 +1837,24 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 			return actions, nil
 		}
 
+		// Broad conflict group check: if the reduce LHS is in ANY
+		// declared conflict group, keep GLR. This must come before
+		// precedence-based resolution because the shift's lhsSym may
+		// reflect a sub-production (e.g. "tuple") rather than the
+		// ancestor rule in the conflict group (e.g. "print_statement").
+		// Without this early check, precedence deterministically resolves
+		// conflicts that the grammar author intended as GLR (e.g. Python's
+		// print_statement vs call via prec(-3) on primary_expression).
+		if reduceLHSInAnyConflictGroup(reduces, ng, cache) {
+			return actions, nil
+		}
+
 		shiftPrec := shift.prec
 		reducePrec := prod.Prec
 
 		// When BOTH sides have explicit precedence (non-zero), resolve
-		// deterministically even if the reduce LHS is in a conflict group.
-		// Tree-sitter C checks precedence before conflict groups; this is
-		// critical for grammars like JavaScript where arrow_function (low
-		// implicit prec from the precedences array) must lose to binary
-		// operators (high prec) deterministically. Without this, the broad
-		// conflict group fallback forces GLR and the wrong fork wins.
-		//
-		// We gate on BOTH sides having non-zero prec to avoid breaking
-		// grammars (like yaml) where the shift has prec from one context
-		// but the reduce has no explicit prec — in those cases, the
-		// conflict group should still force GLR to explore both paths.
+		// deterministically. This handles cases where neither side is in
+		// a declared conflict group.
 		if reducePrec != 0 && shiftPrec != 0 {
 			if reducePrec > shiftPrec {
 				return []lrAction{reduce}, nil
@@ -1868,12 +1871,6 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 			case AssocNone:
 				return nil, nil
 			}
-		}
-
-		// Broad conflict group fallback: if the reduce LHS is in ANY
-		// conflict group, keep GLR.
-		if reduceLHSInAnyConflictGroup(reduces, ng, cache) {
-			return actions, nil
 		}
 
 		// General precedence/associativity resolution for non-conflict-group

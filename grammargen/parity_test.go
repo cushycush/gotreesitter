@@ -1877,12 +1877,12 @@ func init() {
 		// These have hand-written Go scanners that get adapted at test time.
 
 		// Popular scanner languages
-		{name: "bash", blobFunc: grammars.BashLanguage, timeout: 90 * time.Second, expectNoErrors: 1},
-		{name: "python", blobFunc: grammars.PythonLanguage, timeout: 90 * time.Second, expectNoErrors: 0},
+		{name: "bash", blobFunc: grammars.BashLanguage, timeout: 90 * time.Second, expectNoErrors: 1, lrSplit: true},
+		{name: "python", blobFunc: grammars.PythonLanguage, timeout: 90 * time.Second, expectNoErrors: 0, lrSplit: true},
 		{name: "ruby", blobFunc: grammars.RubyLanguage, timeout: 90 * time.Second, expectNoErrors: 1, expectParity: 1},
 		{name: "rust", blobFunc: grammars.RustLanguage, timeout: 90 * time.Second, expectNoErrors: 1, expectParity: 1},
 		{name: "cpp", blobFunc: grammars.CppLanguage, timeout: 150 * time.Second, expectNoErrors: 1},
-		{name: "javascript", blobFunc: grammars.JavascriptLanguage, timeout: 90 * time.Second, expectNoErrors: 1, expectParity: 1},
+		{name: "javascript", blobFunc: grammars.JavascriptLanguage, timeout: 90 * time.Second, expectNoErrors: 1, expectParity: 1, lrSplit: true},
 		{name: "typescript", blobFunc: grammars.TypescriptLanguage, timeout: 90 * time.Second, expectNoErrors: 1,
 			jsonPath: "/tmp/grammar_parity/typescript/typescript/src/grammar.json"},
 		{name: "tsx", blobFunc: grammars.TsxLanguage, timeout: 90 * time.Second, expectNoErrors: 1,
