@@ -1151,6 +1151,7 @@ type importParityGrammar struct {
 	expectGenerate bool // generate should succeed
 	expectNoErrors int  // minimum samples that parse without ERROR
 	expectParity   int  // minimum samples with exact S-expression match
+	lrSplit        bool // enable LR(1) state splitting for this grammar
 }
 
 var importParityGrammars = []importParityGrammar{
@@ -1245,6 +1246,7 @@ var importParityGrammars = []importParityGrammar{
 		},
 		genTimeout:   120 * time.Second,
 		expectImport: true, expectGenerate: true, expectNoErrors: 0, expectParity: 2,
+		lrSplit: true,
 	},
 	// ── grammar.json imports (canonical resolved form) ──
 	{
@@ -1787,6 +1789,7 @@ func init() {
 		expectGenerate *bool         // nil = true
 		expectNoErrors int
 		expectParity   int
+		lrSplit        bool // enable LR(1) state splitting for this grammar
 	}
 
 
@@ -1905,7 +1908,7 @@ func init() {
 		// Systems/tools scanner languages
 		{name: "cmake", blobFunc: grammars.CmakeLanguage, expectNoErrors: 1, expectParity: 1},
 		{name: "erlang", blobFunc: grammars.ErlangLanguage, timeout: 90 * time.Second, expectNoErrors: 1, expectParity: 1},
-		{name: "haskell", blobFunc: grammars.HaskellLanguage, timeout: 90 * time.Second, expectNoErrors: 1},
+		{name: "haskell", blobFunc: grammars.HaskellLanguage, timeout: 90 * time.Second, expectNoErrors: 1, lrSplit: true},
 		{name: "nim", blobFunc: grammars.NimLanguage, timeout: 120 * time.Second, expectNoErrors: 1},
 		{name: "julia", blobFunc: grammars.JuliaLanguage, timeout: 90 * time.Second, expectNoErrors: 1},
 		{name: "gleam", blobFunc: grammars.GleamLanguage, expectNoErrors: 1, expectParity: 1},
@@ -2019,6 +2022,7 @@ func init() {
 			expectGenerate: expGenerate,
 			expectNoErrors: spec.expectNoErrors,
 			expectParity:   spec.expectParity,
+			lrSplit:        spec.lrSplit,
 		})
 	}
 }
