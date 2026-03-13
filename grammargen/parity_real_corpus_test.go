@@ -34,15 +34,16 @@ const (
 	realCorpusAllowPartialEnv   = "GTS_GRAMMARGEN_REAL_CORPUS_ALLOW_PARTIAL"
 	realCorpusSkipEnv           = "GTS_GRAMMARGEN_REAL_CORPUS_SKIP"
 	realCorpusOnlyEnv           = "GTS_GRAMMARGEN_REAL_CORPUS_ONLY"
-	realCorpusFloorsFileVersion = 3
+	realCorpusFloorsFileVersion = 15
 	maxRealCorpusWalkFiles      = 6000
 )
 
 type realCorpusMetrics struct {
-	Eligible    int `json:"eligible"`
-	NoError     int `json:"no_error"`
-	SExprParity int `json:"sexpr_parity"`
-	DeepParity  int `json:"deep_parity"`
+	Eligible         int `json:"eligible"`
+	NoError          int `json:"no_error"`
+	SExprParity      int `json:"sexpr_parity"`
+	DeepParity       int `json:"deep_parity"`
+	FunctionalParity int `json:"functional_parity"`
 }
 
 type realCorpusFloorFile struct {
@@ -57,8 +58,9 @@ type realCorpusFloorFile struct {
 	TotalEligible int                          `json:"total_eligible"`
 	TotalNoError  int                          `json:"total_no_error"`
 	TotalSExpr    int                          `json:"total_sexpr_parity"`
-	TotalDeep     int                          `json:"total_deep_parity"`
-	Metrics       map[string]realCorpusMetrics `json:"metrics"`
+	TotalDeep       int                          `json:"total_deep_parity"`
+	TotalFunctional int                          `json:"total_functional_parity"`
+	Metrics         map[string]realCorpusMetrics `json:"metrics"`
 }
 
 type realCorpusProfile string
@@ -169,6 +171,7 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 	totalNoError := 0
 	totalSExprParity := 0
 	totalDeepParity := 0
+	totalFunctionalParity := 0
 	observed := map[string]realCorpusMetrics{}
 
 	for _, g := range importParityGrammars {
@@ -326,6 +329,10 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 					// so the summary captures deep-only failures too.
 					divCategoryCounts[divs[0].Category]++
 				}
+				funcDivs := compareFunctional(genRoot, genLang, refRoot, refLang)
+				if len(funcDivs) == 0 {
+					metrics.FunctionalParity++
+				}
 				if sexprMatch {
 					metrics.SExprParity++
 				}
@@ -368,6 +375,7 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 			totalNoError += metrics.NoError
 			totalSExprParity += metrics.SExprParity
 			totalDeepParity += metrics.DeepParity
+			totalFunctionalParity += metrics.FunctionalParity
 
 			// When childCount divergences are the dominant issue, dump
 			// ChildCount comparison of parse actions between gen and ref.
@@ -384,11 +392,12 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 				sort.Strings(parts)
 				divSummary = " divs=[" + strings.Join(parts, ",") + "]"
 			}
-			t.Logf("real-corpus[%s]: no-error %d/%d, sexpr parity %d/%d, deep parity %d/%d%s (requireParity=%v, seen=%d/%d)",
+			t.Logf("real-corpus[%s]: no-error %d/%d, sexpr parity %d/%d, deep parity %d/%d, functional parity %d/%d%s (requireParity=%v, seen=%d/%d)",
 				profile,
 				metrics.NoError, metrics.Eligible,
 				metrics.SExprParity, metrics.Eligible,
 				metrics.DeepParity, metrics.Eligible,
+				metrics.FunctionalParity, metrics.Eligible,
 				divSummary,
 				requireParity, seen, len(candidates))
 		})
@@ -435,7 +444,8 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 					}
 					if cur.NoError*prev.Eligible < prev.NoError*cur.Eligible ||
 						cur.SExprParity*prev.Eligible < prev.SExprParity*cur.Eligible ||
-						cur.DeepParity*prev.Eligible < prev.DeepParity*cur.Eligible {
+						cur.DeepParity*prev.Eligible < prev.DeepParity*cur.Eligible ||
+						cur.FunctionalParity*prev.Eligible < prev.FunctionalParity*cur.Eligible {
 						t.Fatalf("ratchet update would regress ratios for %s: prev=%+v new=%+v", grammarName, prev, cur)
 					}
 				}
@@ -454,14 +464,15 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 		floorFile.TotalNoError = totalNoError
 		floorFile.TotalSExpr = totalSExprParity
 		floorFile.TotalDeep = totalDeepParity
+		floorFile.TotalFunctional = totalFunctionalParity
 		if err := writeRealCorpusFloorFile(floorsPath, floorFile); err != nil {
 			t.Fatalf("write floor file %s: %v", floorsPath, err)
 		}
 		t.Logf("updated ratchet floor file: %s", floorsPath)
 	}
 
-	t.Logf("REAL CORPUS SUMMARY: profile=%s grammars=%d eligible=%d no-error=%d sexpr_parity=%d deep_parity=%d requireParity=%v ratchetUpdate=%v ratchetRebase=%v maxCases=%d maxSampleBytes=%d",
-		profile, testedGrammars, totalEligible, totalNoError, totalSExprParity, totalDeepParity,
+	t.Logf("REAL CORPUS SUMMARY: profile=%s grammars=%d eligible=%d no-error=%d sexpr_parity=%d deep_parity=%d functional_parity=%d requireParity=%v ratchetUpdate=%v ratchetRebase=%v maxCases=%d maxSampleBytes=%d",
+		profile, testedGrammars, totalEligible, totalNoError, totalSExprParity, totalDeepParity, totalFunctionalParity,
 		requireParity, updateRatchet, rebaseRatchet, maxCases, maxSampleBytes)
 }
 
@@ -479,6 +490,9 @@ func enforceRealCorpusRatchet(t *testing.T, floor, cur realCorpusMetrics) {
 	if cur.DeepParity < floor.DeepParity {
 		t.Errorf("ratchet regression deep parity: %d < floor %d", cur.DeepParity, floor.DeepParity)
 	}
+	if cur.FunctionalParity < floor.FunctionalParity {
+		t.Errorf("ratchet regression functional parity: %d < floor %d", cur.FunctionalParity, floor.FunctionalParity)
+	}
 	if floor.Eligible > 0 && cur.Eligible > 0 {
 		if cur.NoError*floor.Eligible < floor.NoError*cur.Eligible {
 			t.Errorf("ratchet regression no-error ratio: %d/%d < floor %d/%d", cur.NoError, cur.Eligible, floor.NoError, floor.Eligible)
@@ -488,6 +502,9 @@ func enforceRealCorpusRatchet(t *testing.T, floor, cur realCorpusMetrics) {
 		}
 		if cur.DeepParity*floor.Eligible < floor.DeepParity*cur.Eligible {
 			t.Errorf("ratchet regression deep parity ratio: %d/%d < floor %d/%d", cur.DeepParity, cur.Eligible, floor.DeepParity, floor.Eligible)
+		}
+		if cur.FunctionalParity*floor.Eligible < floor.FunctionalParity*cur.Eligible {
+			t.Errorf("ratchet regression functional parity ratio: %d/%d < floor %d/%d", cur.FunctionalParity, cur.Eligible, floor.FunctionalParity, floor.Eligible)
 		}
 	}
 }
