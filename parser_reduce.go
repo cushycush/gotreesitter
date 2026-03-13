@@ -1622,18 +1622,23 @@ func materializeHiddenNodeForAlias(arena *nodeArena, lang *Language, n *Node) *N
 	}
 	out := appendFlattenedHiddenChildrenWithFields(children, fieldIDs, fieldSources, 0, n, symbolMeta, 0)
 	cloned.children = children[:out]
-	fieldIDs = fieldIDs[:out]
-	fieldSources = fieldSources[:out]
-	hasField := false
-	for _, fid := range fieldIDs {
-		if fid != 0 {
-			hasField = true
-			break
+	if fieldIDs != nil {
+		fieldIDs = fieldIDs[:out]
+		fieldSources = fieldSources[:out]
+		hasField := false
+		for _, fid := range fieldIDs {
+			if fid != 0 {
+				hasField = true
+				break
+			}
 		}
-	}
-	if hasField {
-		cloned.fieldIDs = fieldIDs
-		cloned.fieldSources = fieldSources
+		if hasField {
+			cloned.fieldIDs = fieldIDs
+			cloned.fieldSources = fieldSources
+		} else {
+			cloned.fieldIDs = nil
+			cloned.fieldSources = nil
+		}
 	} else {
 		cloned.fieldIDs = nil
 		cloned.fieldSources = nil

@@ -1325,7 +1325,7 @@ func TestAppendFlattenedHiddenChildrenRepeatedDirectFieldSkipsCommaSeparator(t *
 	children := arena.allocNodeSlice(3)
 	fieldIDs := arena.allocFieldIDSlice(3)
 	fieldSources := make([]uint8, 3)
-	if got, want := appendFlattenedHiddenChildrenWithFields(children, fieldIDs, fieldSources, 0, hidden, lang.SymbolMetadata), 3; got != want {
+	if got, want := appendFlattenedHiddenChildrenWithFields(children, fieldIDs, fieldSources, 0, hidden, lang.SymbolMetadata, 0), 3; got != want {
 		t.Fatalf("appendFlattenedHiddenChildrenWithFields() = %d, want %d", got, want)
 	}
 	if got, want := fieldIDs[0], FieldID(1); got != want {
