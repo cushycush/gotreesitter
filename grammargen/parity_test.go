@@ -59,6 +59,160 @@ func compareTreesDeep(
 	return divs
 }
 
+// ── Functional parity comparison ─────────────────────────────────────────────
+
+// skeletonNode represents a named node in the structural skeleton.
+// Intentionally omits byte ranges — functional parity cares about
+// structure (types, nesting, fields), not exact byte positions.
+type skeletonNode struct {
+	Type     string
+	Field    string // field label from parent, or ""
+	Children []skeletonNode
+}
+
+// extractNamedSkeleton extracts the named-node skeleton from a parse tree.
+// Invisible named nodes (supertypes, _-prefixed hidden rules) are transparent:
+// their children are promoted to the parent level, matching SExpr behavior.
+func extractNamedSkeleton(n *gotreesitter.Node, lang *gotreesitter.Language, depth int) []skeletonNode {
+	if n == nil || depth > 2000 {
+		return nil
+	}
+	var result []skeletonNode
+	for i := 0; i < n.ChildCount(); i++ {
+		child := n.Child(i)
+		if child == nil {
+			continue
+		}
+		if !child.IsNamed() {
+			continue
+		}
+		typ := child.Type(lang)
+		field := n.FieldNameForChild(i, lang)
+		// Invisible named nodes (supertypes): transparent, promote children
+		if strings.HasPrefix(typ, "_") {
+			promoted := extractNamedSkeleton(child, lang, depth+1)
+			// Propagate field label from parent to promoted children if they lack one
+			if field != "" {
+				for j := range promoted {
+					if promoted[j].Field == "" {
+						promoted[j].Field = field
+					}
+				}
+			}
+			result = append(result, promoted...)
+			continue
+		}
+		sn := skeletonNode{
+			Type:     unescapeUnicodeInType(typ),
+			Field:    field,
+			Children: extractNamedSkeleton(child, lang, depth+1),
+		}
+		result = append(result, sn)
+	}
+	return result
+}
+
+// countErrorNodes counts ERROR and MISSING nodes in a parse tree.
+func countErrorNodes(n *gotreesitter.Node, depth int) int {
+	if n == nil || depth > 2000 {
+		return 0
+	}
+	count := 0
+	if n.IsError() || n.IsMissing() {
+		count++
+	}
+	for i := 0; i < n.ChildCount(); i++ {
+		count += countErrorNodes(n.Child(i), depth+1)
+	}
+	return count
+}
+
+// compareFunctional checks functional parity between two parse trees.
+// Returns nil if functionally equivalent, or a slice of divergences.
+// Functional equivalence means: no spurious ERROR nodes + named-node
+// skeleton matches (types, nesting, fields).
+func compareFunctional(
+	genRoot *gotreesitter.Node, genLang *gotreesitter.Language,
+	refRoot *gotreesitter.Node, refLang *gotreesitter.Language,
+) []parityDivergence {
+	// Gate 1: ERROR check. If C has no errors but Go does, hard fail.
+	refErrors := countErrorNodes(refRoot, 0)
+	genErrors := countErrorNodes(genRoot, 0)
+	if refErrors == 0 && genErrors > 0 {
+		return []parityDivergence{{
+			Path:     "root",
+			Category: "error",
+			GenValue: fmt.Sprintf("%d ERROR nodes", genErrors),
+			RefValue: "0 ERROR nodes",
+		}}
+	}
+	// If ref has errors too, skip (sample not eligible — caller handles this)
+	if refErrors > 0 {
+		return nil
+	}
+
+	// Gate 2: Named-node skeleton comparison
+	genSkel := extractNamedSkeleton(genRoot, genLang, 0)
+	refSkel := extractNamedSkeleton(refRoot, refLang, 0)
+
+	// Wrap root: the root itself is named, include it
+	genRootType := unescapeUnicodeInType(genRoot.Type(genLang))
+	refRootType := unescapeUnicodeInType(refRoot.Type(refLang))
+
+	genTree := skeletonNode{Type: genRootType, Children: genSkel}
+	refTree := skeletonNode{Type: refRootType, Children: refSkel}
+
+	var divs []parityDivergence
+	compareSkeletonsRec(&genTree, &refTree, "root", 0, &divs)
+	return divs
+}
+
+func compareSkeletonsRec(gen, ref *skeletonNode, path string, depth int, divs *[]parityDivergence) {
+	if len(*divs) >= 10 || depth > 2000 {
+		return
+	}
+
+	// Type check (with unicode normalization already applied during extraction)
+	if gen.Type != ref.Type {
+		// Root-level lenience: empty ref type is a ts2go metadata issue
+		if !(depth == 0 && ref.Type == "") {
+			*divs = append(*divs, parityDivergence{
+				Path: path, Category: "type",
+				GenValue: gen.Type, RefValue: ref.Type,
+			})
+			return
+		}
+	}
+
+	// Field label check
+	if gen.Field != ref.Field {
+		*divs = append(*divs, parityDivergence{
+			Path: path, Category: "field",
+			GenValue: fmt.Sprintf("field=%q", gen.Field),
+			RefValue: fmt.Sprintf("field=%q", ref.Field),
+		})
+	}
+
+	// Child count check
+	if len(gen.Children) != len(ref.Children) {
+		*divs = append(*divs, parityDivergence{
+			Path: path, Category: "childCount",
+			GenValue: fmt.Sprintf("%d named children", len(gen.Children)),
+			RefValue: fmt.Sprintf("%d named children", len(ref.Children)),
+		})
+		return
+	}
+
+	// Recurse into children
+	for i := range gen.Children {
+		childPath := fmt.Sprintf("%s/%s", path, gen.Children[i].Type)
+		if i > 0 && gen.Children[i].Type == gen.Children[i-1].Type {
+			childPath = fmt.Sprintf("%s/%s[%d]", path, gen.Children[i].Type, i)
+		}
+		compareSkeletonsRec(&gen.Children[i], &ref.Children[i], childPath, depth+1, divs)
+	}
+}
+
 // maxCompareDepth caps recursion to prevent stack overflow on pathologically deep trees.
 const maxCompareDepth = 400
 
