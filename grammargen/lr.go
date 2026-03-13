@@ -268,11 +268,14 @@ func buildLRTablesInternal(ng *NormalizedGrammar, trackProvenance bool) (*LRTabl
 	// productions) and is kept for those since some grammars (e.g. HCL) regress
 	// significantly with LALR merging.
 	var itemSets []lrItemSet
-	// Very large grammars with external scanners can lose critical boundary-token
+	// Grammars with external scanners can lose critical boundary-token
 	// distinctions under pure LALR merging. Route those through the more precise
 	// core-based builder with boundary-sensitive merging instead.
-	useBoundaryLargeLR := len(ng.Productions) > 2000 && len(ng.ExternalSymbols) > 0
-	if len(ng.Productions) > 400 && !useBoundaryLargeLR {
+	// This covers the 400-2000 production gap where LALR was too aggressive for
+	// grammars like python (942), javascript (1327), yaml (885) that need their
+	// external scanner states to remain distinguishable.
+	useBoundaryLR := len(ng.ExternalSymbols) > 0
+	if len(ng.Productions) > 400 && !useBoundaryLR {
 		itemSets = ctx.buildItemSetsLALR()
 	} else {
 		itemSets = ctx.buildItemSets()
