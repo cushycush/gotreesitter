@@ -37,6 +37,7 @@ type jsImporter struct {
 	localConsts    map[string]*gotreesitter.Node // local const declarations in current rule body
 	topLevelConsts map[string]map[string]int     // top-level const objects: PREC.control → int
 	namedPrecs     map[string]int                // grammar precedences: "end" → numeric value
+	symbolPrecs    map[string]int                // grammar precedences: symbol entries → numeric value
 }
 
 // nodeText returns the source text of a node.
@@ -61,7 +62,7 @@ func (imp *jsImporter) extract(root *gotreesitter.Node) (*Grammar, error) {
 	if err != nil {
 		return nil, err
 	}
-	imp.namedPrecs = imp.extractNamedPrecs(grammarObj)
+	imp.namedPrecs, imp.symbolPrecs = imp.extractNamedPrecs(grammarObj)
 
 	g := NewGrammar("")
 
@@ -115,17 +116,37 @@ func (imp *jsImporter) extract(root *gotreesitter.Node) (*Grammar, error) {
 		}
 	}
 
+	// Apply implicit symbol precedences from the precedences array,
+	// matching the JSON importer behavior.
+	for symName, precVal := range imp.symbolPrecs {
+		rule, ok := g.Rules[symName]
+		if !ok {
+			continue
+		}
+		if rule.Kind == RulePrec || rule.Kind == RulePrecLeft || rule.Kind == RulePrecRight || rule.Kind == RulePrecDynamic {
+			continue
+		}
+		g.Rules[symName] = Prec(precVal, rule)
+	}
+
 	return g, nil
+}
+
+// precEntry holds a single entry from the grammar's precedences array.
+type jsPrecEntry struct {
+	name     string
+	isSymbol bool
 }
 
 // extractNamedPrecs extracts grammar-level named precedence groups from
 // precedences: $ => [["name1", "name2"], ...].
-func (imp *jsImporter) extractNamedPrecs(grammarObj *gotreesitter.Node) map[string]int {
+// Returns named precs (STRING entries) separately from symbol precs ($.foo entries).
+func (imp *jsImporter) extractNamedPrecs(grammarObj *gotreesitter.Node) (map[string]int, map[string]int) {
 	if grammarObj == nil || imp.nodeType(grammarObj) != "object" {
-		return nil
+		return nil, nil
 	}
 
-	var levels [][]string
+	var all []jsPrecEntry
 	for i := 0; i < int(grammarObj.NamedChildCount()); i++ {
 		child := grammarObj.NamedChild(i)
 		if imp.nodeType(child) != "pair" || imp.getPairKey(child) != "precedences" {
@@ -137,47 +158,45 @@ func (imp *jsImporter) extractNamedPrecs(grammarObj *gotreesitter.Node) map[stri
 			body = value
 		}
 		if body == nil || imp.nodeType(body) != "array" {
-			return nil
+			return nil, nil
 		}
 		for j := 0; j < int(body.NamedChildCount()); j++ {
 			group := body.NamedChild(j)
 			if imp.nodeType(group) != "array" {
 				continue
 			}
-			var level []string
 			for k := 0; k < int(group.NamedChildCount()); k++ {
 				entry := group.NamedChild(k)
 				switch imp.nodeType(entry) {
 				case "string":
-					level = append(level, imp.extractStringValue(entry))
+					all = append(all, jsPrecEntry{name: imp.extractStringValue(entry)})
 				case "member_expression":
-					level = append(level, imp.extractMemberProp(entry))
+					all = append(all, jsPrecEntry{name: imp.extractMemberProp(entry), isSymbol: true})
 				}
-			}
-			if len(level) > 0 {
-				levels = append(levels, level)
 			}
 		}
 		break
 	}
-	if len(levels) == 0 {
-		return nil
+	if len(all) == 0 {
+		return nil, nil
 	}
 
-	var ordered []string
-	for _, level := range levels {
-		ordered = append(ordered, level...)
-	}
-
-	m := make(map[string]int, len(ordered))
-	total := len(ordered)
-	for idx, name := range ordered {
+	named := make(map[string]int)
+	symbols := make(map[string]int)
+	total := len(all)
+	for idx, e := range all {
 		val := total - 1 - idx
-		if existing, ok := m[name]; !ok || val > existing {
-			m[name] = val
+		if e.isSymbol {
+			if existing, ok := symbols[e.name]; !ok || val > existing {
+				symbols[e.name] = val
+			}
+		} else {
+			if existing, ok := named[e.name]; !ok || val > existing {
+				named[e.name] = val
+			}
 		}
 	}
-	return m
+	return named, symbols
 }
 
 // findGrammarCall locates the grammar({...}) call expression and returns
