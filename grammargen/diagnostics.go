@@ -490,6 +490,7 @@ func generateWithReport(g *Grammar, opts reportBuildOptions) (*GenerateReport, e
 		ng.ExtraSymbols,
 		immediateTokens,
 		ng.ExternalSymbols,
+		ng.Symbols,
 		ng.WordSymbolID,
 		keywordSet,
 	)

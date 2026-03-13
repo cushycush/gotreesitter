@@ -706,6 +706,7 @@ func computeLexModes(
 	extraSymbols []int,
 	immediateTokens map[int]bool,
 	externalSymbols []int,
+	symbols []SymbolInfo,
 	wordSymbolID int,
 	keywordSymbols map[int]bool,
 ) ([]lexModeSpec, []int) {
@@ -718,12 +719,17 @@ func computeLexModes(
 		}
 	}
 
-	// External tokens are handled by the external scanner, not the DFA.
-	// Exclude them from lex mode computation to avoid creating spurious
-	// lex modes based on external token validity differences.
+	// External tokens handled by the scanner are excluded from the DFA.
+	// However, some grammars list STRING literals (like ")", "]", "||") as
+	// externals — the scanner never produces these tokens but uses their
+	// valid_symbols bit as a context flag (e.g., Python's bracket-depth
+	// tracking, JavaScript's LOGICAL_OR). These must stay in the DFA
+	// because only the DFA can actually lex them.
 	extSet := make(map[int]bool)
 	for _, e := range externalSymbols {
-		extSet[e] = true
+		if e >= 0 && e < len(symbols) && symbols[e].Kind == SymbolExternal {
+			extSet[e] = true
+		}
 	}
 
 	modeMap := make(map[string]int) // key → mode index
