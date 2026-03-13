@@ -1104,6 +1104,10 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 			p.recordIncrementalArenaUsage(arena.used)
 			p.recordIncrementalGSSUsage(scratch.gss.usedTotal)
 		}()
+	} else {
+		defer func() {
+			p.recordIncrementalArenaUsage(arena.used)
+		}()
 	}
 	switch arenaClass {
 	case arenaClassFull:
