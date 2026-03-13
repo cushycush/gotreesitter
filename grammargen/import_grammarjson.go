@@ -18,13 +18,10 @@ func ImportGrammarJSON(data []byte) (*Grammar, error) {
 
 	g := NewGrammar(raw.Name)
 
-	// Build named precedence → numeric value mapping from the precedences array.
-	// Each level is an ordered list from highest to lowest precedence.
-	// STRING entries define named precedence values; SYMBOL entries just declare
-	// ordering but the rule's own numeric prec is what matters.
-	namedPrecs := buildNamedPrecMap(raw.Precedences)
+	// Build precedence mappings from the precedences array.
+	pm := buildPrecMaps(raw.Precedences)
 
-	conv := &jsonConverter{namedPrecs: namedPrecs}
+	conv := &jsonConverter{namedPrecs: pm.namedPrecs}
 
 	// Import rules in order.
 	for _, name := range raw.ruleOrder {
@@ -75,18 +72,49 @@ func ImportGrammarJSON(data []byte) (*Grammar, error) {
 	// Import supertypes.
 	g.Supertypes = raw.Supertypes
 
+	// Apply implicit precedences from SYMBOL entries in the precedences
+	// array. Tree-sitter C assigns a precedence to all productions of a rule
+	// when that rule's symbol appears in the precedences array. Wrap the
+	// rule with Prec() so normalization propagates it to productions.
+	for symName, precVal := range pm.symbolPrecs {
+		rule, ok := g.Rules[symName]
+		if !ok {
+			continue
+		}
+		// Don't wrap if the rule already has a top-level precedence.
+		if rule.Kind == RulePrec || rule.Kind == RulePrecLeft || rule.Kind == RulePrecRight || rule.Kind == RulePrecDynamic {
+			continue
+		}
+		g.Rules[symName] = Prec(precVal, rule)
+	}
+
 	return g, nil
 }
 
-// buildNamedPrecMap builds a mapping from named precedence strings to numeric
-// values. Levels are ordered from highest to lowest precedence; within each
+// precMaps holds named precedence → numeric value mappings built from the
+// grammar's precedences array. namedPrecs maps STRING entries (like
+// "binary_plus"), symbolPrecs maps SYMBOL entries (like "arrow_function").
+type precMaps struct {
+	namedPrecs  map[string]int
+	symbolPrecs map[string]int
+}
+
+// buildPrecMaps builds mappings from the grammar's precedences array.
+// Levels are ordered from highest to lowest precedence; within each
 // level, earlier entries have higher precedence. Values are assigned globally
 // across all levels so that entries in earlier levels always outrank entries
 // in later levels.
-func buildNamedPrecMap(rawLevels []json.RawMessage) map[string]int {
-	// First pass: collect all STRING entries across all levels in order.
+//
+// STRING entries define named precedence values used by prec.left('name', ...);
+// SYMBOL entries assign implicit precedence to all productions of a rule,
+// matching tree-sitter C's behavior (e.g., $.arrow_function at the bottom of
+// a precedences group gets a low-but-nonzero precedence so it correctly loses
+// to binary operators in S/R conflict resolution).
+func buildPrecMaps(rawLevels []json.RawMessage) precMaps {
+	// First pass: collect ALL entries across all levels in order.
 	type precEntry struct {
-		name     string
+		name      string
+		isSymbol  bool
 		globalIdx int
 	}
 	var all []precEntry
@@ -96,22 +124,32 @@ func buildNamedPrecMap(rawLevels []json.RawMessage) map[string]int {
 			continue
 		}
 		for _, entry := range entries {
-			if entry.Type == "STRING" && entry.Value != "" {
+			switch {
+			case entry.Type == "STRING" && entry.Value != "":
 				all = append(all, precEntry{name: entry.Value, globalIdx: len(all)})
+			case entry.Type == "SYMBOL" && entry.Name != "":
+				all = append(all, precEntry{name: entry.Name, isSymbol: true, globalIdx: len(all)})
 			}
 		}
 	}
 
 	// Second pass: assign values so first entry gets highest value.
-	m := make(map[string]int, len(all))
+	named := make(map[string]int)
+	symbols := make(map[string]int)
 	total := len(all)
 	for _, e := range all {
 		val := total - 1 - e.globalIdx
-		if existing, ok := m[e.name]; !ok || val > existing {
-			m[e.name] = val
+		if e.isSymbol {
+			if existing, ok := symbols[e.name]; !ok || val > existing {
+				symbols[e.name] = val
+			}
+		} else {
+			if existing, ok := named[e.name]; !ok || val > existing {
+				named[e.name] = val
+			}
 		}
 	}
-	return m
+	return precMaps{namedPrecs: named, symbolPrecs: symbols}
 }
 
 // jsonGrammar is the top-level structure of a grammar.json file.

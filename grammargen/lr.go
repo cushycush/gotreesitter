@@ -1835,21 +1835,49 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 		if shiftReduceInConflictGroup(shifts, reduces, ng, cache) {
 			return actions, nil
 		}
-		// Fallback: if the reduce LHS is in ANY conflict group, keep GLR.
-		// This is broader than tree-sitter C but necessary because grammargen's
-		// LALR merging can create S/R conflicts where the shift LHS doesn't
-		// appear directly in the conflict group but the ambiguity is real.
-		if reduceLHSInAnyConflictGroup(reduces, ng, cache) {
-			return actions, nil
-		}
 
 		shiftPrec := shift.prec
 		reducePrec := prod.Prec
 
-		// Apply precedence/associativity resolution when either side has a
-		// non-zero precedence OR the production declares explicit associativity.
-		// PREC_LEFT(0) sets Assoc=AssocLeft with Prec=0; the associativity must
-		// still be respected even though the precedence value is zero.
+		// When BOTH sides have explicit precedence (non-zero), resolve
+		// deterministically even if the reduce LHS is in a conflict group.
+		// Tree-sitter C checks precedence before conflict groups; this is
+		// critical for grammars like JavaScript where arrow_function (low
+		// implicit prec from the precedences array) must lose to binary
+		// operators (high prec) deterministically. Without this, the broad
+		// conflict group fallback forces GLR and the wrong fork wins.
+		//
+		// We gate on BOTH sides having non-zero prec to avoid breaking
+		// grammars (like yaml) where the shift has prec from one context
+		// but the reduce has no explicit prec — in those cases, the
+		// conflict group should still force GLR to explore both paths.
+		if reducePrec != 0 && shiftPrec != 0 {
+			if reducePrec > shiftPrec {
+				return []lrAction{reduce}, nil
+			}
+			if shiftPrec > reducePrec {
+				return []lrAction{shift}, nil
+			}
+			// Equal precedence: check associativity.
+			switch prod.Assoc {
+			case AssocLeft:
+				return []lrAction{reduce}, nil
+			case AssocRight:
+				return []lrAction{shift}, nil
+			case AssocNone:
+				return nil, nil
+			}
+		}
+
+		// Broad conflict group fallback: if the reduce LHS is in ANY
+		// conflict group, keep GLR.
+		if reduceLHSInAnyConflictGroup(reduces, ng, cache) {
+			return actions, nil
+		}
+
+		// General precedence/associativity resolution for non-conflict-group
+		// cases. Apply when either side has a non-zero precedence or the
+		// production declares explicit associativity.
 		if reducePrec != 0 || shiftPrec != 0 || prod.Assoc != AssocNone {
 			if reducePrec > shiftPrec {
 				return []lrAction{reduce}, nil
