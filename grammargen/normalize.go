@@ -2272,6 +2272,15 @@ func ruleReferencesSym(r *Rule, name string) bool {
 // alternatives alongside the original reference. This preserves the original
 // reference for compound alternatives while adding direct paths for cc=1 targets.
 func inlinePassthroughRefs(r *Rule, flattenMap map[string]*flattenInfo) *Rule {
+	return inlinePassthroughRefsCtx(r, flattenMap, false)
+}
+
+// inlinePassthroughRefsCtx is inlinePassthroughRefs with ALIAS context tracking.
+// When insideAlias is true, pass-through alternatives that carry their own ALIAS
+// have the inner ALIAS stripped so the outer alias can correctly tag the result.
+// Without this, enumerateAlternatives would let the inner alias shadow the outer
+// one (e.g., YAML's plain_scalar blocking flow_node).
+func inlinePassthroughRefsCtx(r *Rule, flattenMap map[string]*flattenInfo, insideAlias bool) *Rule {
 	if r == nil {
 		return nil
 	}
@@ -2286,10 +2295,21 @@ func inlinePassthroughRefs(r *Rule, flattenMap map[string]*flattenInfo) *Rule {
 		alts := make([]*Rule, 0, len(fi.passThrough)+1)
 		alts = append(alts, r) // keep original ref for compound alts
 		for _, pt := range fi.passThrough {
-			alts = append(alts, cloneRule(pt))
+			c := cloneRule(pt)
+			// When expanding inside an outer ALIAS context, strip inner
+			// ALIAS wrappers so the outer alias can tag the result. Without
+			// this, the inner alias shadows the outer in enumerateAlternatives
+			// (which checks cp.aliasName == "" before applying outer alias).
+			if insideAlias {
+				c = stripTopAlias(c)
+			}
+			alts = append(alts, c)
 		}
 		return Choice(alts...)
 	}
+
+	// Track ALIAS context for children.
+	inAlias := insideAlias || r.Kind == RuleAlias
 
 	// Recurse into children.
 	if len(r.Children) == 0 {
@@ -2298,7 +2318,7 @@ func inlinePassthroughRefs(r *Rule, flattenMap map[string]*flattenInfo) *Rule {
 	changed := false
 	newChildren := make([]*Rule, len(r.Children))
 	for i, c := range r.Children {
-		nc := inlinePassthroughRefs(c, flattenMap)
+		nc := inlinePassthroughRefsCtx(c, flattenMap, inAlias)
 		if nc != c {
 			changed = true
 		}
@@ -2310,6 +2330,30 @@ func inlinePassthroughRefs(r *Rule, flattenMap map[string]*flattenInfo) *Rule {
 	out := *r
 	out.Children = newChildren
 	return &out
+}
+
+// stripTopAlias removes a top-level ALIAS wrapper, unwrapping through
+// precedence wrappers to find it. Returns the inner rule without the alias.
+func stripTopAlias(r *Rule) *Rule {
+	if r == nil {
+		return nil
+	}
+	if r.Kind == RuleAlias && len(r.Children) > 0 {
+		return r.Children[0]
+	}
+	// Unwrap precedence wrappers.
+	switch r.Kind {
+	case RulePrec, RulePrecLeft, RulePrecRight, RulePrecDynamic:
+		if len(r.Children) > 0 {
+			inner := stripTopAlias(r.Children[0])
+			if inner != r.Children[0] {
+				out := *r
+				out.Children = []*Rule{inner}
+				return &out
+			}
+		}
+	}
+	return r
 }
 
 type flattenInfo struct {
