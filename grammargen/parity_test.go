@@ -1209,8 +1209,8 @@ var importParityGrammars = []importParityGrammar{
 		name: "jsdoc", path: "/tmp/grammar_parity/jsdoc/grammar.js", jsonPath: "/tmp/grammar_parity/jsdoc/src/grammar.json",
 		blobFunc: grammars.JsdocLanguage,
 		samples: []string{
-			"@param {string} name",
-			"@returns {number}",
+			"/**\n * @param {string} name\n * @returns {number}\n */",
+			"/**\n * @returns {number}\n */",
 		},
 		expectImport: true, expectGenerate: true, expectNoErrors: 2, expectParity: 2,
 	},
