@@ -1,13 +1,18 @@
 package gotreesitter_test
 
 import (
+	"fmt"
+	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/odvcencio/gotreesitter"
 	"github.com/odvcencio/gotreesitter/grammars"
 )
 
 type dfaBenchmarkSpec struct {
+	name   string
 	lang   func() *gotreesitter.Language
 	source func(int) []byte
 	marker string
@@ -43,18 +48,47 @@ func benchmarkParseFullDFA(b *testing.B, spec dfaBenchmarkSpec) {
 	lang := spec.lang()
 	parser := gotreesitter.NewParser(lang)
 	src := spec.source(benchmarkFuncCount(b))
+	statsEnabled := strings.TrimSpace(os.Getenv("GOT_STATS")) != ""
+	if statsEnabled {
+		gotreesitter.ResetArenaProfile()
+		gotreesitter.ResetPerfCounters()
+		gotreesitter.EnableArenaProfile(true)
+		defer gotreesitter.EnableArenaProfile(false)
+	}
 
 	b.ReportAllocs()
 	b.SetBytes(int64(len(src)))
 	b.ResetTimer()
 
+	var lastRuntime gotreesitter.ParseRuntime
 	for i := 0; i < b.N; i++ {
 		tree, err := parser.Parse(src)
 		if err != nil {
 			b.Fatalf("parse error: %v", err)
 		}
 		requireCompleteParse(b, tree, src, lang, "full dfa")
+		lastRuntime = tree.ParseRuntime()
 		tree.Release()
+	}
+	if statsEnabled {
+		a := gotreesitter.ArenaProfileSnapshot()
+		p := gotreesitter.PerfCountersSnapshot()
+		fmt.Printf(
+			"STATS_LANG name=%s glr_max_stacks=%d\n",
+			spec.name, effectiveGLRMaxStacksForStats(),
+		)
+		fmt.Printf(
+			"STATS arena_full_acquire=%d arena_full_new=%d arena_inc_acquire=%d arena_inc_new=%d\n",
+			a.FullAcquire, a.FullNew, a.IncrementalAcquire, a.IncrementalNew,
+		)
+		fmt.Printf(
+			"STATS_PERF merge_calls=%d merge_dead_pruned=%d merge_perkey_overflow=%d merge_replacements=%d stackeq_calls=%d stackeq_true=%d stackeq_hash_miss_skips=%d stackcmp_calls=%d forks=%d first_conflict_token=%d max_stacks=%d lex_bytes=%d lex_tokens=%d\n",
+			p.MergeCalls, p.MergeDeadPruned, p.MergePerKeyOverflow, p.MergeReplacements, p.StackEquivalentCalls, p.StackEquivalentTrue, p.StackEqHashMissSkips, p.StackCompareCalls, p.ForkCount, p.FirstConflictToken, p.MaxConcurrentStacks, p.LexBytes, p.LexTokens,
+		)
+		fmt.Printf(
+			"STATS_PARSE nodes_new=%d children_ptrs=%d extras=%d errors=%d reuse_bytes=%d max_stacks=%d\n",
+			lastRuntime.NodesAllocated, p.ParentChildPointers, p.ExtraNodes, p.ErrorNodes, p.ReuseNonLeafBytes, lastRuntime.MaxStacksSeen,
+		)
 	}
 }
 
@@ -84,6 +118,29 @@ func benchmarkParseIncrementalSingleByteEditDFA(b *testing.B, spec dfaBenchmarkS
 		OldEndPoint: site.end,
 		NewEndPoint: site.end,
 	}
+	statsEnabled := strings.TrimSpace(os.Getenv("GOT_STATS")) != ""
+	if statsEnabled {
+		gotreesitter.ResetArenaProfile()
+		gotreesitter.ResetPerfCounters()
+		gotreesitter.EnableArenaProfile(true)
+		defer gotreesitter.EnableArenaProfile(false)
+	}
+	var editTotalNS uint64
+	var reuseTotalNS uint64
+	var parseTotalNS uint64
+	var reusedSubtrees uint64
+	var reusedBytes uint64
+	var newNodesAllocated uint64
+	var recoverSearches uint64
+	var recoverStateChecks uint64
+	var recoverStateSkips uint64
+	var recoverSymbolSkips uint64
+	var recoverLookups uint64
+	var recoverHits uint64
+	var entryScratchPeak uint64
+	maxStacksSeen := 0
+	reuseUnsupported := false
+	reuseUnsupportedReason := ""
 
 	b.ReportAllocs()
 	b.SetBytes(int64(len(src)))
@@ -91,9 +148,39 @@ func benchmarkParseIncrementalSingleByteEditDFA(b *testing.B, spec dfaBenchmarkS
 
 	for i := 0; i < b.N; i++ {
 		toggleDigitAt(src, site.offset)
+		editStart := time.Now()
 		tree.Edit(edit)
 		old := tree
-		tree, err = parser.ParseIncremental(src, tree)
+		if statsEnabled {
+			editTotalNS += uint64(time.Since(editStart).Nanoseconds())
+			var prof gotreesitter.IncrementalParseProfile
+			tree, prof, err = parser.ParseIncrementalProfiled(src, tree)
+			reuseTotalNS += uint64(prof.ReuseCursorNanos)
+			parseTotalNS += uint64(prof.ReparseNanos)
+			reusedSubtrees += prof.ReusedSubtrees
+			reusedBytes += prof.ReusedBytes
+			newNodesAllocated += prof.NewNodesAllocated
+			recoverSearches += prof.RecoverSearches
+			recoverStateChecks += prof.RecoverStateChecks
+			recoverStateSkips += prof.RecoverStateSkips
+			recoverSymbolSkips += prof.RecoverSymbolSkips
+			recoverLookups += prof.RecoverLookups
+			recoverHits += prof.RecoverHits
+			if prof.EntryScratchPeak > entryScratchPeak {
+				entryScratchPeak = prof.EntryScratchPeak
+			}
+			if prof.MaxStacksSeen > maxStacksSeen {
+				maxStacksSeen = prof.MaxStacksSeen
+			}
+			if prof.ReuseUnsupported {
+				reuseUnsupported = true
+				if reuseUnsupportedReason == "" {
+					reuseUnsupportedReason = prof.ReuseUnsupportedReason
+				}
+			}
+		} else {
+			tree, err = parser.ParseIncremental(src, tree)
+		}
 		if err != nil {
 			b.Fatalf("incremental parse error: %v", err)
 		}
@@ -103,6 +190,26 @@ func benchmarkParseIncrementalSingleByteEditDFA(b *testing.B, spec dfaBenchmarkS
 		if old != tree {
 			old.Release()
 		}
+	}
+	if statsEnabled {
+		a := gotreesitter.ArenaProfileSnapshot()
+		p := gotreesitter.PerfCountersSnapshot()
+		fmt.Printf(
+			"STATS_LANG name=%s glr_max_stacks=%d reuse_unsupported=%t reuse_reason=%q\n",
+			spec.name, effectiveGLRMaxStacksForStats(), reuseUnsupported, reuseUnsupportedReason,
+		)
+		fmt.Printf(
+			"STATS edits=%d edit_ns=%d reuse_ns=%d parse_ns=%d reused_subtrees=%d reused_bytes=%d new_nodes=%d recover_searches=%d recover_state_checks=%d recover_state_skips=%d recover_symbol_skips=%d recover_lookups=%d recover_hits=%d max_stacks=%d scratch_peak_entries=%d\n",
+			b.N, editTotalNS, reuseTotalNS, parseTotalNS, reusedSubtrees, reusedBytes, newNodesAllocated, recoverSearches, recoverStateChecks, recoverStateSkips, recoverSymbolSkips, recoverLookups, recoverHits, maxStacksSeen, entryScratchPeak,
+		)
+		fmt.Printf(
+			"STATS arena_full_acquire=%d arena_full_new=%d arena_inc_acquire=%d arena_inc_new=%d\n",
+			a.FullAcquire, a.FullNew, a.IncrementalAcquire, a.IncrementalNew,
+		)
+		fmt.Printf(
+			"STATS_PERF merge_calls=%d merge_dead_pruned=%d merge_perkey_overflow=%d merge_replacements=%d stackeq_calls=%d stackeq_true=%d stackeq_hash_miss_skips=%d stackcmp_calls=%d forks=%d first_conflict_token=%d max_stacks=%d lex_bytes=%d lex_tokens=%d reuse_nodes_visited=%d reuse_nodes_pushed=%d reuse_nodes_popped=%d reuse_candidates=%d reuse_successes=%d reuse_leaf_successes=%d reuse_nonleaf_checks=%d reuse_nonleaf_successes=%d reuse_nonleaf_bytes=%d reuse_nonleaf_nogoto=%d reuse_nonleaf_nogoto_term=%d reuse_nonleaf_nogoto_nonterm=%d reuse_nonleaf_statemiss=%d reuse_nonleaf_statezero=%d\n",
+			p.MergeCalls, p.MergeDeadPruned, p.MergePerKeyOverflow, p.MergeReplacements, p.StackEquivalentCalls, p.StackEquivalentTrue, p.StackEqHashMissSkips, p.StackCompareCalls, p.ForkCount, p.FirstConflictToken, p.MaxConcurrentStacks, p.LexBytes, p.LexTokens, p.ReuseNodesVisited, p.ReuseNodesPushed, p.ReuseNodesPopped, p.ReuseCandidatesChecked, p.ReuseSuccesses, p.ReuseLeafSuccesses, p.ReuseNonLeafChecks, p.ReuseNonLeafSuccesses, p.ReuseNonLeafBytes, p.ReuseNonLeafNoGoto, p.ReuseNonLeafNoGotoTerm, p.ReuseNonLeafNoGotoNt, p.ReuseNonLeafStateMiss, p.ReuseNonLeafStateZero,
+		)
 	}
 	tree.Release()
 }
@@ -156,6 +263,7 @@ func stringInt(n int) string {
 
 func BenchmarkTypeScriptParseFullDFA(b *testing.B) {
 	benchmarkParseFullDFA(b, dfaBenchmarkSpec{
+		name:   "typescript",
 		lang:   grammars.TypescriptLanguage,
 		source: makeTypeScriptBenchmarkSource,
 		marker: "const v = ",
@@ -164,6 +272,7 @@ func BenchmarkTypeScriptParseFullDFA(b *testing.B) {
 
 func BenchmarkTypeScriptParseIncrementalSingleByteEditDFA(b *testing.B) {
 	benchmarkParseIncrementalSingleByteEditDFA(b, dfaBenchmarkSpec{
+		name:   "typescript",
 		lang:   grammars.TypescriptLanguage,
 		source: makeTypeScriptBenchmarkSource,
 		marker: "const v = ",
@@ -172,6 +281,7 @@ func BenchmarkTypeScriptParseIncrementalSingleByteEditDFA(b *testing.B) {
 
 func BenchmarkTypeScriptParseIncrementalNoEditDFA(b *testing.B) {
 	benchmarkParseIncrementalNoEditDFA(b, dfaBenchmarkSpec{
+		name:   "typescript",
 		lang:   grammars.TypescriptLanguage,
 		source: makeTypeScriptBenchmarkSource,
 		marker: "const v = ",
@@ -180,6 +290,7 @@ func BenchmarkTypeScriptParseIncrementalNoEditDFA(b *testing.B) {
 
 func BenchmarkPythonParseFullDFA(b *testing.B) {
 	benchmarkParseFullDFA(b, dfaBenchmarkSpec{
+		name:   "python",
 		lang:   grammars.PythonLanguage,
 		source: makePythonBenchmarkSource,
 		marker: "v = ",
@@ -188,6 +299,7 @@ func BenchmarkPythonParseFullDFA(b *testing.B) {
 
 func BenchmarkPythonParseIncrementalSingleByteEditDFA(b *testing.B) {
 	benchmarkParseIncrementalSingleByteEditDFA(b, dfaBenchmarkSpec{
+		name:   "python",
 		lang:   grammars.PythonLanguage,
 		source: makePythonBenchmarkSource,
 		marker: "v = ",
@@ -196,6 +308,7 @@ func BenchmarkPythonParseIncrementalSingleByteEditDFA(b *testing.B) {
 
 func BenchmarkPythonParseIncrementalNoEditDFA(b *testing.B) {
 	benchmarkParseIncrementalNoEditDFA(b, dfaBenchmarkSpec{
+		name:   "python",
 		lang:   grammars.PythonLanguage,
 		source: makePythonBenchmarkSource,
 		marker: "v = ",
