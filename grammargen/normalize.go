@@ -1335,7 +1335,6 @@ func identifyKeywords(g *Grammar, st *symbolTable, stringLits []string) (map[int
 	keywordSet := make(map[int]bool)
 	var keywordSyms []int
 	var keywordEntries []TerminalPattern
-	priority := 0
 
 	for _, s := range stringLits {
 		id, ok := st.lookup(s)
@@ -1348,12 +1347,15 @@ func identifyKeywords(g *Grammar, st *symbolTable, stringLits []string) (map[int
 		if matchesDFA(dfa, s) && isIdentifierLikeKeywordLiteral(s) {
 			keywordSet[id] = true
 			keywordSyms = append(keywordSyms, id)
+			// All keywords use uniform priority 0 so the scanner's greedy
+			// tiebreaker (longer match wins at same priority) selects
+			// correctly when one keyword is a prefix of another (e.g.
+			// "as" vs "async", "in" vs "instanceof").
 			keywordEntries = append(keywordEntries, TerminalPattern{
 				SymbolID: id,
 				Rule:     Str(s),
-				Priority: priority,
+				Priority: 0,
 			})
-			priority++
 		}
 	}
 
