@@ -72,6 +72,10 @@ func ImportGrammarJSON(data []byte) (*Grammar, error) {
 	// Import supertypes.
 	g.Supertypes = raw.Supertypes
 
+	// Import precedence orderings for direct ordering comparison during
+	// LR conflict resolution (mirroring tree-sitter C's compare_precedence).
+	g.PrecOrderings = buildPrecOrderings(raw.Precedences)
+
 	// Apply implicit precedences from SYMBOL entries in the precedences
 	// array. Tree-sitter C assigns a precedence to all productions of a rule
 	// when that rule's symbol appears in the precedences array. Wrap the
@@ -150,6 +154,32 @@ func buildPrecMaps(rawLevels []json.RawMessage) precMaps {
 		}
 	}
 	return precMaps{namedPrecs: named, symbolPrecs: symbols}
+}
+
+// buildPrecOrderings extracts the raw precedence orderings from the grammar's
+// precedences array. Each inner array becomes a []PrecOrderEntry preserving
+// the original order (earlier = higher precedence within the level).
+func buildPrecOrderings(rawLevels []json.RawMessage) [][]PrecOrderEntry {
+	var orderings [][]PrecOrderEntry
+	for _, rawLevel := range rawLevels {
+		var entries []jsonPrecEntry
+		if err := json.Unmarshal(rawLevel, &entries); err != nil {
+			continue
+		}
+		var ordering []PrecOrderEntry
+		for _, entry := range entries {
+			switch {
+			case entry.Type == "STRING" && entry.Value != "":
+				ordering = append(ordering, PrecOrderEntry{IsSymbol: false, Name: entry.Value})
+			case entry.Type == "SYMBOL" && entry.Name != "":
+				ordering = append(ordering, PrecOrderEntry{IsSymbol: true, Name: entry.Name})
+			}
+		}
+		if len(ordering) > 0 {
+			orderings = append(orderings, ordering)
+		}
+	}
+	return orderings
 }
 
 // jsonGrammar is the top-level structure of a grammar.json file.
@@ -388,12 +418,14 @@ func (c *jsonConverter) convertRule(data json.RawMessage) (*Rule, error) {
 // Resolves named precedence strings to numeric values via the namedPrecs map.
 func (c *jsonConverter) convertPrecRule(node jsonRuleNode, make_ func(int, *Rule) *Rule) (*Rule, error) {
 	prec := 0
+	var precName string
 	switch v := node.Value.(type) {
 	case float64:
 		prec = int(v)
 	case int:
 		prec = v
 	case string:
+		precName = v
 		if val, ok := c.namedPrecs[v]; ok {
 			prec = val
 		}
@@ -403,7 +435,11 @@ func (c *jsonConverter) convertPrecRule(node jsonRuleNode, make_ func(int, *Rule
 	if err != nil {
 		return nil, err
 	}
-	return make_(prec, child), nil
+	rule := make_(prec, child)
+	if precName != "" {
+		rule.Value = precName // Store original named prec for ordering comparison.
+	}
+	return rule, nil
 }
 
 // convertRuleList converts a list of JSON rule nodes to Rules.

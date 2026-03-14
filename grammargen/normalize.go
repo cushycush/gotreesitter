@@ -39,9 +39,10 @@ type SymbolInfo struct {
 
 // Production is a single LHS → RHS production with metadata.
 type Production struct {
-	LHS          int   // symbol index
-	RHS          []int // symbol indices
+	LHS          int    // symbol index
+	RHS          []int  // symbol indices
 	Prec         int
+	PrecName     string // original named prec (e.g. "object" from prec('object', ...))
 	Assoc        Assoc
 	DynPrec      int
 	ProductionID int
@@ -90,6 +91,11 @@ type NormalizedGrammar struct {
 
 	// External scanner support (populated when Grammar.Externals is set).
 	ExternalSymbols []int // external token index → symbol ID
+
+	// Precedence orderings from the grammar's precedences array, used for
+	// direct ordering comparison during LR conflict resolution.
+	PrecOrderings  [][]PrecOrderEntry // raw orderings (earlier = higher prec within level)
+	NamedPrecValues map[string]int    // named prec name → numeric value (for matching)
 
 	// conflictCache is built lazily by LR conflict resolution so repeated
 	// resolveActionConflict calls can reuse the same reverse indexes.
@@ -520,10 +526,44 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 	ng.KeywordEntries = keywordEntries
 	ng.ExternalSymbols = externalSymbols
 
+	// Propagate precedence orderings for LR conflict resolution.
+	ng.PrecOrderings = g.PrecOrderings
+	// Build reverse map: named prec name → numeric value.
+	// This lets LR conflict resolution match NAME entries in the orderings
+	// against production prec values.
+	if len(g.PrecOrderings) > 0 {
+		ng.NamedPrecValues = buildNamedPrecValues(g)
+	}
+
 	// Set tokenCount boundary on symbols so assembly knows where terminals end.
 	_ = tokenCount
 
 	return ng, nil
+}
+
+// buildNamedPrecValues computes the named prec name → numeric value map from
+// the grammar's PrecOrderings. Uses the same value assignment as buildPrecMaps:
+// entries are ordered globally, first entry gets the highest value.
+func buildNamedPrecValues(g *Grammar) map[string]int {
+	result := make(map[string]int)
+	var globalIdx int
+	// Count total entries first.
+	total := 0
+	for _, ordering := range g.PrecOrderings {
+		total += len(ordering)
+	}
+	for _, ordering := range g.PrecOrderings {
+		for _, entry := range ordering {
+			if !entry.IsSymbol {
+				val := total - 1 - globalIdx
+				if existing, ok := result[entry.Name]; !ok || val > existing {
+					result[entry.Name] = val
+				}
+			}
+			globalIdx++
+		}
+	}
+	return result
 }
 
 func canonicalizeAliasedExternalSymbols(symbols []SymbolInfo, productions []Production, externalSymbols []int) {
@@ -1755,15 +1795,18 @@ func flattenRule2(r *Rule, lhsID int, st *symbolTable, prodIDCounter *int) []Pro
 	}
 
 	// Unwrap precedence/assoc wrappers at the top level.
-	prec, assoc, dynPrec, inner := unwrapPrec(r)
+	prec, assoc, dynPrec, inner, precName := unwrapPrec(r)
 
 	switch inner.Kind {
 	case RuleChoice:
 		var prods []Production
 		for _, alt := range inner.Children {
-			altPrec, altAssoc, altDyn, altInner := unwrapPrec(alt)
+			altPrec, altAssoc, altDyn, altInner, altPrecName := unwrapPrec(alt)
 			if altPrec == 0 {
 				altPrec = prec
+			}
+			if altPrecName == "" {
+				altPrecName = precName
 			}
 			if altAssoc == AssocNone {
 				altAssoc = assoc
@@ -1776,6 +1819,9 @@ func flattenRule2(r *Rule, lhsID int, st *symbolTable, prodIDCounter *int) []Pro
 			for i := range altProds {
 				if altProds[i].Prec == 0 {
 					altProds[i].Prec = altPrec
+				}
+				if altProds[i].PrecName == "" {
+					altProds[i].PrecName = altPrecName
 				}
 				if altProds[i].Assoc == AssocNone {
 					altProds[i].Assoc = altAssoc
@@ -1816,6 +1862,7 @@ func flattenRule2(r *Rule, lhsID int, st *symbolTable, prodIDCounter *int) []Pro
 		prod := Production{
 			LHS:          lhsID,
 			Prec:         prec,
+			PrecName:     precName,
 			Assoc:        assoc,
 			DynPrec:      dynPrec,
 			ProductionID: *prodIDCounter,
@@ -1852,6 +1899,7 @@ func flattenRule2(r *Rule, lhsID int, st *symbolTable, prodIDCounter *int) []Pro
 			prod := Production{
 				LHS:          lhsID,
 				Prec:         altPrec,
+				PrecName:     precName,
 				Assoc:        altAssoc,
 				DynPrec:      altDyn,
 				ProductionID: *prodIDCounter,
@@ -2204,6 +2252,7 @@ func flattenHiddenChoiceAlts(g *Grammar) *Grammar {
 	out.Word = g.Word
 	out.Supertypes = g.Supertypes
 	out.Inline = g.Inline
+	out.PrecOrderings = g.PrecOrderings
 	return out
 }
 
@@ -2474,6 +2523,7 @@ func expandInlineRules(g *Grammar) *Grammar {
 	}
 	out.Word = g.Word
 	out.Supertypes = g.Supertypes
+	out.PrecOrderings = g.PrecOrderings
 	// Don't propagate Inline — they've been expanded.
 
 	return out
@@ -2619,11 +2669,14 @@ func scanInnerPrec(r *Rule) (prec int, assoc Assoc, dynPrec int) {
 }
 
 // unwrapPrec strips precedence/associativity wrappers from a rule.
-func unwrapPrec(r *Rule) (prec int, assoc Assoc, dynPrec int, inner *Rule) {
+func unwrapPrec(r *Rule) (prec int, assoc Assoc, dynPrec int, inner *Rule, precName string) {
 	for r != nil {
 		switch r.Kind {
 		case RulePrec:
 			prec = r.Prec
+			if r.Value != "" {
+				precName = r.Value
+			}
 			if len(r.Children) > 0 {
 				r = r.Children[0]
 				continue
@@ -2631,6 +2684,9 @@ func unwrapPrec(r *Rule) (prec int, assoc Assoc, dynPrec int, inner *Rule) {
 		case RulePrecLeft:
 			prec = r.Prec
 			assoc = AssocLeft
+			if r.Value != "" {
+				precName = r.Value
+			}
 			if len(r.Children) > 0 {
 				r = r.Children[0]
 				continue
@@ -2638,6 +2694,9 @@ func unwrapPrec(r *Rule) (prec int, assoc Assoc, dynPrec int, inner *Rule) {
 		case RulePrecRight:
 			prec = r.Prec
 			assoc = AssocRight
+			if r.Value != "" {
+				precName = r.Value
+			}
 			if len(r.Children) > 0 {
 				r = r.Children[0]
 				continue
@@ -2651,5 +2710,5 @@ func unwrapPrec(r *Rule) (prec int, assoc Assoc, dynPrec int, inner *Rule) {
 		}
 		break
 	}
-	return prec, assoc, dynPrec, r
+	return prec, assoc, dynPrec, r, precName
 }

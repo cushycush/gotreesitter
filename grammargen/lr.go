@@ -1837,24 +1837,16 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 			return actions, nil
 		}
 
-		// Broad conflict group check: if the reduce LHS is in ANY
-		// declared conflict group, keep GLR. This must come before
-		// precedence-based resolution because the shift's lhsSym may
-		// reflect a sub-production (e.g. "tuple") rather than the
-		// ancestor rule in the conflict group (e.g. "print_statement").
-		// Without this early check, precedence deterministically resolves
-		// conflicts that the grammar author intended as GLR (e.g. Python's
-		// print_statement vs call via prec(-3) on primary_expression).
-		if reduceLHSInAnyConflictGroup(reduces, ng, cache) {
-			return actions, nil
-		}
-
 		shiftPrec := shift.prec
 		reducePrec := prod.Prec
 
 		// When BOTH sides have explicit precedence (non-zero), resolve
-		// deterministically. This handles cases where neither side is in
-		// a declared conflict group.
+		// deterministically even if the reduce LHS is in a conflict group.
+		// Tree-sitter C checks precedence before conflict groups; this is
+		// critical for grammars like JavaScript where arrow_function (low
+		// implicit prec from the precedences array) must lose to binary
+		// operators (high prec) deterministically. Without this, the broad
+		// conflict group fallback forces GLR and the wrong fork wins.
 		if reducePrec != 0 && shiftPrec != 0 {
 			if reducePrec > shiftPrec {
 				return []lrAction{reduce}, nil
@@ -1871,6 +1863,17 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 			case AssocNone:
 				return nil, nil
 			}
+		}
+
+		// Broad conflict group fallback: if the reduce LHS is in ANY
+		// conflict group, keep GLR. This comes AFTER explicit prec
+		// resolution (above) so that clear prec differences still resolve
+		// deterministically, but before the general prec/assoc block which
+		// may use one-sided prec values that don't reflect the actual
+		// conflict (e.g. shift lhsSym may be a sub-production like "tuple"
+		// rather than the ancestor in the conflict group).
+		if reduceLHSInAnyConflictGroup(reduces, ng, cache) {
+			return actions, nil
 		}
 
 		// General precedence/associativity resolution for non-conflict-group
@@ -1911,6 +1914,17 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 }
 
 func resolveReduceReduceLegacy(lookaheadSym int, reduces []lrAction, ng *NormalizedGrammar, cache *conflictResolutionCache) ([]lrAction, error) {
+	// Check precedence orderings for R/R conflicts (SYMBOL entries only).
+	// This comes BEFORE conflict group checks because tree-sitter C's
+	// compare_precedence can resolve even declared-conflict R/R pairs.
+	// The ordering is the grammar author's explicit statement of relative
+	// priority (e.g. statement_block before object in JS precedences).
+	if len(reduces) == 2 {
+		if winner := compareReducesByOrdering(reduces[0], reduces[1], ng); winner >= 0 {
+			return []lrAction{reduces[winner]}, nil
+		}
+	}
+
 	if allInDeclaredConflict(reduces, ng, cache) {
 		return reduces, nil
 	}
@@ -2048,4 +2062,49 @@ func allInDeclaredConflict(reduces []lrAction, ng *NormalizedGrammar, cache *con
 		}
 	}
 	return false
+}
+
+// compareReducesByOrdering checks if two reduce actions match entries in
+// the same precedence ordering. Matches SYMBOL entries against LHS names
+// and STRING (NAME) entries against the production's original named
+// precedence (PrecName). Returns the index (0 or 1) of the winner
+// (earlier position = higher prec), or -1 if no ordering applies.
+func compareReducesByOrdering(a, b lrAction, ng *NormalizedGrammar) int {
+	if len(ng.PrecOrderings) == 0 {
+		return -1
+	}
+	prodA := &ng.Productions[a.prodIdx]
+	prodB := &ng.Productions[b.prodIdx]
+	lhsA := ng.Symbols[prodA.LHS].Name
+	lhsB := ng.Symbols[prodB.LHS].Name
+
+	for _, ordering := range ng.PrecOrderings {
+		idxA := -1
+		idxB := -1
+		for i, entry := range ordering {
+			if entry.IsSymbol {
+				if idxA < 0 && entry.Name == lhsA {
+					idxA = i
+				}
+				if idxB < 0 && entry.Name == lhsB {
+					idxB = i
+				}
+			} else {
+				// STRING entry: match against production's named prec.
+				if idxA < 0 && prodA.PrecName != "" && entry.Name == prodA.PrecName {
+					idxA = i
+				}
+				if idxB < 0 && prodB.PrecName != "" && entry.Name == prodB.PrecName {
+					idxB = i
+				}
+			}
+		}
+		if idxA >= 0 && idxB >= 0 && idxA != idxB {
+			if idxA < idxB {
+				return 0 // a wins (earlier = higher prec)
+			}
+			return 1 // b wins
+		}
+	}
+	return -1
 }

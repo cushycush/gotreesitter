@@ -43,6 +43,14 @@ type TestCase struct {
 	ExpectError bool  // if true, expect ERROR nodes in the tree
 }
 
+// PrecOrderEntry is an entry in a precedence ordering from the grammar's
+// precedences array. SYMBOL entries match against LHS nonterminal names;
+// NAME entries match against named precedence values.
+type PrecOrderEntry struct {
+	IsSymbol bool   // true for SYMBOL entries, false for NAME/STRING entries
+	Name     string // symbol name (if IsSymbol) or precedence name (if !IsSymbol)
+}
+
 // Grammar is the top-level grammar definition.
 type Grammar struct {
 	Name      string
@@ -56,6 +64,13 @@ type Grammar struct {
 	Supertypes []string
 	Tests             []TestCase // embedded test cases
 	EnableLRSplitting bool       // opt-in: attempt LR(1) state splitting for merge pathology
+
+	// PrecOrderings stores the raw precedence orderings from the grammar's
+	// precedences array. Each inner slice is one ordering level; within each
+	// level, earlier entries have higher precedence. Used during LR conflict
+	// resolution to compare competing nonterminals (mirroring tree-sitter C's
+	// compare_precedence behavior).
+	PrecOrderings [][]PrecOrderEntry
 }
 
 // NewGrammar creates a new grammar with the given name.
@@ -268,15 +283,16 @@ func Braces(rule *Rule) *Rule {
 //	})
 func ExtendGrammar(name string, base *Grammar, customize func(g *Grammar)) *Grammar {
 	g := &Grammar{
-		Name:       name,
-		Rules:      make(map[string]*Rule, len(base.Rules)),
-		RuleOrder:  make([]string, len(base.RuleOrder)),
-		Extras:     make([]*Rule, len(base.Extras)),
-		Conflicts:  make([][]string, len(base.Conflicts)),
-		Externals:  make([]*Rule, len(base.Externals)),
-		Inline:     make([]string, len(base.Inline)),
-		Word:       base.Word,
-		Supertypes: make([]string, len(base.Supertypes)),
+		Name:          name,
+		Rules:         make(map[string]*Rule, len(base.Rules)),
+		RuleOrder:     make([]string, len(base.RuleOrder)),
+		Extras:        make([]*Rule, len(base.Extras)),
+		Conflicts:     make([][]string, len(base.Conflicts)),
+		Externals:     make([]*Rule, len(base.Externals)),
+		Inline:        make([]string, len(base.Inline)),
+		Word:          base.Word,
+		Supertypes:    make([]string, len(base.Supertypes)),
+		PrecOrderings: base.PrecOrderings,
 	}
 
 	// Deep copy rules.
