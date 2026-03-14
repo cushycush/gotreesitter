@@ -2085,6 +2085,9 @@ func TestMultiGrammarImportPipeline(t *testing.T) {
 			t.Logf("import: %d rules, %d extras, %d externals", len(gram.Rules), len(gram.Extras), len(gram.Externals))
 
 			// Stage 2: Generate (with timeout to avoid LR table hangs)
+			if g.lrSplit {
+				gram.EnableLRSplitting = true
+			}
 			timeout := g.genTimeout
 			if timeout == 0 {
 				timeout = 30 * time.Second
