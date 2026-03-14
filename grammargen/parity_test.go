@@ -1245,7 +1245,7 @@ var importParityGrammars = []importParityGrammar{
 			"object Main { def main(args: Array[String]): Unit = {} }",
 		},
 		genTimeout:   120 * time.Second,
-		expectImport: true, expectGenerate: true, expectNoErrors: 0, expectParity: 2,
+		expectImport: true, expectGenerate: true, expectNoErrors: 2, expectParity: 2,
 		lrSplit: true,
 	},
 	// ── grammar.json imports (canonical resolved form) ──
@@ -1878,7 +1878,7 @@ func init() {
 
 		// Popular scanner languages
 		{name: "bash", blobFunc: grammars.BashLanguage, timeout: 90 * time.Second, expectNoErrors: 1, lrSplit: true},
-		{name: "python", blobFunc: grammars.PythonLanguage, timeout: 90 * time.Second, expectNoErrors: 0, lrSplit: true},
+		{name: "python", blobFunc: grammars.PythonLanguage, timeout: 90 * time.Second, expectNoErrors: 1, expectParity: 1, lrSplit: true},
 		{name: "ruby", blobFunc: grammars.RubyLanguage, timeout: 90 * time.Second, expectNoErrors: 1, expectParity: 1},
 		{name: "rust", blobFunc: grammars.RustLanguage, timeout: 90 * time.Second, expectNoErrors: 1, expectParity: 1},
 		{name: "cpp", blobFunc: grammars.CppLanguage, timeout: 150 * time.Second, expectNoErrors: 1},
@@ -1908,7 +1908,7 @@ func init() {
 		// Systems/tools scanner languages
 		{name: "cmake", blobFunc: grammars.CmakeLanguage, expectNoErrors: 1, expectParity: 1},
 		{name: "erlang", blobFunc: grammars.ErlangLanguage, timeout: 90 * time.Second, expectNoErrors: 1, expectParity: 1},
-		{name: "haskell", blobFunc: grammars.HaskellLanguage, timeout: 90 * time.Second, expectNoErrors: 1, lrSplit: true},
+		{name: "haskell", blobFunc: grammars.HaskellLanguage, timeout: 90 * time.Second, expectNoErrors: 1, expectParity: 1, lrSplit: true},
 		{name: "nim", blobFunc: grammars.NimLanguage, timeout: 120 * time.Second, expectNoErrors: 1},
 		{name: "julia", blobFunc: grammars.JuliaLanguage, timeout: 90 * time.Second, expectNoErrors: 1},
 		{name: "gleam", blobFunc: grammars.GleamLanguage, expectNoErrors: 1, expectParity: 1},
