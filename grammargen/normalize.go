@@ -97,6 +97,13 @@ type NormalizedGrammar struct {
 	PrecOrderings  [][]PrecOrderEntry // raw orderings (earlier = higher prec within level)
 	NamedPrecValues map[string]int    // named prec name → numeric value (for matching)
 
+	// ImplicitPrec maps nonterminal symbol ID → implicit precedence from
+	// the grammar's precedences SYMBOL entries. Used as a tiebreaker in
+	// R/R conflict resolution when explicit production prec is tied.
+	// Separate from Production.Prec to match tree-sitter C's two-level
+	// precedence model (production prec + variable implicit prec).
+	ImplicitPrec map[int]int
+
 	// conflictCache is built lazily by LR conflict resolution so repeated
 	// resolveActionConflict calls can reuse the same reverse indexes.
 	conflictCache *conflictResolutionCache
@@ -533,6 +540,7 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 	// against production prec values.
 	if len(g.PrecOrderings) > 0 {
 		ng.NamedPrecValues = buildNamedPrecValues(g)
+		ng.ImplicitPrec = buildImplicitPrecs(g, st)
 	}
 
 	// Set tokenCount boundary on symbols so assembly knows where terminals end.
@@ -558,6 +566,35 @@ func buildNamedPrecValues(g *Grammar) map[string]int {
 				val := total - 1 - globalIdx
 				if existing, ok := result[entry.Name]; !ok || val > existing {
 					result[entry.Name] = val
+				}
+			}
+			globalIdx++
+		}
+	}
+	return result
+}
+
+// buildImplicitPrecs builds a map from nonterminal symbol ID → implicit
+// precedence value, derived from SYMBOL entries in the grammar's precedences
+// array. This mirrors tree-sitter C's Variable.implicit_precedence field,
+// used as a tiebreaker in R/R conflict resolution when explicit production
+// precedence is tied.
+func buildImplicitPrecs(g *Grammar, st *symbolTable) map[int]int {
+	result := make(map[int]int)
+	var globalIdx int
+	total := 0
+	for _, ordering := range g.PrecOrderings {
+		total += len(ordering)
+	}
+	for _, ordering := range g.PrecOrderings {
+		for _, entry := range ordering {
+			if entry.IsSymbol {
+				val := total - 1 - globalIdx
+				symID, ok := st.lookup(entry.Name)
+				if ok {
+					if existing, has := result[symID]; !has || val > existing {
+						result[symID] = val
+					}
 				}
 			}
 			globalIdx++
@@ -638,6 +675,15 @@ func (ng *NormalizedGrammar) TokenCount() int {
 		}
 	}
 	return count
+}
+
+// implicitPrecFor returns the implicit precedence for a nonterminal symbol.
+// Returns 0 if the symbol has no implicit prec entry.
+func (ng *NormalizedGrammar) implicitPrecFor(symID int) int {
+	if ng.ImplicitPrec == nil {
+		return 0
+	}
+	return ng.ImplicitPrec[symID]
 }
 
 // collectStringLiterals walks all rules and collects unique string literals

@@ -1940,14 +1940,24 @@ func resolveReduceReduceLegacy(lookaheadSym int, reduces []lrAction, ng *Normali
 			best = r
 			bestProd = rProd
 		} else if rProd.Prec == bestProd.Prec {
-			// Tree-sitter uses dynamic precedence as the next tiebreaker,
-			// then falls back to production index (earlier declaration wins).
-			if rProd.DynPrec > bestProd.DynPrec {
+			// Tree-sitter C uses implicit precedence (from SYMBOL entries
+			// in the precedences array) as a tiebreaker when explicit
+			// production precedence is tied.
+			rImplicit := ng.implicitPrecFor(rProd.LHS)
+			bestImplicit := ng.implicitPrecFor(bestProd.LHS)
+			if rImplicit > bestImplicit {
 				best = r
 				bestProd = rProd
-			} else if rProd.DynPrec == bestProd.DynPrec && r.prodIdx < best.prodIdx {
-				best = r
-				bestProd = rProd
+			} else if rImplicit == bestImplicit {
+				// Dynamic precedence is the next tiebreaker,
+				// then production index (earlier declaration wins).
+				if rProd.DynPrec > bestProd.DynPrec {
+					best = r
+					bestProd = rProd
+				} else if rProd.DynPrec == bestProd.DynPrec && r.prodIdx < best.prodIdx {
+					best = r
+					bestProd = rProd
+				}
 			}
 		}
 	}

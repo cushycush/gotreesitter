@@ -77,19 +77,26 @@ func ImportGrammarJSON(data []byte) (*Grammar, error) {
 	g.PrecOrderings = buildPrecOrderings(raw.Precedences)
 
 	// Apply implicit precedences from SYMBOL entries in the precedences
-	// array. Tree-sitter C assigns a precedence to all productions of a rule
-	// when that rule's symbol appears in the precedences array. Wrap the
-	// rule with Prec() so normalization propagates it to productions.
+	// array. Tree-sitter C assigns an implicit precedence to all productions
+	// of a rule when that rule's symbol appears in the precedences array.
+	// For rules WITHOUT explicit prec wrappers, wrap with Prec() so
+	// normalization propagates the implicit value to productions.
+	// For rules WITH explicit prec wrappers, skip — tree-sitter C keeps
+	// implicit prec as a SEPARATE tiebreaker from production prec; modifying
+	// the explicit wrapper's value would conflate the two mechanisms.
 	for symName, precVal := range pm.symbolPrecs {
 		rule, ok := g.Rules[symName]
 		if !ok {
 			continue
 		}
-		// Don't wrap if the rule already has a top-level precedence.
-		if rule.Kind == RulePrec || rule.Kind == RulePrecLeft || rule.Kind == RulePrecRight || rule.Kind == RulePrecDynamic {
-			continue
+		switch rule.Kind {
+		case RulePrec, RulePrecLeft, RulePrecRight, RulePrecDynamic:
+			// Rule already has an explicit prec wrapper — don't modify it.
+			// The ordering comparison (compareReducesByOrdering) handles
+			// implicit prec for these rules via the PrecOrderings array.
+		default:
+			g.Rules[symName] = Prec(precVal, rule)
 		}
-		g.Rules[symName] = Prec(precVal, rule)
 	}
 
 	return g, nil
