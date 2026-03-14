@@ -1831,22 +1831,14 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 		reduce := reduces[0]
 		prod := &ng.Productions[reduce.prodIdx]
 
-		// Tree-sitter keeps S/R as GLR when the reduce LHS and a shift LHS
-		// are both in the same declared conflict group.
-		if shiftReduceInConflictGroup(shifts, reduces, ng, cache) {
-			return actions, nil
-		}
-
 		shiftPrec := shift.prec
 		reducePrec := prod.Prec
 
-		// When BOTH sides have explicit precedence (non-zero), resolve
-		// deterministically even if the reduce LHS is in a conflict group.
-		// Tree-sitter C checks precedence before conflict groups; this is
-		// critical for grammars like JavaScript where arrow_function (low
-		// implicit prec from the precedences array) must lose to binary
-		// operators (high prec) deterministically. Without this, the broad
-		// conflict group fallback forces GLR and the wrong fork wins.
+		// Phase 1: Explicit precedence resolution (BEFORE conflict groups).
+		// Tree-sitter C checks compare_precedence first and only falls
+		// through to conflict group checks when precedence is unresolved.
+		// When BOTH sides have explicit (non-zero) precedence, the grammar
+		// author's intent is clear — resolve deterministically.
 		if reducePrec != 0 && shiftPrec != 0 {
 			if reducePrec > shiftPrec {
 				return []lrAction{reduce}, nil
@@ -1865,18 +1857,23 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 			}
 		}
 
-		// Broad conflict group fallback: if the reduce LHS is in ANY
-		// conflict group, keep GLR. This comes AFTER explicit prec
-		// resolution (above) so that clear prec differences still resolve
-		// deterministically, but before the general prec/assoc block which
-		// may use one-sided prec values that don't reflect the actual
-		// conflict (e.g. shift lhsSym may be a sub-production like "tuple"
-		// rather than the ancestor in the conflict group).
+		// Phase 2: Pairwise conflict group check.
+		// When precedence doesn't resolve (one/both sides unspecified),
+		// keep GLR if both symbols are in the same declared conflict group.
+		if shiftReduceInConflictGroup(shifts, reduces, ng, cache) {
+			return actions, nil
+		}
+
+		// Phase 3: Broad conflict group fallback.
+		// If the reduce LHS is in ANY conflict group, keep GLR.
+		// Comes after explicit prec and pairwise checks, but before the
+		// general prec/assoc block which may use one-sided prec values
+		// that don't reflect the actual conflict.
 		if reduceLHSInAnyConflictGroup(reduces, ng, cache) {
 			return actions, nil
 		}
 
-		// General precedence/associativity resolution for non-conflict-group
+		// Phase 4: General precedence/associativity for non-conflict-group
 		// cases. Apply when either side has a non-zero precedence or the
 		// production declares explicit associativity.
 		if reducePrec != 0 || shiftPrec != 0 || prod.Assoc != AssocNone {
@@ -1914,17 +1911,24 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 }
 
 func resolveReduceReduceLegacy(lookaheadSym int, reduces []lrAction, ng *NormalizedGrammar, cache *conflictResolutionCache) ([]lrAction, error) {
-	// Check precedence orderings for R/R conflicts (SYMBOL entries only).
-	// This comes BEFORE conflict group checks because tree-sitter C's
-	// compare_precedence can resolve even declared-conflict R/R pairs.
-	// The ordering is the grammar author's explicit statement of relative
-	// priority (e.g. statement_block before object in JS precedences).
-	if len(reduces) == 2 {
-		if winner := compareReducesByOrdering(reduces[0], reduces[1], ng); winner >= 0 {
-			return []lrAction{reduces[winner]}, nil
-		}
+	// Phase 1: Precedence-based resolution BEFORE conflict groups.
+	// Tree-sitter C's compare_precedence resolves even declared-conflict
+	// R/R pairs. Check ordering and explicit prec first.
+
+	// Phase 1a: Ordering comparison (PrecOrderings SYMBOL/STRING entries).
+	// Extended to work for any number of reduces via tournament.
+	if winner := findOrderingWinner(reduces, ng); winner >= 0 {
+		return []lrAction{reduces[winner]}, nil
 	}
 
+	// Phase 1b: Explicit prec comparison. If one reduce has strictly
+	// higher prec than all others, resolve deterministically even if
+	// they're in a declared conflict group.
+	if winner := findPrecWinner(reduces, ng); winner >= 0 {
+		return []lrAction{reduces[winner]}, nil
+	}
+
+	// Phase 2: Conflict group checks.
 	if allInDeclaredConflict(reduces, ng, cache) {
 		return reduces, nil
 	}
@@ -1932,6 +1936,7 @@ func resolveReduceReduceLegacy(lookaheadSym int, reduces []lrAction, ng *Normali
 		return reduces, nil
 	}
 
+	// Phase 3: General fallback (prec → implicitPrec → dynPrec → prodIdx).
 	best := reduces[0]
 	bestProd := &ng.Productions[best.prodIdx]
 	for _, r := range reduces[1:] {
@@ -1940,17 +1945,12 @@ func resolveReduceReduceLegacy(lookaheadSym int, reduces []lrAction, ng *Normali
 			best = r
 			bestProd = rProd
 		} else if rProd.Prec == bestProd.Prec {
-			// Tree-sitter C uses implicit precedence (from SYMBOL entries
-			// in the precedences array) as a tiebreaker when explicit
-			// production precedence is tied.
 			rImplicit := ng.implicitPrecFor(rProd.LHS)
 			bestImplicit := ng.implicitPrecFor(bestProd.LHS)
 			if rImplicit > bestImplicit {
 				best = r
 				bestProd = rProd
 			} else if rImplicit == bestImplicit {
-				// Dynamic precedence is the next tiebreaker,
-				// then production index (earlier declaration wins).
 				if rProd.DynPrec > bestProd.DynPrec {
 					best = r
 					bestProd = rProd
@@ -1962,6 +1962,63 @@ func resolveReduceReduceLegacy(lookaheadSym int, reduces []lrAction, ng *Normali
 		}
 	}
 	return []lrAction{best}, nil
+}
+
+// findOrderingWinner finds a reduce that beats all others via PrecOrderings.
+// Returns the index of the winner, or -1 if no single winner is found.
+func findOrderingWinner(reduces []lrAction, ng *NormalizedGrammar) int {
+	if len(reduces) < 2 || len(ng.PrecOrderings) == 0 {
+		return -1
+	}
+	// For exactly 2, use the direct comparison.
+	if len(reduces) == 2 {
+		return compareReducesByOrdering(reduces[0], reduces[1], ng)
+	}
+	// Tournament: candidate must beat all others.
+	for i := range reduces {
+		winsAll := true
+		for j := range reduces {
+			if i == j {
+				continue
+			}
+			w := compareReducesByOrdering(reduces[i], reduces[j], ng)
+			if w != 0 { // 0 = first arg wins
+				winsAll = false
+				break
+			}
+		}
+		if winsAll {
+			return i
+		}
+	}
+	return -1
+}
+
+// findPrecWinner finds a reduce with strictly higher explicit prec than
+// all others. Returns its index, or -1 if no clear winner.
+func findPrecWinner(reduces []lrAction, ng *NormalizedGrammar) int {
+	if len(reduces) < 2 {
+		return -1
+	}
+	bestIdx := 0
+	bestPrec := ng.Productions[reduces[0].prodIdx].Prec
+	tied := false
+	for i := 1; i < len(reduces); i++ {
+		p := ng.Productions[reduces[i].prodIdx].Prec
+		if p > bestPrec {
+			bestIdx = i
+			bestPrec = p
+			tied = false
+		} else if p == bestPrec {
+			tied = true
+		}
+	}
+	// Only resolve if winner has strictly higher prec and at least one
+	// side has non-zero prec (otherwise prec is meaningless).
+	if !tied && bestPrec != 0 {
+		return bestIdx
+	}
+	return -1
 }
 
 func shouldKeepRepeatedAnnotationReduces(lookaheadSym int, reduces []lrAction, ng *NormalizedGrammar) bool {
