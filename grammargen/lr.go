@@ -1031,15 +1031,6 @@ func resolveActionConflict(actions []lrAction, ng *NormalizedGrammar) ([]lrActio
 		// still be respected even though the precedence value is zero.
 		if reducePrec != 0 || shiftPrec != 0 || prod.Assoc != AssocNone {
 			if reducePrec > shiftPrec {
-				// Before choosing REDUCE, check if the reduce's LHS is in a
-				// single-member self-conflict group. Self-conflicts like
-				// conflicts=[["requirement"]] mean the grammar wants GLR
-				// forking between alternatives of the same rule, even when
-				// a low-precedence token (e.g. PREC(-1) on _space) would
-				// otherwise make reduce win.
-				if reduceLHSInSelfConflict(reduce.prodIdx, ng) {
-					return actions, nil
-				}
 				return []lrAction{reduce}, nil
 			}
 			if shiftPrec > reducePrec {
@@ -1126,21 +1117,6 @@ func resolveReduceReduceLegacy(reduces []lrAction, ng *NormalizedGrammar) ([]lrA
 		}
 	}
 	return []lrAction{best}, nil
-}
-
-// reduceLHSInSelfConflict checks if the reduce production's LHS is in a
-// single-member declared conflict group (self-conflict). Grammars declare
-// self-conflicts like [["requirement"]] to indicate that alternatives of
-// the same rule should use GLR forking, even when precedence would resolve
-// the S/R conflict deterministically.
-func reduceLHSInSelfConflict(prodIdx int, ng *NormalizedGrammar) bool {
-	lhs := ng.Productions[prodIdx].LHS
-	for _, cgroup := range ng.Conflicts {
-		if len(cgroup) == 1 && cgroup[0] == lhs {
-			return true
-		}
-	}
-	return false
 }
 
 func shiftMatchesConflictGroup(shift lrAction, reduceLHS int, ng *NormalizedGrammar) bool {
