@@ -45,6 +45,7 @@ type Parser struct {
 	denseLimit                          int
 	smallBase                           int
 	smallLookup                         [][]smallActionPair
+	smallTokenLookup                    [][]uint16
 	reduceAliasSeq                      [][]Symbol
 	reduceHasFields                     []bool
 	fieldInheritedScratch               []bool
@@ -222,6 +223,7 @@ func NewParser(lang *Language) *Parser {
 		p.smallBase = int(lang.LargeStateCount)
 		if len(lang.SmallParseTableMap) > 0 && len(lang.SmallParseTable) > 0 {
 			p.smallLookup = buildSmallLookup(lang)
+			p.smallTokenLookup = buildSmallTokenLookup(lang)
 		}
 		p.reduceAliasSeq = buildReduceAliasSequences(lang)
 		p.reduceHasFields = buildReduceFieldPresence(lang)

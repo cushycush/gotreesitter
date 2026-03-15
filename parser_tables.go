@@ -2,6 +2,8 @@ package gotreesitter
 
 import "sort"
 
+const smallTokenDenseThreshold = 8
+
 func buildSmallLookup(lang *Language) [][]smallActionPair {
 	out := make([][]smallActionPair, len(lang.SmallParseTableMap))
 	table := lang.SmallParseTable
@@ -45,6 +47,50 @@ func buildSmallLookup(lang *Language) [][]smallActionPair {
 		}
 		sort.Slice(pairs, func(i, j int) bool { return pairs[i].sym < pairs[j].sym })
 		out[smallIdx] = pairs
+	}
+	return out
+}
+
+func buildSmallTokenLookup(lang *Language) [][]uint16 {
+	if lang == nil || lang.TokenCount == 0 || len(lang.SmallParseTableMap) == 0 || len(lang.SmallParseTable) == 0 {
+		return nil
+	}
+	out := make([][]uint16, len(lang.SmallParseTableMap))
+	table := lang.SmallParseTable
+	tokenCount := int(lang.TokenCount)
+	for smallIdx, offset := range lang.SmallParseTableMap {
+		pos := int(offset)
+		if pos >= len(table) {
+			continue
+		}
+		groupCount := table[pos]
+		pos++
+		row := make([]uint16, tokenCount)
+		used := 0
+		for i := uint16(0); i < groupCount; i++ {
+			if pos+1 >= len(table) {
+				break
+			}
+			val := table[pos]
+			symbolCount := table[pos+1]
+			pos += 2
+			for j := uint16(0); j < symbolCount; j++ {
+				if pos >= len(table) {
+					break
+				}
+				sym := int(table[pos])
+				if sym >= 0 && sym < tokenCount {
+					if row[sym] == 0 {
+						used++
+					}
+					row[sym] = val
+				}
+				pos++
+			}
+		}
+		if used > smallTokenDenseThreshold {
+			out[smallIdx] = row
+		}
 	}
 	return out
 }
@@ -145,6 +191,12 @@ func (p *Parser) lookupActionIndexSmall(state StateID, sym Symbol) uint16 {
 	smallIdx := int(state) - p.smallBase
 	if smallIdx < 0 || smallIdx >= len(p.language.SmallParseTableMap) {
 		return 0
+	}
+	if uint32(sym) < p.language.TokenCount && smallIdx < len(p.smallTokenLookup) {
+		row := p.smallTokenLookup[smallIdx]
+		if int(sym) < len(row) {
+			return row[sym]
+		}
 	}
 	if smallIdx < len(p.smallLookup) {
 		pairs := p.smallLookup[smallIdx]
