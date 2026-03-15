@@ -19,6 +19,9 @@ type LangEntry struct {
 	Language           func() *gotreesitter.Language // lazy loader
 	HighlightQuery     string
 	TagsQuery          string                                                                 // tree-sitter tags.scm query for symbol extraction
+	ScopeQuery         string                                                                 // tree-sitter query for scope boundaries and definitions
+	TypeQuery          string                                                                 // tree-sitter query for type annotations and return types
+	ImportQuery        string                                                                 // tree-sitter query for import path extraction
 	TokenSourceFactory func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource // nil = use DFA
 	Quality            ParseQuality                                                           // populated lazily by AllLanguages
 }
