@@ -172,6 +172,7 @@ func TestResetSnippetParserClearsTransientState(t *testing.T) {
 	parser.skipRecoveryReparse = true
 	parser.fullArenaHint = 123
 	parser.incrementalArenaHint = 77
+	parser.fullGSSHint = 66
 	parser.incrementalGSSHint = 55
 	parser.included = []Range{{StartByte: 1, EndByte: 2}}
 	parser.logger = func(kind ParserLogType, message string) {}
@@ -196,6 +197,9 @@ func TestResetSnippetParserClearsTransientState(t *testing.T) {
 	}
 	if parser.incrementalArenaHint != 0 {
 		t.Fatal("resetSnippetParser did not clear incrementalArenaHint")
+	}
+	if parser.fullGSSHint != 0 {
+		t.Fatal("resetSnippetParser did not clear fullGSSHint")
 	}
 	if parser.incrementalGSSHint != 0 {
 		t.Fatal("resetSnippetParser did not clear incrementalGSSHint")
@@ -249,6 +253,17 @@ func TestIncrementalGSSHintCapacityUsesDefaultFloor(t *testing.T) {
 	parser.incrementalGSSHint = defaultGSSNodeSlabCap * 2
 	if got, want := parser.incrementalGSSHintCapacity(), defaultGSSNodeSlabCap*2; got != want {
 		t.Fatalf("incrementalGSSHintCapacity hint = %d, want %d", got, want)
+	}
+}
+
+func TestFullGSSHintCapacityUsesDefaultFloor(t *testing.T) {
+	parser := NewParser(buildArithmeticLanguage())
+	if got, want := parser.fullGSSHintCapacity(), fullParseGSSNodeSlabCap; got != want {
+		t.Fatalf("fullGSSHintCapacity default = %d, want %d", got, want)
+	}
+	parser.fullGSSHint = fullParseGSSNodeSlabCap * 2
+	if got, want := parser.fullGSSHintCapacity(), fullParseGSSNodeSlabCap*2; got != want {
+		t.Fatalf("fullGSSHintCapacity hint = %d, want %d", got, want)
 	}
 }
 

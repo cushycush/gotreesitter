@@ -100,6 +100,17 @@ func (p *Parser) incrementalGSSHintCapacity() int {
 	return hint
 }
 
+func (p *Parser) fullGSSHintCapacity() int {
+	if p == nil {
+		return fullParseGSSNodeSlabCap
+	}
+	hint := int(atomic.LoadUint32(&p.fullGSSHint))
+	if hint < fullParseGSSNodeSlabCap {
+		return fullParseGSSNodeSlabCap
+	}
+	return hint
+}
+
 func (p *Parser) recordFullArenaUsage(used int) {
 	if p == nil || used <= 0 {
 		return
@@ -190,6 +201,37 @@ func (p *Parser) recordIncrementalGSSUsage(used int) {
 			next = uint32(blended)
 		}
 		if old == next || atomic.CompareAndSwapUint32(&p.incrementalGSSHint, old, next) {
+			return
+		}
+	}
+}
+
+func (p *Parser) recordFullGSSUsage(used int) {
+	if p == nil || used <= 0 {
+		return
+	}
+	target := used + used/4 // keep 25% headroom above observed peak.
+	if target < fullParseGSSNodeSlabCap {
+		target = fullParseGSSNodeSlabCap
+	}
+	const maxHintNodes = 1_024 * 1_024
+	if target > maxHintNodes {
+		target = maxHintNodes
+	}
+
+	for {
+		old := atomic.LoadUint32(&p.fullGSSHint)
+		var next uint32
+		if old == 0 {
+			next = uint32(target)
+		} else {
+			blended := (int(old)*3 + target) / 4
+			if blended < fullParseGSSNodeSlabCap {
+				blended = fullParseGSSNodeSlabCap
+			}
+			next = uint32(blended)
+		}
+		if old == next || atomic.CompareAndSwapUint32(&p.fullGSSHint, old, next) {
 			return
 		}
 	}

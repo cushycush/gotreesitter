@@ -26,6 +26,7 @@ type Parser struct {
 	skipRecoveryReparse                 bool
 	fullArenaHint                       uint32
 	incrementalArenaHint                uint32
+	fullGSSHint                         uint32
 	incrementalGSSHint                  uint32
 	rootSymbol                          Symbol
 	hasRootSymbol                       bool
@@ -280,6 +281,7 @@ func resetSnippetParser(parser *Parser) {
 	parser.skipRecoveryReparse = false
 	parser.fullArenaHint = 0
 	parser.incrementalArenaHint = 0
+	parser.fullGSSHint = 0
 	parser.incrementalGSSHint = 0
 	parser.included = nil
 	parser.logger = nil
@@ -1052,7 +1054,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 	}
 	scratch := acquireParserScratch()
 	if deferParentLinks {
-		scratch.gss.initialCap = fullParseGSSNodeSlabCap
+		scratch.gss.initialCap = p.fullGSSHintCapacity()
 	} else {
 		scratch.gss.initialCap = p.incrementalGSSHintCapacity()
 	}
@@ -1090,6 +1092,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 	if arenaClass == arenaClassFull {
 		defer func() {
 			p.recordFullArenaUsage(arena.used)
+			p.recordFullGSSUsage(scratch.gss.usedTotal)
 		}()
 	} else {
 		defer func() {
