@@ -20,7 +20,10 @@ func (p *Parser) tryTokenInvariantLeafEdit(source []byte, oldTree *Tree, ts Toke
 		return nil, false
 	}
 	root := oldTree.RootNode()
-	leaf := root.DescendantForByteRange(edit.StartByte, edit.OldEndByte)
+	leaf := oldTree.lastEditedLeaf
+	if leaf == nil || !leaf.containsByteRange(edit.StartByte, edit.OldEndByte) {
+		leaf = root.DescendantForByteRange(edit.StartByte, edit.OldEndByte)
+	}
 	if leaf == nil || leaf.ChildCount() != 0 || leaf.hasError || leaf.isMissing || leaf.isExtra {
 		return nil, false
 	}

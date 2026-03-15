@@ -749,14 +749,15 @@ func newParentNodeInArenaNoLinksWithFieldSources(arena *nodeArena, sym Symbol, n
 // Tree is safe for concurrent reads after construction. Edit and Release are
 // not safe for concurrent use.
 type Tree struct {
-	root          *Node
-	source        []byte
-	language      *Language
-	edits         []InputEdit  // pending edits applied to this tree
-	arena         *nodeArena   // primary arena that owns newly-built nodes
-	borrowedArena []*nodeArena // arenas borrowed via subtree reuse
-	parseRuntime  ParseRuntime
-	released      bool
+	root           *Node
+	source         []byte
+	language       *Language
+	edits          []InputEdit  // pending edits applied to this tree
+	lastEditedLeaf *Node        // deepest leaf overlapped by the most recent edit, when tracked
+	arena          *nodeArena   // primary arena that owns newly-built nodes
+	borrowedArena  []*nodeArena // arenas borrowed via subtree reuse
+	parseRuntime   ParseRuntime
+	released       bool
 }
 
 // NewTree creates a new Tree.
@@ -817,6 +818,7 @@ func (t *Tree) Release() {
 		return
 	}
 	t.released = true
+	t.lastEditedLeaf = nil
 	for _, a := range t.borrowedArena {
 		a.Release()
 	}
@@ -1158,8 +1160,14 @@ func (n *Node) Edit(edit InputEdit) {
 // what to re-parse.
 func (t *Tree) Edit(edit InputEdit) {
 	t.edits = append(t.edits, edit)
+	t.lastEditedLeaf = nil
 	if t.root != nil {
-		t.root.Edit(edit)
+		byteDelta := int64(edit.NewEndByte) - int64(edit.OldEndByte)
+		rowDelta := int64(edit.NewEndPoint.Row) - int64(edit.OldEndPoint.Row)
+		colDelta := int64(edit.NewEndPoint.Column) - int64(edit.OldEndPoint.Column)
+		hasTailShift := byteDelta != 0 || edit.NewEndPoint != edit.OldEndPoint
+		var shiftScratch []*Node
+		editNodeWithDelta(t.root, edit, byteDelta, rowDelta, colDelta, hasTailShift, &shiftScratch, &t.lastEditedLeaf)
 	}
 }
 
@@ -1228,7 +1236,7 @@ func editNode(n *Node, edit InputEdit) {
 	colDelta := int64(edit.NewEndPoint.Column) - int64(edit.OldEndPoint.Column)
 	hasTailShift := byteDelta != 0 || edit.NewEndPoint != edit.OldEndPoint
 	var shiftScratch []*Node
-	editNodeWithDelta(n, edit, byteDelta, rowDelta, colDelta, hasTailShift, &shiftScratch)
+	editNodeWithDelta(n, edit, byteDelta, rowDelta, colDelta, hasTailShift, &shiftScratch, nil)
 }
 
 func addUint32Delta(value uint32, delta int64) uint32 {
@@ -1242,7 +1250,7 @@ func addUint32Delta(value uint32, delta int64) uint32 {
 	return uint32(next)
 }
 
-func editNodeWithDelta(n *Node, edit InputEdit, byteDelta, rowDelta, colDelta int64, hasTailShift bool, shiftScratch *[]*Node) {
+func editNodeWithDelta(n *Node, edit InputEdit, byteDelta, rowDelta, colDelta int64, hasTailShift bool, shiftScratch *[]*Node, leafHint **Node) {
 	// If the node ends before the edit starts, it's completely unaffected.
 	if n.endByte <= edit.StartByte {
 		return
@@ -1284,6 +1292,7 @@ func editNodeWithDelta(n *Node, edit InputEdit, byteDelta, rowDelta, colDelta in
 	}
 
 	// Recurse only into children that can be affected.
+	descended := false
 	for _, c := range n.children {
 		if c.endByte <= edit.StartByte {
 			continue
@@ -1295,7 +1304,11 @@ func editNodeWithDelta(n *Node, edit InputEdit, byteDelta, rowDelta, colDelta in
 			shiftSubtreeNodeAfterEdit(c, edit, byteDelta, rowDelta, colDelta, shiftScratch)
 			continue
 		}
-		editNodeWithDelta(c, edit, byteDelta, rowDelta, colDelta, hasTailShift, shiftScratch)
+		descended = true
+		editNodeWithDelta(c, edit, byteDelta, rowDelta, colDelta, hasTailShift, shiftScratch, leafHint)
+	}
+	if leafHint != nil && !descended && len(n.children) == 0 {
+		*leafHint = n
 	}
 }
 

@@ -164,6 +164,37 @@ func TestParseIncrementalReusesUnchangedLeaf(t *testing.T) {
 	assertTreeHasNoDirtyNodes(t, newRoot)
 }
 
+func TestTreeEditTracksEditedLeafHint(t *testing.T) {
+	lang := buildArithmeticLanguage()
+	parser := NewParser(lang)
+
+	tree := mustParse(t, parser, []byte("1+2+3"))
+	root := tree.RootNode()
+	if root == nil {
+		t.Fatal("initial parse returned nil root")
+	}
+	mid := root.DescendantForByteRange(2, 3)
+	if mid == nil {
+		t.Fatal("missing edited leaf in initial tree")
+	}
+
+	tree.Edit(InputEdit{
+		StartByte:   2,
+		OldEndByte:  3,
+		NewEndByte:  3,
+		StartPoint:  Point{0, 2},
+		OldEndPoint: Point{0, 3},
+		NewEndPoint: Point{0, 3},
+	})
+
+	if tree.lastEditedLeaf == nil {
+		t.Fatal("expected lastEditedLeaf to be tracked")
+	}
+	if tree.lastEditedLeaf != mid {
+		t.Fatal("expected lastEditedLeaf to point at edited leaf")
+	}
+}
+
 func TestParseIncrementalReusesRootWhenUnchanged(t *testing.T) {
 	lang := buildArithmeticLanguage()
 	parser := NewParser(lang)
