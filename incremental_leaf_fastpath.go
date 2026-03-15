@@ -45,7 +45,7 @@ func (p *Parser) tryTokenInvariantLeafEdit(source []byte, oldTree *Tree, ts Toke
 	if tok.Symbol != leaf.symbol || tok.StartByte != leaf.startByte || tok.EndByte != leaf.endByte {
 		return nil, false
 	}
-	tree := reuseTreeWithNewSource(oldTree, source)
+	tree := reuseTreeWithNewSource(oldTree, source, leaf)
 	if tree == nil || tree.root == nil {
 		return nil, false
 	}
@@ -74,7 +74,7 @@ func (p *Parser) tryTokenInvariantLeafEdit(source []byte, oldTree *Tree, ts Toke
 	return tree, true
 }
 
-func reuseTreeWithNewSource(oldTree *Tree, source []byte) *Tree {
+func reuseTreeWithNewSource(oldTree *Tree, source []byte, dirtyLeaf *Node) *Tree {
 	if oldTree == nil || oldTree.root == nil {
 		return nil
 	}
@@ -90,12 +90,19 @@ func reuseTreeWithNewSource(oldTree *Tree, source []byte) *Tree {
 		a.Retain()
 		borrowed = append(borrowed, a)
 	}
-	clearDirtyFlags(oldTree.root)
+	clearDirtyPathToRoot(dirtyLeaf)
 	return &Tree{
 		root:          oldTree.root,
 		source:        source,
 		language:      oldTree.language,
 		borrowedArena: uniqueArenas(borrowed, nil),
+	}
+}
+
+func clearDirtyPathToRoot(n *Node) {
+	for n != nil {
+		n.dirty = false
+		n = n.parent
 	}
 }
 

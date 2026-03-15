@@ -161,6 +161,7 @@ func TestParseIncrementalReusesUnchangedLeaf(t *testing.T) {
 	if got := newRight.Text(newTree.Source()); got != "3" {
 		t.Fatalf("reused leaf text = %q, want %q", got, "3")
 	}
+	assertTreeHasNoDirtyNodes(t, newRoot)
 }
 
 func TestParseIncrementalReusesRootWhenUnchanged(t *testing.T) {
@@ -322,6 +323,26 @@ func TestParseIncrementalReleaseKeepsBorrowedNodesAlive(t *testing.T) {
 	newTree.Release() // idempotent
 	if oldArena.refs.Load() != 0 {
 		t.Fatalf("borrowed arena should be fully released after new tree release, refs=%d", oldArena.refs.Load())
+	}
+}
+
+func assertTreeHasNoDirtyNodes(t *testing.T, root *Node) {
+	t.Helper()
+	if root == nil {
+		return
+	}
+	stack := []*Node{root}
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if n.dirty {
+			t.Fatalf("found dirty node sym=%d at [%d,%d)", n.symbol, n.startByte, n.endByte)
+		}
+		for i := len(n.children) - 1; i >= 0; i-- {
+			if child := n.children[i]; child != nil {
+				stack = append(stack, child)
+			}
+		}
 	}
 }
 
