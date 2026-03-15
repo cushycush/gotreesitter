@@ -228,6 +228,13 @@ func clearDirtyPathToRoot(n *Node) {
 	}
 }
 
+func clearDirtyPathToRoot(n *Node) {
+	for n != nil {
+		n.dirty = false
+		n = n.parent
+	}
+}
+
 func clearDirtyFlags(root *Node) {
 	if root == nil {
 		return
