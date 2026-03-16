@@ -12,4 +12,4 @@ func init() {
 	})
 }
 
-const jsonHighlightQuery = "(pair\n  key: (_) @string.special.key)\n\n(string) @string\n\n(number) @number\n\n[\n  (null)\n  (true)\n  (false)\n] @constant.builtin\n\n(escape_sequence) @escape\n\n(comment) @comment\n"
+const jsonHighlightQuery = "(string) @string\n\n(pair\n  key: (_) @string.special.key)\n\n(number) @number\n\n[\n  (null)\n  (true)\n  (false)\n] @constant.builtin\n\n(escape_sequence) @escape\n\n(comment) @comment\n"
