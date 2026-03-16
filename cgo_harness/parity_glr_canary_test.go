@@ -3,10 +3,25 @@
 package cgoharness
 
 import (
+	"strings"
 	"testing"
 
 	gotreesitter "github.com/odvcencio/gotreesitter"
 )
+
+func makeGoGLRCanarySource(callCount int) []byte {
+	var b strings.Builder
+	b.Grow(callCount * 16)
+	b.WriteString("package main\n\n")
+	b.WriteString("type glrCanaryNode struct{}\n")
+	b.WriteString("func (glrCanaryNode) method() {}\n")
+	b.WriteString("func glrCanaryBenchmark() {\n\tvar n glrCanaryNode\n")
+	for i := 0; i < callCount; i++ {
+		b.WriteString("\tn.method()\n")
+	}
+	b.WriteString("}\n")
+	return []byte(b.String())
+}
 
 func assertGLRCanaryRuntime(t *testing.T, tc parityCase, src []byte, minStacks int) {
 	t.Helper()
@@ -46,8 +61,8 @@ func assertGLRCanaryRuntime(t *testing.T, tc parityCase, src []byte, minStacks i
 // coverage: force branching, require C-structural parity, and assert no
 // truncation/early-stop diagnostics on the Go runtime tree.
 func TestParityGLRCanaryGo(t *testing.T) {
-	const funcCount = 500
-	src := normalizedSource("go", string(makeGoBenchmarkSource(funcCount)))
+	const callCount = 200
+	src := normalizedSource("go", string(makeGoGLRCanarySource(callCount)))
 	tc := parityCase{name: "go", source: string(src)}
 
 	runParityCase(t, tc, "glr-canary", src)
