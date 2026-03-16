@@ -262,15 +262,6 @@ func effectiveFullParseInitialMaxStacks(lang *Language, initialMaxStacks int) in
 		if initialMaxStacks == maxGLRStacks {
 			initialMaxStacks = 2
 		}
-	case "ruby":
-		// Ruby's ambiguous syntax (optional parentheses, flexible method calls,
-		// complex string/regex literals) requires wider GLR stacks than the
-		// default cap of 8. Real-world Ruby files consistently need ~18 stacks.
-		// Setting this to 32 avoids an expensive retry-with-widening cycle on
-		// every parse, cutting memory usage roughly in half.
-		if initialMaxStacks < 32 {
-			initialMaxStacks = 32
-		}
 	}
 	return initialMaxStacks
 }
@@ -290,16 +281,7 @@ func fullParseUsesDeterministicExternalConflicts(lang *Language) bool {
 }
 
 func shouldRepeatExternalScannerFullParse(lang *Language, tree *Tree) bool {
-	if lang == nil || lang.ExternalScanner == nil || tree == nil {
-		return false
-	}
-	// Skip the redundant re-parse when the first attempt already produced a
-	// clean tree — retrying a clean parse wastes significant time and memory
-	// for grammars with large state tables (e.g. Ruby).
-	if treeParseClean(tree) {
-		return false
-	}
-	return true
+	return lang != nil && lang.ExternalScanner != nil && tree != nil
 }
 
 func fullParseRetryMaxStacksOverride(tree *Tree, sourceLen int, initialMaxStacks int) int {

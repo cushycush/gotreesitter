@@ -115,7 +115,6 @@ func init() {
 		"nim":             NimExternalScanner{},
 		"bash":            BashExternalScanner{},
 		"ruby":            RubyExternalScanner{},
-		"swift":           SwiftExternalScanner{},
 		"perl":            PerlExternalScanner{},
 		"crystal":         CrystalExternalScanner{},
 		"djot":            DjotExternalScanner{},
