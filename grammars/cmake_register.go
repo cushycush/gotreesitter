@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "cmake",
-		Extensions:     nil,
+		Extensions:     []string{".cmake"},
 		Language:       CmakeLanguage,
 		HighlightQuery: cmakeHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("cmake"),

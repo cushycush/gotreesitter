@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:               "csv",
-		Extensions:         nil,
+		Extensions:         []string{".csv", ".tsv"},
 		Language:           CsvLanguage,
 		HighlightQuery:     csvHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("csv"),

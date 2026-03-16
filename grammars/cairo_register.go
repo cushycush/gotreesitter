@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "cairo",
-		Extensions:     nil,
+		Extensions:     []string{".cairo"},
 		Language:       CairoLanguage,
 		HighlightQuery: cairoHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("cairo"),

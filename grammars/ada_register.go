@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "ada",
-		Extensions:     nil,
+		Extensions:     []string{".adb", ".ads"},
 		Language:       AdaLanguage,
 		HighlightQuery: adaHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("ada"),

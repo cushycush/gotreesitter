@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:               "bass",
-		Extensions:         nil,
+		Extensions:         []string{".bass"},
 		Language:           BassLanguage,
 		HighlightQuery:     bassHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("bass"),

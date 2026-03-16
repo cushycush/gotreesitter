@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "circom",
-		Extensions:     nil,
+		Extensions:     []string{".circom"},
 		Language:       CircomLanguage,
 		HighlightQuery: circomHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("circom"),

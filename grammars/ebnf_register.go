@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:               "ebnf",
-		Extensions:         nil,
+		Extensions:         []string{".ebnf"},
 		Language:           EbnfLanguage,
 		HighlightQuery:     ebnfHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("ebnf"),

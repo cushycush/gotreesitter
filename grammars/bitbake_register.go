@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "bitbake",
-		Extensions:     nil,
+		Extensions:     []string{".bb", ".bbappend", ".bbclass"},
 		Language:       BitbakeLanguage,
 		HighlightQuery: bitbakeHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("bitbake"),

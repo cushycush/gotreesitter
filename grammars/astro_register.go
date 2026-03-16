@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "astro",
-		Extensions:     nil,
+		Extensions:     []string{".astro"},
 		Language:       AstroLanguage,
 		HighlightQuery: astroHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("astro"),
