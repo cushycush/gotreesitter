@@ -97,7 +97,7 @@ fi
 
 ENV_ARGS=(
     -e "GTS_GRAMMARGEN_CGO_ENABLE=1"
-    -e "GTS_GRAMMARGEN_CGO_ROOT=/grammar_parity"
+    -e "GTS_GRAMMARGEN_CGO_ROOT=/tmp/grammar_parity"
     -e "GTS_GRAMMARGEN_CGO_MAX_CASES=$MAX_CASES"
     -e "GTS_GRAMMARGEN_CGO_MAX_BYTES=$MAX_BYTES"
     -e "GTS_GRAMMARGEN_CGO_FLOORS_PATH=$FLOORS_PATH"
@@ -118,6 +118,7 @@ docker run \
     --memory-swap="$MEMORY" \
     --oom-kill-disable=false \
     -v "$SRC_DIR:/src:ro" \
+    -v "$GRAMMAR_PARITY_DIR:/tmp/grammar_parity:ro" \
     -v "$GRAMMAR_PARITY_DIR:/grammar_parity:ro" \
     -v "$OUT_DIR:/out" \
     "${ENV_ARGS[@]}" \
