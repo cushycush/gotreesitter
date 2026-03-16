@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "cpon",
-		Extensions:     nil,
+		Extensions:     []string{".cpon"},
 		Language:       CponLanguage,
 		HighlightQuery: cponHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("cpon"),

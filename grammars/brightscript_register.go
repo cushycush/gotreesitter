@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "brightscript",
-		Extensions:     nil,
+		Extensions:     []string{".brs"},
 		Language:       BrightscriptLanguage,
 		HighlightQuery: brightscriptHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("brightscript"),

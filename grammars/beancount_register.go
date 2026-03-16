@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:               "beancount",
-		Extensions:         nil,
+		Extensions:         []string{".beancount"},
 		Language:           BeancountLanguage,
 		HighlightQuery:     beancountHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("beancount"),

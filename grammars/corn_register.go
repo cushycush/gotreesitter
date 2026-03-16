@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "corn",
-		Extensions:     nil,
+		Extensions:     []string{".corn"},
 		Language:       CornLanguage,
 		HighlightQuery: cornHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("corn"),

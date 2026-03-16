@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "capnp",
-		Extensions:     nil,
+		Extensions:     []string{".capnp"},
 		Language:       CapnpLanguage,
 		HighlightQuery: capnpHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("capnp"),

@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:               "apex",
-		Extensions:         nil,
+		Extensions:         []string{".cls", ".trigger"},
 		Language:           ApexLanguage,
 		HighlightQuery:     apexHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("apex"),

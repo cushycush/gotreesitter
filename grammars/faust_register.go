@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "faust",
-		Extensions:     nil,
+		Extensions:     []string{".dsp"},
 		Language:       FaustLanguage,
 		HighlightQuery: faustHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("faust"),

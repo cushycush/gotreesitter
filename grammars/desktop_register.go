@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:               "desktop",
-		Extensions:         nil,
+		Extensions:         []string{".desktop"},
 		Language:           DesktopLanguage,
 		HighlightQuery:     desktopHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("desktop"),

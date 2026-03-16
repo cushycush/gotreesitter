@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "arduino",
-		Extensions:     nil,
+		Extensions:     []string{".ino"},
 		Language:       ArduinoLanguage,
 		HighlightQuery: arduinoHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("arduino"),

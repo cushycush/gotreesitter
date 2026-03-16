@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "enforce",
-		Extensions:     nil,
+		Extensions:     []string{".enf"},
 		Language:       EnforceLanguage,
 		HighlightQuery: enforceHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("enforce"),

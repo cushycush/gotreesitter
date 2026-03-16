@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "dart",
-		Extensions:     nil,
+		Extensions:     []string{".dart"},
 		Language:       DartLanguage,
 		HighlightQuery: dartHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("dart"),

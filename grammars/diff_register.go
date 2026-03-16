@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "diff",
-		Extensions:     nil,
+		Extensions:     []string{".diff", ".patch"},
 		Language:       DiffLanguage,
 		HighlightQuery: diffHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("diff"),

@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "eex",
-		Extensions:     nil,
+		Extensions:     []string{".eex"},
 		Language:       EexLanguage,
 		HighlightQuery: eexHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("eex"),
