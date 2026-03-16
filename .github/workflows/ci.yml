@@ -3,7 +3,17 @@ name: ci
 on:
   push:
     branches: [main, fix/top50-parity-burndown]
+    paths-ignore:
+      - '*.md'
+      - 'LICENSE'
+      - 'docs/**'
+      - '.github/*.md'
   pull_request:
+    paths-ignore:
+      - '*.md'
+      - 'LICENSE'
+      - 'docs/**'
+      - '.github/*.md'
   workflow_dispatch:
 
 concurrency:
@@ -164,7 +174,8 @@ jobs:
       - name: Benchmark Base vs Head
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          PERF_CORRECTNESS_BASE_SHA: 7a29f591d7fcc54b3d0639b3e38a1bacd8fcb386
+          PERF_LEGACY_BASE_SHA: 7a29f591d7fcc54b3d0639b3e38a1bacd8fcb386
+          PERF_BENCH_CONTRACT_BASE_SHA: 4dc6480f7f26809877d3a4937e582f975794891a
         run: |
           set -euo pipefail
 
@@ -174,17 +185,22 @@ jobs:
           mkdir -p "${OUT_DIR}"
 
           GATE_BASE_SHA="${BASE_SHA}"
-          if git fetch --no-tags origin "${PERF_CORRECTNESS_BASE_SHA}" >/dev/null 2>&1; then
-            if ! git merge-base --is-ancestor "${PERF_CORRECTNESS_BASE_SHA}" "${BASE_SHA}"; then
-              GATE_BASE_SHA="${PERF_CORRECTNESS_BASE_SHA}"
+          if git fetch --no-tags origin "${PERF_BENCH_CONTRACT_BASE_SHA}" >/dev/null 2>&1; then
+            if ! git merge-base --is-ancestor "${PERF_BENCH_CONTRACT_BASE_SHA}" "${BASE_SHA}"; then
+              GATE_BASE_SHA="${PERF_BENCH_CONTRACT_BASE_SHA}"
+            fi
+          fi
+          if [ "${GATE_BASE_SHA}" = "${BASE_SHA}" ] && git fetch --no-tags origin "${PERF_LEGACY_BASE_SHA}" >/dev/null 2>&1; then
+            if ! git merge-base --is-ancestor "${PERF_LEGACY_BASE_SHA}" "${BASE_SHA}"; then
+              GATE_BASE_SHA="${PERF_LEGACY_BASE_SHA}"
             fi
           fi
           echo "perf gate base: ${GATE_BASE_SHA} (pr base: ${BASE_SHA})"
 
-          # Legacy perf-correctness baseline can truncate full-parse benchmarks at
-          # default node budget. Keep base/head benchmark settings aligned.
+          # The legacy base needs a higher node budget for comparable full-parse
+          # results. The benchmark-contract floor already uses current settings.
           BENCH_NODE_SCALE=""
-          if [ "${GATE_BASE_SHA}" = "${PERF_CORRECTNESS_BASE_SHA}" ]; then
+          if [ "${GATE_BASE_SHA}" = "${PERF_LEGACY_BASE_SHA}" ]; then
             BENCH_NODE_SCALE="3"
             echo "perf gate: using GOT_PARSE_NODE_LIMIT_SCALE=${BENCH_NODE_SCALE} for benchmark comparability"
           fi
