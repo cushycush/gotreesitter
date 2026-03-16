@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "bicep",
-		Extensions:     []string{".bicep"},
+		Extensions:     nil,
 		Language:       BicepLanguage,
 		HighlightQuery: bicepHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("bicep"),

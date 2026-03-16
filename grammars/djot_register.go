@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "djot",
-		Extensions:     []string{".djot"},
+		Extensions:     nil,
 		Language:       DjotLanguage,
 		HighlightQuery: djotHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("djot"),

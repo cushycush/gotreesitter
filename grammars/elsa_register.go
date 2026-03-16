@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "elsa",
-		Extensions:     []string{".elsa"},
+		Extensions:     nil,
 		Language:       ElsaLanguage,
 		HighlightQuery: elsaHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("elsa"),

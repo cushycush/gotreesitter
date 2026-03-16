@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:               "fennel",
-		Extensions:         []string{".fnl"},
+		Extensions:         nil,
 		Language:           FennelLanguage,
 		HighlightQuery:     fennelHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("fennel"),

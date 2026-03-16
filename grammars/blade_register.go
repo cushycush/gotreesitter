@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "blade",
-		Extensions:     []string{".blade.php"},
+		Extensions:     nil,
 		Language:       BladeLanguage,
 		HighlightQuery: bladeHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("blade"),

@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:               "cooklang",
-		Extensions:         []string{".cook"},
+		Extensions:         nil,
 		Language:           CooklangLanguage,
 		HighlightQuery:     cooklangHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("cooklang"),

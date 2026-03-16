@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "awk",
-		Extensions:     []string{".awk"},
+		Extensions:     nil,
 		Language:       AwkLanguage,
 		HighlightQuery: awkHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("awk"),

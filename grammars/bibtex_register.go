@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "bibtex",
-		Extensions:     []string{".bib"},
+		Extensions:     nil,
 		Language:       BibtexLanguage,
 		HighlightQuery: bibtexHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("bibtex"),

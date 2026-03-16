@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "erlang",
-		Extensions:     []string{".erl", ".hrl"},
+		Extensions:     nil,
 		Language:       ErlangLanguage,
 		HighlightQuery: erlangHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("erlang"),

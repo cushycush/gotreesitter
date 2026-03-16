@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "fidl",
-		Extensions:     []string{".fidl"},
+		Extensions:     nil,
 		Language:       FidlLanguage,
 		HighlightQuery: fidlHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("fidl"),

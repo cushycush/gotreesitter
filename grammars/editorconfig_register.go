@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:               "editorconfig",
-		Extensions:         []string{".editorconfig"},
+		Extensions:         nil,
 		Language:           EditorconfigLanguage,
 		HighlightQuery:     editorconfigHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("editorconfig"),

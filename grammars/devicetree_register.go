@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "devicetree",
-		Extensions:     []string{".dts", ".dtsi"},
+		Extensions:     nil,
 		Language:       DevicetreeLanguage,
 		HighlightQuery: devicetreeHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("devicetree"),

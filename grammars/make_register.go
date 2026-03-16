@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "make",
-		Extensions:     []string{".mk", ".mak"},
+		Extensions:     nil,
 		Language:       MakeLanguage,
 		HighlightQuery: makeHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("make"),

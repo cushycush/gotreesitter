@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "cuda",
-		Extensions:     []string{".cu", ".cuh"},
+		Extensions:     nil,
 		Language:       CudaLanguage,
 		HighlightQuery: cudaHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("cuda"),

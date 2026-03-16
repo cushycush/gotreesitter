@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:               "commonlisp",
-		Extensions:         []string{".cl", ".lisp", ".lsp"},
+		Extensions:         nil,
 		Language:           CommonlispLanguage,
 		HighlightQuery:     commonlispHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("commonlisp"),

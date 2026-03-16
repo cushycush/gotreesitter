@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "elm",
-		Extensions:     []string{".elm"},
+		Extensions:     nil,
 		Language:       ElmLanguage,
 		HighlightQuery: elmHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("elm"),

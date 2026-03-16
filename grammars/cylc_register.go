@@ -5,7 +5,7 @@ package grammars
 func init() {
 	Register(LangEntry{
 		Name:           "cylc",
-		Extensions:     []string{".cylc"},
+		Extensions:     nil,
 		Language:       CylcLanguage,
 		HighlightQuery: cylcHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("cylc"),
