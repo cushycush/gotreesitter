@@ -19,6 +19,11 @@ func (p *Parser) tryTokenInvariantLeafEdit(source []byte, oldTree *Tree, ts Toke
 	if len(source) != len(oldTree.source) {
 		return nil, false
 	}
+	restoreState, ok := snapshotTokenSourceState(ts)
+	if !ok {
+		return nil, false
+	}
+	defer restoreState()
 	root := oldTree.RootNode()
 	leaf := oldTree.lastEditedLeaf
 	if leaf == nil || !leaf.containsByteRange(edit.StartByte, edit.OldEndByte) {
@@ -77,6 +82,125 @@ func (p *Parser) tryTokenInvariantLeafEdit(source []byte, oldTree *Tree, ts Toke
 	return tree, true
 }
 
+type dfaTokenSourceStateSnapshot struct {
+	state                  StateID
+	glrStates              []StateID
+	lexer                  Lexer
+	hasLexer               bool
+	externalValid          []bool
+	extZeroTried           []bool
+	externalTokenStart     []byte
+	externalTokenEnd       []byte
+	externalSnapshot       []byte
+	externalRetrySnap      []byte
+	externalCompare        []byte
+	externalScannerState   []byte
+	externalLexer          ExternalLexer
+	externalRetryLexer     ExternalLexer
+	lastExternalTokenStart uint32
+	lastExternalTokenEnd   uint32
+	lastExternalTokenValid bool
+	extZeroPos             int
+	extZeroState           StateID
+	zeroWidthPos           int
+	zeroWidthCount         int
+}
+
+func snapshotTokenSourceState(ts TokenSource) (func(), bool) {
+	switch typed := ts.(type) {
+	case *dfaTokenSource:
+		snapshot, ok := snapshotDFATokenSourceState(typed)
+		if !ok {
+			return nil, false
+		}
+		return func() {
+			restoreDFATokenSourceState(typed, snapshot)
+		}, true
+	case *includedRangeTokenSource:
+		restoreBase, ok := snapshotTokenSourceState(typed.base)
+		if !ok {
+			return nil, false
+		}
+		idx := typed.idx
+		return func() {
+			restoreBase()
+			typed.idx = idx
+		}, true
+	default:
+		return nil, false
+	}
+}
+
+func snapshotDFATokenSourceState(dts *dfaTokenSource) (dfaTokenSourceStateSnapshot, bool) {
+	if dts == nil {
+		return dfaTokenSourceStateSnapshot{}, false
+	}
+	state := dfaTokenSourceStateSnapshot{
+		state:                  dts.state,
+		glrStates:              append([]StateID(nil), dts.glrStates...),
+		externalValid:          append([]bool(nil), dts.externalValid...),
+		extZeroTried:           append([]bool(nil), dts.extZeroTried...),
+		externalTokenStart:     append([]byte(nil), dts.externalTokenStart...),
+		externalTokenEnd:       append([]byte(nil), dts.externalTokenEnd...),
+		externalSnapshot:       append([]byte(nil), dts.externalSnapshot...),
+		externalRetrySnap:      append([]byte(nil), dts.externalRetrySnap...),
+		externalCompare:        append([]byte(nil), dts.externalCompare...),
+		externalLexer:          dts.externalLexer,
+		externalRetryLexer:     dts.externalRetryLexer,
+		lastExternalTokenStart: dts.lastExternalTokenStartByte,
+		lastExternalTokenEnd:   dts.lastExternalTokenEndByte,
+		lastExternalTokenValid: dts.lastExternalTokenValid,
+		extZeroPos:             dts.extZeroPos,
+		extZeroState:           dts.extZeroState,
+		zeroWidthPos:           dts.zeroWidthPos,
+		zeroWidthCount:         dts.zeroWidthCount,
+	}
+	if dts.language != nil && dts.language.ExternalScanner != nil {
+		buf := make([]byte, 0, externalScannerSerializationBufferSize)
+		state.externalScannerState = append([]byte(nil), dts.captureExternalScannerStateInto(&buf)...)
+	}
+	if dts.lexer != nil {
+		state.lexer = *dts.lexer
+		state.hasLexer = true
+	}
+	return state, true
+}
+
+func restoreDFATokenSourceState(dts *dfaTokenSource, state dfaTokenSourceStateSnapshot) {
+	if dts == nil {
+		return
+	}
+	dts.state = state.state
+	dts.glrStates = append(dts.glrStates[:0], state.glrStates...)
+	if dts.lexer == nil {
+		dts.lexer = &Lexer{}
+	}
+	if state.hasLexer {
+		*dts.lexer = state.lexer
+	} else {
+		dts.lexer = nil
+	}
+	dts.externalValid = append(dts.externalValid[:0], state.externalValid...)
+	dts.extZeroTried = append(dts.extZeroTried[:0], state.extZeroTried...)
+	dts.externalTokenStart = append(dts.externalTokenStart[:0], state.externalTokenStart...)
+	dts.externalTokenEnd = append(dts.externalTokenEnd[:0], state.externalTokenEnd...)
+	dts.externalSnapshot = append(dts.externalSnapshot[:0], state.externalSnapshot...)
+	dts.externalRetrySnap = append(dts.externalRetrySnap[:0], state.externalRetrySnap...)
+	dts.externalCompare = append(dts.externalCompare[:0], state.externalCompare...)
+	dts.externalLexer = state.externalLexer
+	dts.externalRetryLexer = state.externalRetryLexer
+	dts.lastExternalTokenStartByte = state.lastExternalTokenStart
+	dts.lastExternalTokenEndByte = state.lastExternalTokenEnd
+	dts.lastExternalTokenValid = state.lastExternalTokenValid
+	dts.extZeroPos = state.extZeroPos
+	dts.extZeroState = state.extZeroState
+	dts.zeroWidthPos = state.zeroWidthPos
+	dts.zeroWidthCount = state.zeroWidthCount
+	if dts.language != nil && dts.language.ExternalScanner != nil {
+		dts.language.ExternalScanner.Deserialize(dts.externalPayload, state.externalScannerState)
+	}
+}
+
 func reuseTreeWithNewSource(oldTree *Tree, source []byte, dirtyLeaf *Node) *Tree {
 	if oldTree == nil || oldTree.root == nil {
 		return nil
@@ -94,12 +218,7 @@ func reuseTreeWithNewSource(oldTree *Tree, source []byte, dirtyLeaf *Node) *Tree
 		borrowed = append(borrowed, a)
 	}
 	clearDirtyPathToRoot(dirtyLeaf)
-	return &Tree{
-		root:          oldTree.root,
-		source:        source,
-		language:      oldTree.language,
-		borrowedArena: uniqueArenas(borrowed, nil),
-	}
+	return newTreeWithArenas(oldTree.root, source, oldTree.language, nil, borrowed)
 }
 
 func clearDirtyPathToRoot(n *Node) {
