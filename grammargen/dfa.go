@@ -268,13 +268,18 @@ func subsetConstruction(n *nfa) []dfaState {
 		stateSets = append(stateSets, stored)
 
 		// Determine accept symbol (highest priority = lowest priority number).
+		// On tie, prefer the lower symbol ID — this matches tree-sitter C's
+		// implicit ordering where string terminals (keywords) get lower IDs
+		// than pattern terminals (identifiers).
 		accept := 0
 		bestPriority := int(^uint(0) >> 1) // max int
 		for _, s := range stored {
 			if n.states[s].accept > 0 {
-				if n.states[s].priority < bestPriority {
-					bestPriority = n.states[s].priority
-					accept = n.states[s].accept
+				p := n.states[s].priority
+				sym := n.states[s].accept
+				if p < bestPriority || (p == bestPriority && sym < accept) {
+					bestPriority = p
+					accept = sym
 				}
 			}
 		}
