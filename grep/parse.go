@@ -150,6 +150,12 @@ func splitBlocks(s string) (pattern, where, replace string, err error) {
 	whereIdx := findKeyword(s, "where")
 	replaceIdx := findKeyword(s, "replace")
 
+	// Reject replace-before-where ordering; the spec requires
+	// find ... where ... replace ...
+	if whereIdx >= 0 && replaceIdx >= 0 && replaceIdx < whereIdx {
+		return "", "", "", errors.New("replace block must come after where block")
+	}
+
 	// Determine the end of the pattern portion.
 	patEnd := len(s)
 	if whereIdx >= 0 {
@@ -190,11 +196,17 @@ func splitBlocks(s string) (pattern, where, replace string, err error) {
 	} else if replaceIdx >= 0 {
 		blockStart := replaceIdx + len("replace")
 		rest := strings.TrimSpace(s[blockStart:])
-		content, _, err2 := extractBraceBlock(rest)
+		content, consumed, err2 := extractBraceBlock(rest)
 		if err2 != nil {
 			return "", "", "", fmt.Errorf("replace block: %w", err2)
 		}
 		replace = strings.TrimSpace(content)
+
+		// Check for trailing content after the replace block.
+		afterReplace := strings.TrimSpace(rest[consumed:])
+		if afterReplace != "" {
+			return "", "", "", fmt.Errorf("unexpected content after replace block: %q", afterReplace)
+		}
 	}
 
 	return pattern, where, replace, nil

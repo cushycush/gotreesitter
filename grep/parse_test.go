@@ -360,6 +360,24 @@ func TestParseQuery_ReplaceBlockMissingOpenBrace(t *testing.T) {
 	}
 }
 
+func TestParseQuery_ReplaceBeforeWhere(t *testing.T) {
+	_, err := ParseQuery(`go::$X replace { $Y } where { $X > 0 }`)
+	if err == nil {
+		t.Fatal("expected error for replace before where")
+	}
+	want := "replace block must come after where block"
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestParseQuery_TrailingAfterReplace(t *testing.T) {
+	_, err := ParseQuery(`go::$X replace { $Y } this is garbage`)
+	if err == nil {
+		t.Fatal("expected error for trailing content after replace block")
+	}
+}
+
 func TestQuery_String(t *testing.T) {
 	tests := []struct {
 		name  string
