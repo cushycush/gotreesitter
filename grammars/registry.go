@@ -58,11 +58,12 @@ func Register(entry LangEntry) {
 //	    })
 //	}
 type ExtensionEntry struct {
-	Name             string
-	Extensions       []string // file extensions: [".dmj", ".dingo", ".fw"]
-	Aliases          []string // markdown fence aliases: ["dmj", "danmuji"]
-	GenerateLanguage func() (*gotreesitter.Language, error)
-	HighlightQuery   string
+	Name              string
+	Extensions        []string // file extensions: [".dmj", ".dingo", ".fw"]
+	Aliases           []string // markdown fence aliases: ["dmj", "danmuji"]
+	GenerateLanguage  func() (*gotreesitter.Language, error)
+	HighlightQuery    string
+	InheritHighlights string // parent language for highlight query composition (e.g. "go")
 }
 
 // RegisterExtension registers a grammar extension for file detection and
@@ -82,10 +83,11 @@ func RegisterExtension(ext ExtensionEntry) {
 	}
 
 	Register(LangEntry{
-		Name:           ext.Name,
-		Extensions:     ext.Extensions,
-		Language:       loader,
-		HighlightQuery: ext.HighlightQuery,
+		Name:              ext.Name,
+		Extensions:        ext.Extensions,
+		Language:           loader,
+		HighlightQuery:    ext.HighlightQuery,
+		InheritHighlights: ext.InheritHighlights,
 	})
 
 	// Register aliases for markdown fence resolution
