@@ -2338,11 +2338,34 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 		if shiftReduceInConflictGroup(shifts, reduces, ng, cache) {
 			return actions, nil
 		}
-		// Fallback: if the reduce LHS is in ANY conflict group, keep GLR.
-		// This is broader than tree-sitter C but necessary because grammargen's
-		// LALR merging can create S/R conflicts where the shift LHS doesn't
-		// appear directly in the conflict group but the ambiguity is real.
+		// Fallback: if the reduce LHS is in ANY conflict group, keep GLR —
+		// UNLESS explicit precedence clearly resolves the conflict.
+		// Tree-sitter C resolves S/R conflicts via precedence even when
+		// symbols are in conflict groups. The original all-GLR fallback
+		// was too broad, generating thousands of unnecessary GLR entries
+		// for grammars like Swift where many symbols appear in conflict
+		// groups but have unambiguous precedence relationships.
 		if reduceLHSInAnyConflictGroup(reduces, ng, cache) {
+			// Check if precedence can resolve this definitively.
+			shiftP := shift.prec
+			reduceP := prod.Prec
+			if (shiftP != 0 || reduceP != 0) && shiftP != reduceP {
+				// Clear precedence difference — resolve deterministically.
+				if reduceP > shiftP {
+					return []lrAction{reduce}, nil
+				}
+				return []lrAction{shift}, nil
+			}
+			// Same precedence or both zero — check associativity.
+			if shiftP == reduceP && prod.Assoc != AssocNone {
+				switch prod.Assoc {
+				case AssocLeft:
+					return []lrAction{reduce}, nil
+				case AssocRight:
+					return []lrAction{shift}, nil
+				}
+			}
+			// No clear resolution — keep as GLR.
 			return actions, nil
 		}
 
@@ -2429,9 +2452,40 @@ func resolveReduceReduceLegacy(lookaheadSym int, reduces []lrAction, ng *Normali
 		return reduces, nil
 	}
 	if shouldKeepNestedWrapperReduces(reduces, ng) {
+		// Even for nested wrapper reduces, if there is a clear precedence
+		// difference among the competing reductions, resolve deterministically.
+		// This matches tree-sitter C's behavior more closely: precedence
+		// always wins over GLR when the grammar author specified it.
+		if resolvedByPrec := rrPrecResolve(reduces, ng); resolvedByPrec != nil {
+			return resolvedByPrec, nil
+		}
 		return reduces, nil
 	}
 
+	return rrPickBest(reduces, ng), nil
+}
+
+// rrPrecResolve tries to resolve R/R conflicts via precedence. Returns nil
+// if all reduces share the same (prec, dynPrec) and no resolution is possible.
+func rrPrecResolve(reduces []lrAction, ng *NormalizedGrammar) []lrAction {
+	// Check if there's a meaningful precedence difference.
+	allSamePrec := true
+	firstProd := &ng.Productions[reduces[0].prodIdx]
+	for _, r := range reduces[1:] {
+		rProd := &ng.Productions[r.prodIdx]
+		if rProd.Prec != firstProd.Prec || rProd.DynPrec != firstProd.DynPrec {
+			allSamePrec = false
+			break
+		}
+	}
+	if allSamePrec {
+		return nil // no precedence difference — can't resolve
+	}
+	return rrPickBest(reduces, ng)
+}
+
+// rrPickBest selects the highest-precedence reduce from a set.
+func rrPickBest(reduces []lrAction, ng *NormalizedGrammar) []lrAction {
 	best := reduces[0]
 	bestProd := &ng.Productions[best.prodIdx]
 	for _, r := range reduces[1:] {
@@ -2451,7 +2505,7 @@ func resolveReduceReduceLegacy(lookaheadSym int, reduces []lrAction, ng *Normali
 			}
 		}
 	}
-	return []lrAction{best}, nil
+	return []lrAction{best}
 }
 
 func shouldKeepRepeatedAnnotationReduces(lookaheadSym int, reduces []lrAction, ng *NormalizedGrammar) bool {
