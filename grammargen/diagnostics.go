@@ -18,7 +18,44 @@ func buildFollowTokensFunc(tables *LRTables, tokenCount int) func(int) []int {
 	if tables == nil {
 		return nil
 	}
-	// Cache per state to avoid recomputation
+	// Pre-build reverse GOTO index: lhsSym → list of GOTO target states.
+	// This avoids the O(stateCount) scan per reduce action that made
+	// computeLexModes unusable for large grammars (C# 121K states, TS 42K).
+	type gotoTarget struct{ targetState int }
+	gotoIndex := make(map[int][]gotoTarget) // lhsSym → targets
+	for state := 0; state < tables.StateCount; state++ {
+		acts, ok := tables.ActionTable[state]
+		if !ok {
+			continue
+		}
+		for sym, actions := range acts {
+			for _, act := range actions {
+				if act.kind == lrShift && sym >= tokenCount {
+					// This is a GOTO entry (nonterminal shift)
+					gotoIndex[sym] = append(gotoIndex[sym], gotoTarget{act.state})
+				}
+			}
+		}
+	}
+
+	// Pre-build terminal sets per state for fast lookup
+	stateTerminals := make(map[int][]int) // state → terminal syms
+	for state := 0; state < tables.StateCount; state++ {
+		acts, ok := tables.ActionTable[state]
+		if !ok {
+			continue
+		}
+		var terms []int
+		for sym := range acts {
+			if sym > 0 && sym < tokenCount {
+				terms = append(terms, sym)
+			}
+		}
+		if len(terms) > 0 {
+			stateTerminals[state] = terms
+		}
+	}
+
 	cache := make(map[int][]int)
 	return func(state int) []int {
 		if cached, ok := cache[state]; ok {
@@ -30,40 +67,19 @@ func buildFollowTokensFunc(tables *LRTables, tokenCount int) func(int) []int {
 			cache[state] = nil
 			return nil
 		}
-		// For each reduce action in this state, find the GOTO target
-		// and collect its valid terminal symbols
 		for _, actions := range acts {
 			for _, act := range actions {
 				if act.kind != lrReduce {
 					continue
 				}
-				// After reducing, the parser pops and does a GOTO.
-				// We can't easily trace the exact GOTO without the full
-				// stack, but we can approximate: collect terminals valid
-				// in ANY state that has a GOTO for this production's LHS.
 				lhsSym := act.lhsSym
 				if lhsSym <= 0 {
 					continue
 				}
-				for targetState := 0; targetState < tables.StateCount; targetState++ {
-					targetActs, ok := tables.ActionTable[targetState]
-					if !ok {
-						continue
-					}
-					// Check if this state has a GOTO for the reduce LHS
-					if gotoActs, ok := targetActs[lhsSym]; ok && len(gotoActs) > 0 {
-						for _, ga := range gotoActs {
-							if ga.kind == lrShift {
-								// The GOTO target state — collect its terminals
-								if gotoStateActs, ok := tables.ActionTable[ga.state]; ok {
-									for sym := range gotoStateActs {
-										if sym > 0 && sym < tokenCount && !seen[sym] {
-											seen[sym] = true
-										}
-									}
-								}
-							}
-						}
+				// Use pre-built GOTO index instead of scanning all states
+				for _, gt := range gotoIndex[lhsSym] {
+					for _, sym := range stateTerminals[gt.targetState] {
+						seen[sym] = true
 					}
 				}
 			}
