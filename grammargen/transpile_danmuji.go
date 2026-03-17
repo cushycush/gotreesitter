@@ -69,6 +69,8 @@ type dmjTranspiler struct {
 	collectedMockStarts map[uint32]bool
 	// Collected imports (deduped by package path).
 	neededImports map[string]bool
+	// Whether we are inside an exec block (for special identifier translation).
+	inExecBlock bool
 }
 
 // addImport records a package path that should be injected into the import block.
@@ -141,7 +143,17 @@ func (t *dmjTranspiler) emit(n *gotreesitter.Node) string {
 		return t.emitVerify(n)
 	case "needs_block":
 		return t.emitNeedsBlock(n)
-	default:
+	case "load_block":
+		return t.emitLoad(n)
+	case "load_config":
+		return "" // handled by emitLoad
+	case "target_block":
+		return "" // handled by emitLoad
+	case "exec_block":
+		return t.emitExec(n)
+	case "run_command":
+		return "" // handled by emitExec
+		default:
 		return t.emitDefault(n)
 	}
 }
@@ -657,6 +669,95 @@ func (t *dmjTranspiler) emitNeedsBlock(n *gotreesitter.Node) string {
 }
 
 // ---------------------------------------------------------------------------
+// load_block → func TestLoadXxx(t *testing.T) with vegeta attack
+// ---------------------------------------------------------------------------
+
+func (t *dmjTranspiler) emitLoad(n *gotreesitter.Node) string {
+	t.addImport("time")
+	t.addImport("github.com/tsenart/vegeta/v12/lib")
+
+	// Extract name
+	nameNode := t.childByField(n, "name")
+	name := "Load"
+	if nameNode != nil {
+		name = sanitizeTestName(t.text(nameNode))
+	}
+
+	// Walk the body block's children for load_config, target_block, then_block
+	bodyNode := t.childByField(n, "body")
+	if bodyNode == nil {
+		return t.text(n)
+	}
+
+	rate := "10"
+	duration := "5"
+	method := "GET"
+	url := `"http://localhost"`
+	var thenBlocks []*gotreesitter.Node
+
+	t.walkChildren(bodyNode, func(child *gotreesitter.Node) {
+		switch t.nodeType(child) {
+		case "load_config":
+			configText := t.text(child)
+			// Extract the value (everything after the keyword)
+			if strings.HasPrefix(configText, "rate") {
+				val := strings.TrimSpace(strings.TrimPrefix(configText, "rate"))
+				if val != "" {
+					rate = val
+				}
+			} else if strings.HasPrefix(configText, "duration") {
+				val := strings.TrimSpace(strings.TrimPrefix(configText, "duration"))
+				if val != "" {
+					duration = val
+				}
+			}
+		case "target_block":
+			if m := t.childByField(child, "method"); m != nil {
+				method = strings.ToUpper(t.text(m))
+			}
+			if u := t.childByField(child, "url"); u != nil {
+				url = t.text(u)
+			}
+		case "then_block":
+			thenBlocks = append(thenBlocks, child)
+		}
+	})
+
+	var b strings.Builder
+
+	// Build constraint
+	fmt.Fprintf(&b, "//go:build e2e\n\n")
+
+	// Function signature
+	fmt.Fprintf(&b, "func TestLoad%s(t *testing.T) {\n", name)
+
+	// Vegeta setup
+	fmt.Fprintf(&b, "\trate := vegeta.Rate{Freq: %s, Per: time.Second}\n", rate)
+	fmt.Fprintf(&b, "\tduration := %s * time.Second\n", duration)
+	fmt.Fprintf(&b, "\ttargeter := vegeta.NewStaticTargeter(vegeta.Target{\n")
+	fmt.Fprintf(&b, "\t\tMethod: %q,\n", method)
+	fmt.Fprintf(&b, "\t\tURL:    %s,\n", url)
+	fmt.Fprintf(&b, "\t})\n")
+	fmt.Fprintf(&b, "\tattacker := vegeta.NewAttacker()\n")
+	fmt.Fprintf(&b, "\tvar metrics vegeta.Metrics\n")
+	fmt.Fprintf(&b, "\tfor res := range attacker.Attack(targeter, rate, duration, %q) {\n", name)
+	fmt.Fprintf(&b, "\t\tmetrics.Add(res)\n")
+	fmt.Fprintf(&b, "\t}\n")
+	fmt.Fprintf(&b, "\tmetrics.Close()\n")
+
+	// Emit then blocks
+	for _, tb := range thenBlocks {
+		b.WriteString("\t")
+		b.WriteString(t.emitBDDBlock(tb, "then"))
+		b.WriteString("\n")
+	}
+
+	fmt.Fprintf(&b, "}\n")
+
+	return b.String()
+}
+
+// ---------------------------------------------------------------------------
 // injectImports adds all collected import paths into the existing import block
 // ---------------------------------------------------------------------------
 
@@ -707,5 +808,165 @@ func sortImports(imports []string) {
 		for j := i; j > 0 && imports[j] < imports[j-1]; j-- {
 			imports[j], imports[j-1] = imports[j-1], imports[j]
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// exec_block → t.Run with os/exec command execution
+// ---------------------------------------------------------------------------
+
+func (t *dmjTranspiler) emitExec(n *gotreesitter.Node) string {
+	t.addImport("bytes")
+	t.addImport("os/exec")
+
+	nameNode := t.childByField(n, "name")
+	name := "exec"
+	if nameNode != nil {
+		name = strings.Trim(t.text(nameNode), "\"`'")
+	}
+
+	// Find the body block
+	bodyNode := t.childByField(n, "body")
+	if bodyNode == nil {
+		return t.text(n)
+	}
+
+	// Collect run_command nodes and other statements from the body
+	type runCmd struct {
+		command string
+	}
+	var runs []runCmd
+	var otherStatements []*gotreesitter.Node
+
+	t.walkChildren(bodyNode, func(child *gotreesitter.Node) {
+		switch t.nodeType(child) {
+		case "run_command":
+			cmdNode := t.childByField(child, "command")
+			if cmdNode != nil {
+				runs = append(runs, runCmd{command: t.text(cmdNode)})
+			}
+		case "expect_statement":
+			otherStatements = append(otherStatements, child)
+		}
+	})
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s.Run(%q, func(%s *testing.T) {\n", t.testVar, name, t.testVar)
+
+	// For each run command, emit the exec boilerplate
+	for _, r := range runs {
+		fmt.Fprintf(&b, "\tvar stdout, stderr bytes.Buffer\n")
+		fmt.Fprintf(&b, "\tcmd := exec.Command(\"sh\", \"-c\", %s)\n", r.command)
+		fmt.Fprintf(&b, "\tcmd.Stdout = &stdout\n")
+		fmt.Fprintf(&b, "\tcmd.Stderr = &stderr\n")
+		fmt.Fprintf(&b, "\terr := cmd.Run()\n")
+		fmt.Fprintf(&b, "\texitCode := 0\n")
+		fmt.Fprintf(&b, "\tif err != nil {\n")
+		fmt.Fprintf(&b, "\t\tif exitErr, ok := err.(*exec.ExitError); ok {\n")
+		fmt.Fprintf(&b, "\t\t\texitCode = exitErr.ExitCode()\n")
+		fmt.Fprintf(&b, "\t\t} else {\n")
+		fmt.Fprintf(&b, "\t\t\texitCode = -1\n")
+		fmt.Fprintf(&b, "\t\t}\n")
+		fmt.Fprintf(&b, "\t}\n")
+		fmt.Fprintf(&b, "\t_ = exitCode // used by expect assertions\n")
+	}
+
+	// Emit expect statements with exec identifier translation
+	oldInExec := t.inExecBlock
+	t.inExecBlock = true
+	for _, stmt := range otherStatements {
+		b.WriteString("\t")
+		b.WriteString(t.emitExecExpect(stmt))
+		b.WriteString("\n")
+	}
+	t.inExecBlock = oldInExec
+
+	fmt.Fprintf(&b, "})")
+	return b.String()
+}
+
+// walkChildren calls fn for each named child (recursing into statement_list/block).
+func (t *dmjTranspiler) walkChildren(n *gotreesitter.Node, fn func(*gotreesitter.Node)) {
+	for i := 0; i < int(n.ChildCount()); i++ {
+		child := n.Child(i)
+		nt := t.nodeType(child)
+		switch nt {
+		case "block", "statement_list":
+			t.walkChildren(child, fn)
+		default:
+			if child.IsNamed() {
+				fn(child)
+			}
+		}
+	}
+}
+
+// emitExecExpect translates expect statements inside exec blocks,
+// replacing exec-specific identifiers with their Go equivalents.
+func (t *dmjTranspiler) emitExecExpect(n *gotreesitter.Node) string {
+	nodeText := t.text(n)
+
+	// Handle "expect stdout contains X"
+	if strings.Contains(nodeText, "stdout") && strings.Contains(nodeText, "contains") {
+		// Extract the expected value after "contains"
+		expected := t.childByField(n, "expected")
+		if expected != nil {
+			t.addImport("github.com/stretchr/testify/assert")
+			return fmt.Sprintf("assert.Contains(%s, stdout.String(), %s)", t.testVar, t.emit(expected))
+		}
+	}
+
+	// Handle "expect stderr contains X"
+	if strings.Contains(nodeText, "stderr") && strings.Contains(nodeText, "contains") {
+		expected := t.childByField(n, "expected")
+		if expected != nil {
+			t.addImport("github.com/stretchr/testify/assert")
+			return fmt.Sprintf("assert.Contains(%s, stderr.String(), %s)", t.testVar, t.emit(expected))
+		}
+	}
+
+	// Handle "expect exit_code == 0" — the grammar absorbs this as binary_expression
+	actual := t.childByField(n, "actual")
+	if actual != nil {
+		actualText := t.text(actual)
+		// Check if it's a binary expression with exit_code
+		if t.nodeType(actual) == "binary_expression" && actual.ChildCount() >= 3 {
+			left := actual.Child(0)
+			op := actual.Child(1)
+			right := actual.Child(2)
+			lT := t.translateExecIdent(t.text(left))
+			opT := t.text(op)
+			rT := t.emit(right)
+			t.addImport("github.com/stretchr/testify/assert")
+			switch opT {
+			case "==":
+				return fmt.Sprintf("assert.Equal(%s, %s, %s)", t.testVar, rT, lT)
+			case "!=":
+				return fmt.Sprintf("assert.NotEqual(%s, %s, %s)", t.testVar, rT, lT)
+			}
+		}
+		// Bare identifier like "expect exit_code"
+		if strings.Contains(actualText, "exit_code") || strings.Contains(actualText, "stdout") || strings.Contains(actualText, "stderr") {
+			translated := t.translateExecIdent(actualText)
+			t.addImport("github.com/stretchr/testify/assert")
+			return fmt.Sprintf("assert.True(%s, %s)", t.testVar, translated)
+		}
+	}
+
+	// Fall through to normal expect emission
+	return t.emitExpect(n)
+}
+
+// translateExecIdent maps exec-specific identifiers to Go variable names.
+func (t *dmjTranspiler) translateExecIdent(ident string) string {
+	switch strings.TrimSpace(ident) {
+	case "exit_code":
+		return "exitCode"
+	case "stdout":
+		return "stdout.String()"
+	case "stderr":
+		return "stderr.String()"
+	default:
+		return ident
 	}
 }

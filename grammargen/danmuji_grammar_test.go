@@ -247,6 +247,54 @@ func TestDanmujiTags(t *testing.T) {
 	}
 }
 
+// TestDanmujiBenchmark tests benchmark block parsing.
+func TestDanmujiBenchmark(t *testing.T) {
+	input := `package main
+benchmark "JSON marshal" {
+	setup {
+		data := makeLargeStruct()
+	}
+	measure {
+		json.Marshal(data)
+	}
+	report_allocs
+}
+`
+	sexp := parseDanmuji(t, input)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "benchmark_block") {
+		t.Error("expected benchmark_block node")
+	}
+	if !strings.Contains(sexp, "measure_block") {
+		t.Error("expected measure_block node")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("unexpected ERROR: %s", sexp)
+	}
+}
+
+// TestDanmujiParallelBenchmark tests parallel measure block parsing.
+func TestDanmujiParallelBenchmark(t *testing.T) {
+	input := `package main
+benchmark "concurrent reads" {
+	setup {
+		cache := NewCache()
+	}
+	parallel measure {
+		cache.Get("key")
+	}
+}
+`
+	sexp := parseDanmuji(t, input)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "parallel_measure_block") {
+		t.Error("expected parallel_measure_block node")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("unexpected ERROR: %s", sexp)
+	}
+}
+
 // TestDanmujiNeedsBlock tests needs block parsing.
 func TestDanmujiNeedsBlock(t *testing.T) {
 	input := `package main
@@ -263,6 +311,49 @@ func f() {
 	}
 	if !strings.Contains(sexp, "service_type") {
 		t.Error("expected service_type node")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("unexpected ERROR: %s", sexp)
+	}
+}
+
+// TestDanmujiLoadBlock tests load block with rate, duration, target parsing.
+func TestDanmujiLoadBlock(t *testing.T) {
+	input := `package main
+load "checkout" {
+	rate 50
+	duration 2
+	target post "http://localhost:8080/api"
+	then "fast" {
+		expect true
+	}
+}
+`
+	sexp := parseDanmuji(t, input)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "load_block") {
+		t.Error("expected load_block node")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("unexpected ERROR: %s", sexp)
+	}
+}
+
+// TestDanmujiExecBlock tests exec block with run command parsing.
+func TestDanmujiExecBlock(t *testing.T) {
+	input := `package main
+func f() {
+	exec "run migrations" {
+		run "echo hello"
+		expect exit_code == 0
+		expect stdout contains "hello"
+	}
+}
+`
+	sexp := parseDanmuji(t, input)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "exec_block") {
+		t.Error("expected exec_block node")
 	}
 	if strings.Contains(sexp, "ERROR") {
 		t.Errorf("unexpected ERROR: %s", sexp)

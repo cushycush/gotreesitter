@@ -221,10 +221,73 @@ func DanmujiGrammar() *Grammar {
 			))
 
 		// ---------------------------------------------------------------
+		// Benchmarks
+		// ---------------------------------------------------------------
+		g.Define("setup_block", Seq(Str("setup"), Sym("block")))
+
+		g.Define("measure_block", Seq(Str("measure"), Sym("block")))
+
+		g.Define("parallel_measure_block", Seq(
+			Str("parallel"), Str("measure"), Sym("block"),
+		))
+
+		g.Define("report_directive", Str("report_allocs"))
+
+		g.Define("benchmark_block", Seq(
+			Optional(Field("tags", Sym("tag_list"))),
+			Str("benchmark"),
+			Field("name", Sym("_string_literal")),
+			Field("body", Sym("block")),
+		))
+
+		// ---------------------------------------------------------------
+		// Load testing (vegeta)
+		// ---------------------------------------------------------------
+		g.Define("load_config", Choice(
+			Seq(Str("rate"), Sym("_expression")),
+			Seq(Str("duration"), Sym("_expression")),
+			Seq(Str("rampup"), Sym("_expression")),
+			Seq(Str("concurrency"), Sym("_expression")),
+		))
+
+		g.Define("http_method", Choice(
+			Str("get"), Str("post"), Str("put"), Str("delete"), Str("patch"),
+		))
+
+		g.Define("target_block", Seq(
+			Str("target"),
+			Field("method", Sym("http_method")),
+			Field("url", Sym("_string_literal")),
+		))
+
+		g.Define("load_block", Seq(
+			Optional(Field("tags", Sym("tag_list"))),
+			Str("load"),
+			Field("name", Sym("_string_literal")),
+			Field("body", Sym("block")),
+		))
+
+		// ---------------------------------------------------------------
+		// Exec blocks (shell commands)
+		// ---------------------------------------------------------------
+		g.Define("run_command", Seq(
+			Str("run"),
+			Field("command", Sym("_string_literal")),
+		))
+
+		g.Define("exec_block", Seq(
+			Str("exec"),
+			Field("name", Sym("_string_literal")),
+			Field("body", Sym("block")),
+		))
+
+		// ---------------------------------------------------------------
 		// Wire into Go: extend _top_level_declaration and _statement
 		// ---------------------------------------------------------------
 		AppendChoice(g, "_top_level_declaration",
 			Sym("test_block"),
+			Sym("benchmark_block"),
+			Sym("load_block"),
 		)
 
 		AppendChoice(g, "_statement",
@@ -243,6 +306,14 @@ func DanmujiGrammar() *Grammar {
 			Sym("mock_method"),
 			Sym("fake_method"),
 			Sym("needs_block"),
+			Sym("setup_block"),
+			Sym("measure_block"),
+			Sym("parallel_measure_block"),
+			Sym("report_directive"),
+			Sym("exec_block"),
+			Sym("run_command"),
+			Sym("load_config"),
+			Sym("target_block"),
 		)
 
 		// ---------------------------------------------------------------
@@ -263,6 +334,14 @@ func DanmujiGrammar() *Grammar {
 		AddConflict(g, "_statement", "mock_method")
 		AddConflict(g, "_statement", "fake_method")
 		AddConflict(g, "_statement", "needs_block")
+		AddConflict(g, "_statement", "setup_block")
+		AddConflict(g, "_statement", "measure_block")
+		AddConflict(g, "_statement", "report_directive")
+		AddConflict(g, "_statement", "parallel_measure_block")
+		AddConflict(g, "_statement", "exec_block")
+		AddConflict(g, "_statement", "run_command")
+		AddConflict(g, "_statement", "load_config")
+		AddConflict(g, "_statement", "target_block")
 
 		g.EnableLRSplitting = true
 	})

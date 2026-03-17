@@ -233,3 +233,100 @@ integration "with database" {
 		t.Error("expected testify require import")
 	}
 }
+
+func TestTranspileDanmujiExec(t *testing.T) {
+	source := []byte(`package exec_test
+
+import "testing"
+
+unit "shell commands" {
+	exec "echo test" {
+		run "echo hello"
+		expect exit_code == 0
+	}
+}
+`)
+	goCode, err := TranspileDanmuji(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Transpiled Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "exec.Command") {
+		t.Error("expected exec.Command in output")
+	}
+}
+
+func TestTranspileDanmujiLoad(t *testing.T) {
+	source := []byte(`package load_test
+
+import "testing"
+
+load "api throughput" {
+	rate 10
+	duration 5
+	target get "http://localhost:8080/health"
+	then "healthy" {
+		expect true
+	}
+}
+`)
+	goCode, err := TranspileDanmuji(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Transpiled Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "vegeta.Rate") {
+		t.Error("expected vegeta.Rate in output")
+	}
+	if !strings.Contains(goCode, "vegeta.NewAttacker") {
+		t.Error("expected vegeta.NewAttacker in output")
+	}
+	if !strings.Contains(goCode, "func TestLoadApiThroughput") {
+		t.Error("expected TestLoadApiThroughput function")
+	}
+}
+
+func TestTranspileDanmujiExecCompile(t *testing.T) {
+	source := []byte(`package exec_test
+
+import "testing"
+
+unit "echo" {
+	exec "hello" {
+		run "echo hello"
+		expect exit_code == 0
+		expect stdout contains "hello"
+	}
+}
+`)
+	goCode, err := TranspileDanmuji(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Transpiled Go:\n%s", goCode)
+
+	tmpDir := t.TempDir()
+	os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module testmod\n\ngo 1.21\n"), 0644)
+	os.WriteFile(filepath.Join(tmpDir, "exec_test.go"), []byte(goCode), 0644)
+
+	getCmd := exec.Command("go", "get", "github.com/stretchr/testify@latest")
+	getCmd.Dir = tmpDir
+	if out, err := getCmd.CombinedOutput(); err != nil {
+		t.Fatalf("go get testify failed: %v\n%s", err, out)
+	}
+	tidyCmd := exec.Command("go", "mod", "tidy")
+	tidyCmd.Dir = tmpDir
+	if out, err := tidyCmd.CombinedOutput(); err != nil {
+		t.Fatalf("go mod tidy failed: %v\n%s", err, out)
+	}
+
+	runCmd := exec.Command("go", "test", "-v", "./...")
+	runCmd.Dir = tmpDir
+	out, err := runCmd.CombinedOutput()
+	t.Logf("go test output:\n%s", string(out))
+	if err != nil {
+		t.Fatalf("go test failed: %v\n%s", err, out)
+	}
+}
