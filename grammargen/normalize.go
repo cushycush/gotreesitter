@@ -2899,6 +2899,8 @@ func expandInlineRules(g *Grammar) *Grammar {
 	out.Word = g.Word
 	out.Supertypes = g.Supertypes
 	out.Precedences = g.Precedences
+	out.BinaryRepeatMode = g.BinaryRepeatMode
+	out.EnableLRSplitting = g.EnableLRSplitting
 	// Don't propagate Inline — they've been expanded.
 
 	return out

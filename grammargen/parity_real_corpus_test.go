@@ -202,14 +202,14 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 			if getenvBool("GTS_GRAMMARGEN_LR_SPLIT") {
 				gram.EnableLRSplitting = true
 			}
-			// Enable binary repeat mode for grammars that benefit from
-			// tree-sitter's upstream repeat lowering. Large grammars (>150
-			// rules) are excluded to avoid state table OOM during generation.
 			// Enable binary repeat mode for validated grammars that benefit
 			// from tree-sitter's upstream repeat lowering shape.
 			switch g.name {
 			case "go_lang", "graphql", "json", "regex", "toml", "scheme",
-				"csv", "git_rebase", "pem", "eds", "forth", "sql":
+				"csv", "git_rebase", "pem", "eds", "forth", "sql",
+				"comment", "eex", "dot", "todotxt", "ssh_config",
+				"properties", "proto", "requirements", "promql", "json5",
+				"gitattributes", "git_config", "ini":
 				gram.BinaryRepeatMode = true
 			}
 
