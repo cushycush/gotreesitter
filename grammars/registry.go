@@ -20,7 +20,7 @@ type LangEntry struct {
 	HighlightQuery     string
 	TagsQuery          string                                                                 // tree-sitter tags.scm query for symbol extraction
 	TokenSourceFactory func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource // nil = use DFA
-	Quality            ParseQuality                                                           // populated lazily by AllLanguages
+	Quality            ParseQuality                                                           // populated by AuditParseSupport
 }
 
 var registry []LangEntry
@@ -128,17 +128,25 @@ func extractInterpreter(line string) string {
 	return strings.ToLower(binary)
 }
 
-// AllLanguages returns all registered languages.
+// AllLanguages returns all registered languages. This is a metadata-only
+// operation — it does NOT load grammar parse tables or decompress blobs.
+// Languages that lack an explicit TagsQuery will have an empty TagsQuery
+// field; call [ResolveTagsQuery] when you actually need the inferred query.
 func AllLanguages() []LangEntry {
 	out := make([]LangEntry, len(registry))
 	copy(out, registry)
-	for i := range out {
-		if strings.TrimSpace(out[i].TagsQuery) != "" {
-			continue
-		}
-		out[i].TagsQuery = inferredTagsQuery(out[i])
-	}
 	return out
+}
+
+// ResolveTagsQuery returns the tags query for a LangEntry, computing an
+// inferred query from grammar symbols on first call if the entry lacks an
+// explicit TagsQuery. The inferred result is cached by language name.
+// This may trigger grammar loading for languages without an explicit TagsQuery.
+func ResolveTagsQuery(entry LangEntry) string {
+	if q := strings.TrimSpace(entry.TagsQuery); q != "" {
+		return entry.TagsQuery
+	}
+	return inferredTagsQuery(entry)
 }
 
 // lookupByName returns the LangEntry with the given grammar name, or nil.

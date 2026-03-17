@@ -44,12 +44,13 @@ func TestAllTagsQueriesCompile(t *testing.T) {
 	var compileErrs int
 
 	for _, entry := range entries {
-		if strings.TrimSpace(entry.TagsQuery) == "" {
+		tagsQ := ResolveTagsQuery(entry)
+		if strings.TrimSpace(tagsQ) == "" {
 			continue
 		}
 		withQuery++
 		lang := entry.Language()
-		if _, err := gotreesitter.NewTagger(lang, entry.TagsQuery); err != nil {
+		if _, err := gotreesitter.NewTagger(lang, tagsQ); err != nil {
 			compileErrs++
 			t.Errorf("%s: tags query compile error: %v", entry.Name, err)
 		}

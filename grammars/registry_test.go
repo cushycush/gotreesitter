@@ -48,6 +48,23 @@ func TestAllLanguages(t *testing.T) {
 	}
 }
 
+func TestAllLanguagesDoesNotLoadGrammars(t *testing.T) {
+	// Purge all cached grammars so we start clean.
+	PurgeEmbeddedLanguageCache()
+	t.Cleanup(func() { PurgeEmbeddedLanguageCache() })
+
+	// AllLanguages should be a metadata-only operation.
+	langs := AllLanguages()
+	if len(langs) == 0 {
+		t.Fatal("expected at least one registered language")
+	}
+
+	loaded, _ := EmbeddedLanguageCacheStats()
+	if loaded != 0 {
+		t.Fatalf("AllLanguages() loaded %d grammars into cache; want 0 (metadata-only)", loaded)
+	}
+}
+
 func TestDetectLanguageByShebang(t *testing.T) {
 	// Linguist interpreter map resolves shebangs.
 	entry := DetectLanguageByShebang("#!/usr/bin/env python3")
@@ -181,10 +198,11 @@ func TestCoreLanguagesHaveCompilableTagsQuery(t *testing.T) {
 			if entry.Language == nil {
 				t.Fatalf("expected %q language loader", name)
 			}
-			if entry.TagsQuery == "" {
+			tagsQ := ResolveTagsQuery(entry)
+			if tagsQ == "" {
 				t.Fatalf("expected non-empty TagsQuery for %q", name)
 			}
-			if _, err := gotreesitter.NewTagger(entry.Language(), entry.TagsQuery); err != nil {
+			if _, err := gotreesitter.NewTagger(entry.Language(), tagsQ); err != nil {
 				t.Fatalf("compile tags query for %q: %v", name, err)
 			}
 		})
@@ -199,7 +217,7 @@ func TestInferredTagsQueryCoverage(t *testing.T) {
 
 	withTags := 0
 	for _, entry := range entries {
-		if entry.TagsQuery != "" {
+		if ResolveTagsQuery(entry) != "" {
 			withTags++
 		}
 	}
