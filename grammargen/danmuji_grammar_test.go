@@ -456,6 +456,71 @@ func f() {
 	}
 }
 
+func TestDanmujiEachDo(t *testing.T) {
+	// Test basic each...do with scenarios
+	input := `package main
+func f() {
+    each "cases" {
+        { name: "first", val: 1 }
+        { name: "second", val: 2 }
+    } do {
+        _ = scenario.val
+    }
+}
+`
+	sexp := parseDanmuji(t, input)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "each_do_block") {
+		t.Error("expected each_do_block")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("unexpected ERROR: %s", sexp)
+	}
+}
+
+func TestDanmujiEachDoWithDefaults(t *testing.T) {
+	input := `package main
+func f() {
+    each "cases" {
+        defaults { method: "GET", status: 200 }
+        { name: "ok", status: 200 }
+        { name: "post", method: "POST" }
+    } do {
+        _ = scenario.method
+    }
+}
+`
+	sexp := parseDanmuji(t, input)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "defaults_block") {
+		t.Error("expected defaults_block")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("unexpected ERROR: %s", sexp)
+	}
+}
+
+func TestDanmujiMatrix(t *testing.T) {
+	input := `package main
+func f() {
+    matrix "combos" {
+        method: { "GET", "POST" }
+        auth: { "none", "bearer" }
+    } do {
+        _ = scenario.method
+    }
+}
+`
+	sexp := parseDanmuji(t, input)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "matrix_block") {
+		t.Error("expected matrix_block")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("unexpected ERROR: %s", sexp)
+	}
+}
+
 // TestDanmujiSpyWithoutBody tests that spy without body still parses.
 func TestDanmujiSpyWithoutBody(t *testing.T) {
 	input := `package main

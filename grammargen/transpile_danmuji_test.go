@@ -832,3 +832,106 @@ unit "addition" {
 		t.Error("expected PASS in test output")
 	}
 }
+
+func TestTranspileDanmujiEachDo(t *testing.T) {
+	source := []byte(`package each_test
+import "testing"
+unit "scenarios" {
+    each "auth checks" {
+        defaults { token: "valid", code: 200 }
+        { name: "valid request", code: 200 }
+        { name: "no token", token: "", code: 401 }
+    } do {
+        then "check" {
+            expect true
+        }
+    }
+}
+`)
+	goCode, err := TranspileDanmuji(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Transpiled:\n%s", goCode)
+
+	if !strings.Contains(goCode, "Scenario") {
+		t.Error("expected Scenario struct")
+	}
+	if !strings.Contains(goCode, "for _, scenario := range") {
+		t.Error("expected scenario iteration")
+	}
+	if !strings.Contains(goCode, `"valid"`) {
+		t.Error("expected default value 'valid'")
+	}
+}
+
+func TestTranspileDanmujiMatrix(t *testing.T) {
+	source := []byte(`package matrix_test
+import "testing"
+unit "combinations" {
+    matrix "method x auth" {
+        method: { "GET", "POST" }
+        auth: { "none", "bearer" }
+    } do {
+        then "no panic" {
+            expect true
+        }
+    }
+}
+`)
+	goCode, err := TranspileDanmuji(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Transpiled:\n%s", goCode)
+
+	if !strings.Contains(goCode, "Scenario") {
+		t.Error("expected Scenario struct")
+	}
+	// 2 methods x 2 auth = 4 entries
+	if strings.Count(goCode, "\"GET\"") + strings.Count(goCode, "\"POST\"") < 4 {
+		t.Error("expected 4 cartesian product entries")
+	}
+}
+
+func TestTranspileDanmujiEachDoCompile(t *testing.T) {
+	source := []byte(`package main_test
+import "testing"
+unit "math scenarios" {
+    each "additions" {
+        defaults { b: 0, expected: 0 }
+        { name: "identity", a: 5, expected: 5 }
+        { name: "both set", a: 2, b: 3, expected: 5 }
+    } do {
+        then "check addition" {
+            result := scenario.a.(int) + scenario.b.(int)
+            expect result == scenario.expected
+        }
+    }
+}
+`)
+	goCode, err := TranspileDanmuji(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Transpiled:\n%s", goCode)
+
+	tmpDir := t.TempDir()
+	os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module testmod\n\ngo 1.21\n"), 0644)
+	os.WriteFile(filepath.Join(tmpDir, "main_test.go"), []byte(goCode), 0644)
+
+	getCmd := exec.Command("go", "get", "github.com/stretchr/testify@latest")
+	getCmd.Dir = tmpDir
+	getCmd.CombinedOutput()
+	tidyCmd := exec.Command("go", "mod", "tidy")
+	tidyCmd.Dir = tmpDir
+	tidyCmd.Run()
+
+	cmd := exec.Command("go", "test", "-v", "./...")
+	cmd.Dir = tmpDir
+	out, err := cmd.CombinedOutput()
+	t.Logf("go test output:\n%s", string(out))
+	if err != nil {
+		t.Fatalf("go test failed: %v\n%s", err, out)
+	}
+}

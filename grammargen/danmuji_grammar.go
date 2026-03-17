@@ -342,6 +342,63 @@ func DanmujiGrammar() *Grammar {
 			))
 
 		// ---------------------------------------------------------------
+		// Scenario-driven table tests (each ... do)
+		// ---------------------------------------------------------------
+
+		// scenario_field: identifier ":" _expression (key-value in a scenario object)
+		g.Define("scenario_field", Seq(
+			Field("key", Sym("identifier")),
+			Str(":"),
+			Field("value", Sym("_expression")),
+		))
+
+		// scenario_entry: "{" field: val, ... "}"
+		g.Define("scenario_entry", PrecDynamic(20, Seq(
+			Str("{"),
+			CommaSep1(Sym("scenario_field")),
+			Str("}"),
+		)))
+
+		// defaults_block: "defaults" "{" field: val, ... "}"
+		g.Define("defaults_block", Seq(
+			Str("defaults"),
+			Str("{"),
+			CommaSep1(Sym("scenario_field")),
+			Str("}"),
+		))
+
+		// each_do_block: "each" string block "do" block
+		// The first block contains defaults_block and scenario_entry statements.
+		// Using Sym("block") for the scenario list because Go's grammar requires
+		// newline/semicolons between statements, and block handles that naturally.
+		g.Define("each_do_block", Seq(
+			Str("each"),
+			Field("name", Sym("_string_literal")),
+			Field("scenarios", Sym("block")),
+			Str("do"),
+			Field("body", Sym("block")),
+		))
+
+		// matrix_field: identifier ":" "{" comma_separated_expressions "}"
+		g.Define("matrix_field", Seq(
+			Field("key", Sym("identifier")),
+			Str(":"),
+			Str("{"),
+			CommaSep1(Sym("_expression")),
+			Str("}"),
+		))
+
+		// matrix_block: "matrix" string block "do" block
+		// The first block contains matrix_field statements.
+		g.Define("matrix_block", Seq(
+			Str("matrix"),
+			Field("name", Sym("_string_literal")),
+			Field("dimensions", Sym("block")),
+			Str("do"),
+			Field("body", Sym("block")),
+		))
+
+		// ---------------------------------------------------------------
 		// Wire into Go: extend _top_level_declaration and _statement
 		// ---------------------------------------------------------------
 		AppendChoice(g, "_top_level_declaration",
@@ -378,6 +435,12 @@ func DanmujiGrammar() *Grammar {
 			Sym("no_leaks_directive"),
 			Sym("fake_clock_directive"),
 			Sym("snapshot_block"),
+			Sym("each_do_block"),
+			Sym("matrix_block"),
+			Sym("defaults_block"),
+			Sym("scenario_entry"),
+			Sym("scenario_field"),
+			Sym("matrix_field"),
 		)
 
 		// ---------------------------------------------------------------
@@ -410,6 +473,12 @@ func DanmujiGrammar() *Grammar {
 		AddConflict(g, "_statement", "no_leaks_directive")
 		AddConflict(g, "_statement", "fake_clock_directive")
 		AddConflict(g, "_statement", "snapshot_block")
+		AddConflict(g, "_statement", "each_do_block")
+		AddConflict(g, "_statement", "matrix_block")
+		AddConflict(g, "_statement", "defaults_block")
+		AddConflict(g, "_statement", "scenario_entry")
+		AddConflict(g, "_statement", "scenario_field")
+		AddConflict(g, "_statement", "matrix_field")
 
 		g.EnableLRSplitting = true
 	})
