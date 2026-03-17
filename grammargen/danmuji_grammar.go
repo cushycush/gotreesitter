@@ -136,11 +136,14 @@ func DanmujiGrammar() *Grammar {
 				Field("body", Sym("block")),
 			))
 
-		// spy_declaration: "spy" identifier
+		// spy_declaration: "spy" identifier [block]
+		// With a body, methods use mock_method syntax inside the block.
+		// The spy wraps a real implementation, delegates all calls, and records them.
 		g.Define("spy_declaration",
 			Seq(
 				Str("spy"),
 				Field("name", Sym("identifier")),
+				Optional(Field("body", Sym("block"))),
 			))
 
 		// ---------------------------------------------------------------
@@ -329,6 +332,16 @@ func DanmujiGrammar() *Grammar {
 		))
 
 		// ---------------------------------------------------------------
+		// Snapshot testing: capture output and compare against golden file
+		// ---------------------------------------------------------------
+		g.Define("snapshot_block",
+			Seq(
+				Str("snapshot"),
+				Field("name", Sym("_string_literal")),
+				Sym("block"),
+			))
+
+		// ---------------------------------------------------------------
 		// Wire into Go: extend _top_level_declaration and _statement
 		// ---------------------------------------------------------------
 		AppendChoice(g, "_top_level_declaration",
@@ -364,6 +377,7 @@ func DanmujiGrammar() *Grammar {
 			Sym("profile_block"),
 			Sym("no_leaks_directive"),
 			Sym("fake_clock_directive"),
+			Sym("snapshot_block"),
 		)
 
 		// ---------------------------------------------------------------
@@ -395,6 +409,7 @@ func DanmujiGrammar() *Grammar {
 		AddConflict(g, "_statement", "profile_block")
 		AddConflict(g, "_statement", "no_leaks_directive")
 		AddConflict(g, "_statement", "fake_clock_directive")
+		AddConflict(g, "_statement", "snapshot_block")
 
 		g.EnableLRSplitting = true
 	})

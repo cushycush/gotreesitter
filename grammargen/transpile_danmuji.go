@@ -117,6 +117,14 @@ func (t *dmjTranspiler) collectTopLevel(n *gotreesitter.Node) {
 		t.collectedMockStarts[n.StartByte()] = true
 		return
 	}
+	if nt == "spy_declaration" {
+		decl := t.buildSpyDecl(n)
+		if decl != "" {
+			t.mockDecls = append(t.mockDecls, decl)
+			t.collectedMockStarts[n.StartByte()] = true
+		}
+		return
+	}
 	if nt == "fake_clock_directive" && !t.fakeClockTypeCollected {
 		// Pre-collect the Clock interface and fakeClock struct for package-level emission.
 		t.fakeClockTypeCollected = true
@@ -242,7 +250,13 @@ func (t *dmjTranspiler) emit(n *gotreesitter.Node) string {
 		}
 		return t.text(n)
 	case "spy_declaration":
+		// Already collected at package level — emit a blank.
+		if t.collectedMockStarts[n.StartByte()] {
+			return ""
+		}
 		return t.emitSpy(n)
+	case "snapshot_block":
+		return t.emitSnapshot(n)
 	case "table_declaration":
 		return t.emitTable(n)
 	case "each_row_block":
@@ -1367,7 +1381,26 @@ func (t *dmjTranspiler) findFakeMethods(n *gotreesitter.Node, out *[]fakeMethodI
 }
 
 // ---------------------------------------------------------------------------
-// spy_declaration → placeholder comment
+// spy_declaration → struct wrapping real implementation with call recording
+//
+// A spy has an `inner` field that delegates to the real implementation.
+// Each method records calls and args, then passes through to inner.
+// Uses mock_method syntax inside the body (same as mock_declaration).
+//
+// spy EventBus {
+//     Publish(topic string, data interface{})
+//     Subscribe(topic string) -> chan interface{}
+// }
+//
+// Generates:
+//   type spyEventBus struct {
+//       inner          EventBus
+//       PublishCalls   int
+//       PublishArgs    [][]interface{}
+//       SubscribeCalls int
+//       SubscribeArgs  [][]interface{}
+//   }
+//   func (s *spyEventBus) Publish(topic string, data interface{}) { ... }
 // ---------------------------------------------------------------------------
 
 func (t *dmjTranspiler) emitSpy(n *gotreesitter.Node) string {
@@ -1376,7 +1409,140 @@ func (t *dmjTranspiler) emitSpy(n *gotreesitter.Node) string {
 	if nameNode != nil {
 		name = t.text(nameNode)
 	}
-	return fmt.Sprintf("// TODO: spy for %s — wrap real implementation with call recording", name)
+
+	// If no body, emit a placeholder comment (backwards compatible).
+	bodyNode := t.childByField(n, "body")
+	if bodyNode == nil {
+		return fmt.Sprintf("// TODO: spy for %s — wrap real implementation with call recording", name)
+	}
+
+	// With a body, the struct is emitted at package level via buildSpyDecl.
+	// This inline call should not happen if collectTopLevel did its job.
+	return ""
+}
+
+// buildSpyDecl generates the Go struct type + methods string for a spy_declaration
+// with a body. The result is emitted at package level.
+func (t *dmjTranspiler) buildSpyDecl(n *gotreesitter.Node) string {
+	nameNode := t.childByField(n, "name")
+	if nameNode == nil {
+		return ""
+	}
+	spyName := t.text(nameNode)
+	structName := "spy" + spyName
+
+	bodyNode := t.childByField(n, "body")
+	if bodyNode == nil {
+		// No body — emit a TODO placeholder. Not collected at package level.
+		return ""
+	}
+
+	// Reuse findMockMethods to parse method signatures from the body.
+	var methods []mockMethodInfo
+	t.findMockMethods(n, &methods)
+
+	var b strings.Builder
+
+	// Struct with inner field + call counters + args slices
+	fmt.Fprintf(&b, "type %s struct {\n", structName)
+	fmt.Fprintf(&b, "\tinner %s\n", spyName)
+	for _, m := range methods {
+		fmt.Fprintf(&b, "\t%sCalls int\n", m.name)
+		fmt.Fprintf(&b, "\t%sArgs [][]interface{}\n", m.name)
+	}
+	fmt.Fprintf(&b, "}\n\n")
+
+	// Methods: record call, record args, delegate to inner
+	for _, m := range methods {
+		// Parse parameter names from the params string, e.g. "(topic string, data interface{})"
+		paramNames := extractParamNames(m.params)
+
+		fmt.Fprintf(&b, "func (s *%s) %s%s", structName, m.name, m.params)
+		if m.returnType != "" {
+			fmt.Fprintf(&b, " %s", m.returnType)
+		}
+		fmt.Fprintf(&b, " {\n")
+
+		// Record call count
+		fmt.Fprintf(&b, "\ts.%sCalls++\n", m.name)
+
+		// Record args
+		argsSlice := "[]interface{}{"
+		for i, pn := range paramNames {
+			if i > 0 {
+				argsSlice += ", "
+			}
+			argsSlice += pn
+		}
+		argsSlice += "}"
+		fmt.Fprintf(&b, "\ts.%sArgs = append(s.%sArgs, %s)\n", m.name, m.name, argsSlice)
+
+		// Delegate to inner
+		callArgs := strings.Join(paramNames, ", ")
+		if m.returnType != "" {
+			fmt.Fprintf(&b, "\treturn s.inner.%s(%s)\n", m.name, callArgs)
+		} else {
+			fmt.Fprintf(&b, "\ts.inner.%s(%s)\n", m.name, callArgs)
+		}
+
+		fmt.Fprintf(&b, "}\n\n")
+	}
+
+	return b.String()
+}
+
+// extractParamNames parses a Go parameter list string like "(topic string, data interface{})"
+// and returns the parameter names: ["topic", "data"].
+func extractParamNames(params string) []string {
+	// Strip outer parens
+	inner := strings.TrimSpace(params)
+	if strings.HasPrefix(inner, "(") {
+		inner = inner[1:]
+	}
+	if strings.HasSuffix(inner, ")") {
+		inner = inner[:len(inner)-1]
+	}
+	inner = strings.TrimSpace(inner)
+	if inner == "" {
+		return nil
+	}
+
+	// Split on commas, but respect nested braces/parens for interface{} etc.
+	var names []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(inner); i++ {
+		switch inner[i] {
+		case '(', '{':
+			depth++
+		case ')', '}':
+			depth--
+		case ',':
+			if depth == 0 {
+				names = append(names, extractSingleParamName(inner[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	names = append(names, extractSingleParamName(inner[start:]))
+
+	return names
+}
+
+// extractSingleParamName extracts the parameter name from a single param like "topic string".
+func extractSingleParamName(param string) string {
+	param = strings.TrimSpace(param)
+	// Variadic: "args ...interface{}" → "args..."
+	if idx := strings.Index(param, "..."); idx > 0 {
+		name := strings.TrimSpace(param[:idx])
+		return name + "..."
+	}
+	// Normal: "topic string" → "topic"
+	parts := strings.Fields(param)
+	if len(parts) >= 1 {
+		return parts[0]
+	}
+	return param
 }
 
 // ---------------------------------------------------------------------------
@@ -1522,4 +1688,122 @@ func (t *dmjTranspiler) emitFakeClock(n *gotreesitter.Node) string {
 	}
 
 	return b.String()
+}
+
+// ---------------------------------------------------------------------------
+// snapshot_block → t.Run with golden file comparison
+//
+// snapshot "valid_response" { body }
+//
+// The body is executed, and the last expression is captured as the snapshot value.
+// The value is compared against a golden file at testdata/snapshots/<name>.golden.
+// Set DANMUJI_UPDATE_SNAPSHOTS=1 to update golden files.
+// ---------------------------------------------------------------------------
+
+func (t *dmjTranspiler) emitSnapshot(n *gotreesitter.Node) string {
+	t.addImport("path/filepath")
+	t.addImport("os")
+	t.addImport("fmt")
+	t.addImport("github.com/stretchr/testify/assert")
+
+	nameNode := t.childByField(n, "name")
+	snapshotName := "snapshot"
+	if nameNode != nil {
+		snapshotName = strings.Trim(t.text(nameNode), "\"'`")
+	}
+
+	// Walk the block children. Separate setup statements from the last expression
+	// which becomes the snapshot value.
+	var blockNode *gotreesitter.Node
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		c := n.NamedChild(i)
+		if t.nodeType(c) == "block" {
+			blockNode = c
+			break
+		}
+	}
+	if blockNode == nil {
+		return t.text(n)
+	}
+
+	// Collect all named children from the block's statement_list.
+	var stmts []*gotreesitter.Node
+	t.walkChildren(blockNode, func(child *gotreesitter.Node) {
+		stmts = append(stmts, child)
+	})
+
+	// The last statement that looks like an expression is the snapshot value.
+	// Everything before it is setup code.
+	var setupStmts []*gotreesitter.Node
+	snapshotExpr := ""
+
+	if len(stmts) > 0 {
+		last := stmts[len(stmts)-1]
+		lastType := t.nodeType(last)
+		// expression_statement wraps standalone expressions in Go grammar
+		if lastType == "expression_statement" || isExpressionNode(lastType) {
+			setupStmts = stmts[:len(stmts)-1]
+			snapshotExpr = t.emit(last)
+		} else {
+			// All statements are setup; snapshot the empty string
+			setupStmts = stmts
+			snapshotExpr = `""`
+		}
+	}
+
+	var b strings.Builder
+	tv := t.testVar
+	fmt.Fprintf(&b, "%s.Run(\"snapshot_%s\", func(%s *testing.T) {\n", tv, snapshotName, tv)
+
+	// Emit setup statements
+	for _, s := range setupStmts {
+		fmt.Fprintf(&b, "\t%s\n", t.emit(s))
+	}
+
+	// Capture snapshot value
+	fmt.Fprintf(&b, "\t_snapshotValue := fmt.Sprintf(\"%%v\", %s)\n", snapshotExpr)
+	fmt.Fprintf(&b, "\n")
+
+	// Golden file path
+	fmt.Fprintf(&b, "\t_goldenPath := filepath.Join(\"testdata\", \"snapshots\", %q)\n", snapshotName+".golden")
+	fmt.Fprintf(&b, "\n")
+
+	// Update mode
+	fmt.Fprintf(&b, "\tif os.Getenv(\"DANMUJI_UPDATE_SNAPSHOTS\") != \"\" {\n")
+	fmt.Fprintf(&b, "\t\tos.MkdirAll(filepath.Dir(_goldenPath), 0755)\n")
+	fmt.Fprintf(&b, "\t\tos.WriteFile(_goldenPath, []byte(_snapshotValue), 0644)\n")
+	fmt.Fprintf(&b, "\t\t%s.Logf(\"snapshot updated: %%s\", _goldenPath)\n", tv)
+	fmt.Fprintf(&b, "\t\treturn\n")
+	fmt.Fprintf(&b, "\t}\n")
+	fmt.Fprintf(&b, "\n")
+
+	// Read and compare
+	fmt.Fprintf(&b, "\t_expected, err := os.ReadFile(_goldenPath)\n")
+	fmt.Fprintf(&b, "\tif err != nil {\n")
+	fmt.Fprintf(&b, "\t\tos.MkdirAll(filepath.Dir(_goldenPath), 0755)\n")
+	fmt.Fprintf(&b, "\t\tos.WriteFile(_goldenPath, []byte(_snapshotValue), 0644)\n")
+	fmt.Fprintf(&b, "\t\t%s.Logf(\"snapshot created: %%s (run again to verify)\", _goldenPath)\n", tv)
+	fmt.Fprintf(&b, "\t\treturn\n")
+	fmt.Fprintf(&b, "\t}\n")
+	fmt.Fprintf(&b, "\n")
+
+	// Assert equality
+	fmt.Fprintf(&b, "\tassert.Equal(%s, string(_expected), _snapshotValue, \"snapshot mismatch for %%s\\nRun with DANMUJI_UPDATE_SNAPSHOTS=1 to update\", %q)\n", tv, snapshotName)
+
+	fmt.Fprintf(&b, "})")
+
+	return b.String()
+}
+
+// isExpressionNode returns true if the node type is an expression-like node.
+func isExpressionNode(nodeType string) bool {
+	switch nodeType {
+	case "call_expression", "selector_expression", "index_expression",
+		"unary_expression", "binary_expression", "identifier",
+		"int_literal", "float_literal", "interpreted_string_literal",
+		"raw_string_literal", "rune_literal", "composite_literal",
+		"func_literal", "parenthesized_expression", "true", "false", "nil":
+		return true
+	}
+	return false
 }

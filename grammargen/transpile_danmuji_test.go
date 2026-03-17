@@ -663,3 +663,172 @@ func TestTranspileDanmujiFullStack(t *testing.T) {
 		t.Error("expected BenchmarkStringOperations in test output")
 	}
 }
+
+func TestTranspileDanmujiSnapshot(t *testing.T) {
+	source := []byte(`package snap_test
+
+import "testing"
+
+unit "API output" {
+	snapshot "valid_response" {
+		resp := getResponse()
+		resp.Body
+	}
+}
+`)
+
+	goCode, err := TranspileDanmuji(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Transpiled Go:\n%s", goCode)
+
+	// Structural checks for snapshot testing pattern
+	if !strings.Contains(goCode, "testdata") || !strings.Contains(goCode, "snapshots") {
+		t.Error("expected testdata/snapshots path in output")
+	}
+	if !strings.Contains(goCode, "DANMUJI_UPDATE_SNAPSHOTS") {
+		t.Error("expected DANMUJI_UPDATE_SNAPSHOTS env var check")
+	}
+	if !strings.Contains(goCode, "assert.Equal") {
+		t.Error("expected assert.Equal for snapshot comparison")
+	}
+	if !strings.Contains(goCode, "_snapshotValue") {
+		t.Error("expected _snapshotValue variable")
+	}
+	if !strings.Contains(goCode, "_goldenPath") {
+		t.Error("expected _goldenPath variable")
+	}
+	if !strings.Contains(goCode, "snapshot_valid_response") {
+		t.Error("expected snapshot_valid_response subtest name")
+	}
+	if !strings.Contains(goCode, `"path/filepath"`) {
+		t.Error("expected path/filepath import")
+	}
+	if !strings.Contains(goCode, `"os"`) {
+		t.Error("expected os import")
+	}
+}
+
+func TestTranspileDanmujiSpyReal(t *testing.T) {
+	source := []byte(`package spy_test
+
+import "testing"
+
+unit "with spy" {
+	spy EventBus {
+		Publish(topic string)
+		Subscribe(topic string) -> error = nil
+	}
+	bus := &spyEventBus{}
+	bus.Publish("events")
+	then "publish was called" {
+		expect bus.PublishCalls == 1
+	}
+}
+`)
+
+	goCode, err := TranspileDanmuji(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Transpiled Go:\n%s", goCode)
+
+	// Structural checks for spy
+	if !strings.Contains(goCode, "spyEventBus struct") {
+		t.Error("expected spyEventBus struct definition")
+	}
+	if !strings.Contains(goCode, "inner") {
+		t.Error("expected inner field for delegation")
+	}
+	if !strings.Contains(goCode, "PublishCalls") {
+		t.Error("expected PublishCalls counter")
+	}
+	if !strings.Contains(goCode, "PublishArgs") {
+		t.Error("expected PublishArgs recording")
+	}
+	if !strings.Contains(goCode, "SubscribeCalls") {
+		t.Error("expected SubscribeCalls counter")
+	}
+	if !strings.Contains(goCode, ".inner.") {
+		t.Error("expected .inner. delegation call")
+	}
+}
+
+func TestTranspileDanmujiSpyNoBody(t *testing.T) {
+	source := []byte(`package spy_test
+
+import "testing"
+
+unit "spy placeholder" {
+	spy Logger
+	then "has placeholder" {
+		expect true
+	}
+}
+`)
+
+	goCode, err := TranspileDanmuji(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Transpiled Go:\n%s", goCode)
+
+	// Without a body, spy should emit a TODO comment
+	if !strings.Contains(goCode, "// TODO: spy for Logger") {
+		t.Error("expected TODO placeholder for bodyless spy")
+	}
+}
+
+func TestTranspileDanmujiTableCompile(t *testing.T) {
+	source := []byte(`package table_test
+
+import "testing"
+
+unit "addition" {
+	table cases {
+		| 1 | 2 | 3 |
+		| 0 | 0 | 0 |
+		| 100 | 200 | 300 |
+	}
+	each row in cases {
+		then "adds correctly" {
+			expect true
+		}
+	}
+}
+`)
+
+	goCode, err := TranspileDanmuji(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Transpiled Go:\n%s", goCode)
+
+	// Compile and run
+	tmpDir := t.TempDir()
+	os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module testmod\n\ngo 1.21\n"), 0644)
+	os.WriteFile(filepath.Join(tmpDir, "table_test.go"), []byte(goCode), 0644)
+
+	getCmd := exec.Command("go", "get", "github.com/stretchr/testify@latest")
+	getCmd.Dir = tmpDir
+	if out, err := getCmd.CombinedOutput(); err != nil {
+		t.Fatalf("go get testify failed: %v\n%s", err, out)
+	}
+	tidyCmd := exec.Command("go", "mod", "tidy")
+	tidyCmd.Dir = tmpDir
+	if out, err := tidyCmd.CombinedOutput(); err != nil {
+		t.Fatalf("go mod tidy failed: %v\n%s", err, out)
+	}
+
+	runCmd := exec.Command("go", "test", "-v", "./...")
+	runCmd.Dir = tmpDir
+	out, err := runCmd.CombinedOutput()
+	t.Logf("go test output:\n%s", string(out))
+	if err != nil {
+		t.Fatalf("go test failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "PASS") {
+		t.Error("expected PASS in test output")
+	}
+}

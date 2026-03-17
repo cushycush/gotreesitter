@@ -412,3 +412,63 @@ func f() {
 		t.Errorf("unexpected ERROR: %s", sexp)
 	}
 }
+
+// TestDanmujiSnapshotBlock tests snapshot block parsing.
+func TestDanmujiSnapshotBlock(t *testing.T) {
+	input := `package main
+func f() {
+	snapshot "valid_response" {
+		resp := getResponse()
+		resp.Body
+	}
+}
+`
+	sexp := parseDanmuji(t, input)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "snapshot_block") {
+		t.Error("expected snapshot_block node")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("unexpected ERROR: %s", sexp)
+	}
+}
+
+// TestDanmujiSpyWithBody tests spy declaration with a method body.
+func TestDanmujiSpyWithBody(t *testing.T) {
+	input := `package main
+func f() {
+	spy EventBus {
+		Publish(topic string)
+		Subscribe(topic string) -> error = nil
+	}
+}
+`
+	sexp := parseDanmuji(t, input)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "spy_declaration") {
+		t.Error("expected spy_declaration node")
+	}
+	if !strings.Contains(sexp, "mock_method") {
+		t.Error("expected mock_method nodes inside spy body")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("unexpected ERROR: %s", sexp)
+	}
+}
+
+// TestDanmujiSpyWithoutBody tests that spy without body still parses.
+func TestDanmujiSpyWithoutBody(t *testing.T) {
+	input := `package main
+func f() {
+	spy Logger
+}
+`
+	sexp := parseDanmuji(t, input)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "spy_declaration") {
+		t.Error("expected spy_declaration node")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("unexpected ERROR: %s", sexp)
+	}
+}
