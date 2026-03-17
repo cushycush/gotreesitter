@@ -356,6 +356,42 @@ func f() {
 	}
 }
 
+// TestDanmujiNoLeaks tests no_leaks directive parsing.
+func TestDanmujiNoLeaks(t *testing.T) {
+	input := `package main
+func f() {
+    no_leaks
+}
+`
+	sexp := parseDanmuji(t, input)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "no_leaks_directive") {
+		t.Error("expected no_leaks_directive node")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("unexpected ERROR: %s", sexp)
+	}
+}
+
+// TestDanmujiFakeClock tests fake_clock directive parsing.
+func TestDanmujiFakeClock(t *testing.T) {
+	input := `package main
+func f() {
+    fake_clock at "2026-03-17T00:00:00Z"
+    fake_clock at "2026-03-17T09:00:00Z" in "America/New_York"
+    fake_clock
+}
+`
+	sexp := parseDanmuji(t, input)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "fake_clock_directive") {
+		t.Error("expected fake_clock_directive node")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("unexpected ERROR: %s", sexp)
+	}
+}
+
 // TestDanmujiExecBlock tests exec block with run command parsing.
 func TestDanmujiExecBlock(t *testing.T) {
 	input := `package main

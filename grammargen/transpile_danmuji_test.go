@@ -480,6 +480,118 @@ unit "table driven" {
 	}
 }
 
+func TestTranspileDanmujiNoLeaks(t *testing.T) {
+	source := []byte(`package noleak_test
+
+import "testing"
+
+unit "no leaks" {
+	no_leaks
+	then "clean exit" {
+		expect true
+	}
+}
+`)
+	goCode, err := TranspileDanmuji(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Transpiled Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "runtime.NumGoroutine") {
+		t.Error("expected runtime.NumGoroutine in output")
+	}
+	if !strings.Contains(goCode, "goroutine leak") {
+		t.Error("expected goroutine leak message in output")
+	}
+}
+
+func TestTranspileDanmujiFakeClock(t *testing.T) {
+	source := []byte(`package clock_test
+
+import "testing"
+
+unit "scheduler" {
+	fake_clock at "2026-03-17T09:00:00Z" in "America/New_York"
+	then "correct timezone" {
+		expect clock.Now().Location().String() == "America/New_York"
+	}
+}
+`)
+	goCode, err := TranspileDanmuji(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Transpiled Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "fakeClock") {
+		t.Error("expected fakeClock in output")
+	}
+	if !strings.Contains(goCode, "time.LoadLocation") {
+		t.Error("expected time.LoadLocation in output")
+	}
+	if !strings.Contains(goCode, "America/New_York") {
+		t.Error("expected America/New_York in output")
+	}
+	if !strings.Contains(goCode, "time.ParseInLocation") {
+		t.Error("expected time.ParseInLocation in output")
+	}
+}
+
+func TestTranspileDanmujiFakeClockCompile(t *testing.T) {
+	source := []byte(`package main_test
+
+import (
+	"testing"
+	"time"
+)
+
+unit "time travel" {
+	fake_clock at "2026-01-01T00:00:00Z"
+	then "starts at midnight" {
+		expect clock.Now().Year() == 2026
+		expect clock.Now().Month() == time.January
+	}
+	then "can advance" {
+		clock.Advance(24 * time.Hour)
+		expect clock.Now().Day() == 2
+	}
+}
+`)
+	goCode, err := TranspileDanmuji(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Transpiled Go:\n%s", goCode)
+
+	tmpDir := t.TempDir()
+	os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module testmod\n\ngo 1.21\n"), 0644)
+	os.WriteFile(filepath.Join(tmpDir, "main_test.go"), []byte(goCode), 0644)
+
+	getCmd := exec.Command("go", "get", "github.com/stretchr/testify@latest")
+	getCmd.Dir = tmpDir
+	if out, err := getCmd.CombinedOutput(); err != nil {
+		t.Fatalf("go get testify failed: %v\n%s", err, out)
+	}
+	tidyCmd := exec.Command("go", "mod", "tidy")
+	tidyCmd.Dir = tmpDir
+	if out, err := tidyCmd.CombinedOutput(); err != nil {
+		t.Fatalf("go mod tidy failed: %v\n%s", err, out)
+	}
+
+	runCmd := exec.Command("go", "test", "-v", "./...")
+	runCmd.Dir = tmpDir
+	out, err := runCmd.CombinedOutput()
+	t.Logf("go test output:\n%s", string(out))
+	if err != nil {
+		t.Fatalf("go test failed: %v\n%s", err, out)
+	}
+
+	if !strings.Contains(string(out), "PASS") {
+		t.Error("expected PASS in test output")
+	}
+}
+
 func TestTranspileDanmujiFullStack(t *testing.T) {
 	source, err := os.ReadFile("testdata/full_stack.dmj")
 	if err != nil {

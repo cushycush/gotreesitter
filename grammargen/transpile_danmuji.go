@@ -3,6 +3,7 @@ package grammargen
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -71,6 +72,10 @@ type dmjTranspiler struct {
 	neededImports map[string]bool
 	// Whether we are inside an exec block (for special identifier translation).
 	inExecBlock bool
+	// Whether the Clock interface/fakeClock struct has been collected for package-level emission.
+	fakeClockTypeCollected bool
+	// Package-level type definitions for fake clock (emitted before test function).
+	fakeClockTypeDecl string
 }
 
 // addImport records a package path that should be injected into the import block.
@@ -111,6 +116,66 @@ func (t *dmjTranspiler) collectTopLevel(n *gotreesitter.Node) {
 		t.mockDecls = append(t.mockDecls, t.buildFakeDecl(n))
 		t.collectedMockStarts[n.StartByte()] = true
 		return
+	}
+	if nt == "fake_clock_directive" && !t.fakeClockTypeCollected {
+		// Pre-collect the Clock interface and fakeClock struct for package-level emission.
+		t.fakeClockTypeCollected = true
+		t.addImport("time")
+		t.addImport("sync")
+		t.fakeClockTypeDecl = `// Clock interface for time abstraction
+type Clock interface {
+	Now() time.Time
+	Since(t time.Time) time.Duration
+	Until(t time.Time) time.Duration
+	After(d time.Duration) <-chan time.Time
+	NewTicker(d time.Duration) *time.Ticker
+}
+
+type fakeClock struct {
+	mu      sync.Mutex
+	current time.Time
+	loc     *time.Location
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.loc != nil {
+		return c.current.In(c.loc)
+	}
+	return c.current
+}
+
+func (c *fakeClock) Since(t time.Time) time.Duration { return c.Now().Sub(t) }
+func (c *fakeClock) Until(t time.Time) time.Duration { return t.Sub(c.Now()) }
+func (c *fakeClock) After(d time.Duration) <-chan time.Time {
+	ch := make(chan time.Time, 1)
+	ch <- c.Now().Add(d)
+	return ch
+}
+func (c *fakeClock) NewTicker(d time.Duration) *time.Ticker { return time.NewTicker(d) }
+
+func (c *fakeClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.current = c.current.Add(d)
+}
+
+func (c *fakeClock) Set(t time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.current = t
+}
+
+func (c *fakeClock) SetLocation(loc *time.Location) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.loc = loc
+}
+
+`
+		t.mockDecls = append(t.mockDecls, t.fakeClockTypeDecl)
+		// Don't return — continue recursion to find nested mocks
 	}
 	for i := 0; i < int(n.ChildCount()); i++ {
 		t.collectTopLevel(n.Child(i))
@@ -182,6 +247,10 @@ func (t *dmjTranspiler) emit(n *gotreesitter.Node) string {
 		return t.emitTable(n)
 	case "each_row_block":
 		return t.emitEachRow(n)
+	case "no_leaks_directive":
+		return t.emitNoLeaks(n)
+	case "fake_clock_directive":
+		return t.emitFakeClock(n)
 	default:
 		return t.emitDefault(n)
 	}
@@ -942,10 +1011,18 @@ func (t *dmjTranspiler) injectImports(code string) string {
 		return code
 	}
 
-	// Build sorted list of import paths for deterministic output.
+	// Build sorted list of import paths for deterministic output,
+	// filtering out packages that are already imported in the source.
 	var imports []string
 	for pkg := range t.neededImports {
-		imports = append(imports, fmt.Sprintf("%q", pkg))
+		quoted := fmt.Sprintf("%q", pkg)
+		if strings.Contains(code, quoted) {
+			continue // already imported
+		}
+		imports = append(imports, quoted)
+	}
+	if len(imports) == 0 {
+		return code
 	}
 	// Sort for deterministic output
 	sortImports(imports)
@@ -1393,6 +1470,56 @@ func (t *dmjTranspiler) emitEachRow(n *gotreesitter.Node) string {
 
 	fmt.Fprintf(&b, "\t})\n")
 	b.WriteString("}\n")
+
+	return b.String()
+}
+
+// ---------------------------------------------------------------------------
+// no_leaks_directive → goroutine leak detection via t.Cleanup
+// ---------------------------------------------------------------------------
+
+func (t *dmjTranspiler) emitNoLeaks(n *gotreesitter.Node) string {
+	t.addImport("runtime")
+	t.addImport("time")
+	return fmt.Sprintf(`_goroutinesBefore := runtime.NumGoroutine()
+%s.Cleanup(func() {
+    time.Sleep(100 * time.Millisecond)
+    runtime.GC()
+    if _delta := runtime.NumGoroutine() - _goroutinesBefore; _delta > 0 {
+        %s.Errorf("goroutine leak: %%d new goroutines still running", _delta)
+    }
+})`, t.testVar, t.testVar)
+}
+
+// ---------------------------------------------------------------------------
+// fake_clock_directive → Clock interface + fakeClock struct + initialization
+// ---------------------------------------------------------------------------
+
+func (t *dmjTranspiler) emitFakeClock(n *gotreesitter.Node) string {
+	t.addImport("time")
+	t.addImport("sync")
+
+	startTime := t.childByField(n, "start_time")
+	timezone := t.childByField(n, "timezone")
+
+	// The Clock interface and fakeClock struct are collected during the first
+	// pass (collectTopLevel) and emitted at package level. Here we only
+	// generate the clock variable initialization (inline in the test function).
+	var b strings.Builder
+	if startTime != nil {
+		timeStr := strings.Trim(t.text(startTime), `"`)
+		if timezone != nil {
+			tz := strings.Trim(t.text(timezone), `"`)
+			b.WriteString(fmt.Sprintf("_loc, _ := time.LoadLocation(%s)\n", strconv.Quote(tz)))
+			b.WriteString(fmt.Sprintf("_startTime, _ := time.ParseInLocation(time.RFC3339, %s, _loc)\n", strconv.Quote(timeStr)))
+			b.WriteString("clock := &fakeClock{current: _startTime, loc: _loc}\n")
+		} else {
+			b.WriteString(fmt.Sprintf("_startTime, _ := time.Parse(time.RFC3339, %s)\n", strconv.Quote(timeStr)))
+			b.WriteString("clock := &fakeClock{current: _startTime}\n")
+		}
+	} else {
+		b.WriteString("clock := &fakeClock{current: time.Now()}\n")
+	}
 
 	return b.String()
 }

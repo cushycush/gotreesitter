@@ -301,6 +301,34 @@ func DanmujiGrammar() *Grammar {
 		))
 
 		// ---------------------------------------------------------------
+		// no_leaks directive: goroutine leak detection
+		// ---------------------------------------------------------------
+		g.Define("no_leaks_directive", Str("no_leaks"))
+
+		// ---------------------------------------------------------------
+		// fake_clock directive: time abstraction for tests
+		// Three forms:
+		//   fake_clock at "time" in "tz"
+		//   fake_clock at "time"
+		//   fake_clock
+		// ---------------------------------------------------------------
+		g.Define("fake_clock_directive", Choice(
+			PrecDynamic(10, Seq(
+				Str("fake_clock"),
+				Str("at"),
+				Field("start_time", Sym("_string_literal")),
+				Str("in"),
+				Field("timezone", Sym("_string_literal")),
+			)),
+			PrecDynamic(10, Seq(
+				Str("fake_clock"),
+				Str("at"),
+				Field("start_time", Sym("_string_literal")),
+			)),
+			PrecDynamic(10, Str("fake_clock")),
+		))
+
+		// ---------------------------------------------------------------
 		// Wire into Go: extend _top_level_declaration and _statement
 		// ---------------------------------------------------------------
 		AppendChoice(g, "_top_level_declaration",
@@ -334,6 +362,8 @@ func DanmujiGrammar() *Grammar {
 			Sym("load_config"),
 			Sym("target_block"),
 			Sym("profile_block"),
+			Sym("no_leaks_directive"),
+			Sym("fake_clock_directive"),
 		)
 
 		// ---------------------------------------------------------------
@@ -363,6 +393,8 @@ func DanmujiGrammar() *Grammar {
 		AddConflict(g, "_statement", "load_config")
 		AddConflict(g, "_statement", "target_block")
 		AddConflict(g, "_statement", "profile_block")
+		AddConflict(g, "_statement", "no_leaks_directive")
+		AddConflict(g, "_statement", "fake_clock_directive")
 
 		g.EnableLRSplitting = true
 	})
