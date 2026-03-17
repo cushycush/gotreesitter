@@ -301,3 +301,29 @@ func ExtendGrammar(name string, base *Grammar, customize func(g *Grammar)) *Gram
 }
 
 // cloneRule is defined in regex.go — reused here for grammar composition.
+
+// AppendChoice appends new alternatives to an existing Choice rule.
+// If the named rule is already a Choice, the new alternatives are appended
+// to its children. Otherwise the existing rule and the new alternatives are
+// wrapped in a new Choice.
+func AppendChoice(g *Grammar, ruleName string, newAlts ...*Rule) {
+	existing, ok := g.Rules[ruleName]
+	if !ok {
+		// Rule doesn't exist yet — define it as a choice of the new alternatives.
+		g.Define(ruleName, Choice(newAlts...))
+		return
+	}
+	if existing.Kind == RuleChoice {
+		existing.Children = append(existing.Children, newAlts...)
+	} else {
+		all := make([]*Rule, 0, 1+len(newAlts))
+		all = append(all, existing)
+		all = append(all, newAlts...)
+		g.Rules[ruleName] = Choice(all...)
+	}
+}
+
+// AddConflict adds a GLR conflict group to the grammar.
+func AddConflict(g *Grammar, symbols ...string) {
+	g.Conflicts = append(g.Conflicts, symbols)
+}
