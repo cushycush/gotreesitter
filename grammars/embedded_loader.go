@@ -367,6 +367,28 @@ func AdaptScannerForLanguage(name string, targetLang *gotreesitter.Language) boo
 	return true
 }
 
+// LoadLanguageFromBlob decodes a gzip+gob binary grammar blob (the same format
+// produced by grammargen.Generate and used by embedded grammars) into a Language.
+// This is the runtime counterpart of grammargen.Generate — it takes the compiled
+// binary and returns a ready-to-use Language without any grammar compilation.
+func LoadLanguageFromBlob(data []byte) (*gotreesitter.Language, error) {
+	gzr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("open gzip grammar blob: %w", err)
+	}
+	defer gzr.Close()
+
+	dec := gob.NewDecoder(gzr)
+	var lang gotreesitter.Language
+	if err := dec.Decode(&lang); err != nil {
+		return nil, fmt.Errorf("decode grammar blob: %w", err)
+	}
+
+	compactDecodedLanguage(&lang)
+	repairNoLookaheadLexModes(&lang)
+	return &lang, nil
+}
+
 func decodeEmbeddedLanguage(blobName string) (*gotreesitter.Language, error) {
 	blob, err := readGrammarBlob(blobName)
 	if err != nil {
