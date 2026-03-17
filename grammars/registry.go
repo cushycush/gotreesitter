@@ -18,12 +18,14 @@ type LangEntry struct {
 	Shebangs           []string                      // e.g. ["#!/usr/bin/env python"]
 	Language           func() *gotreesitter.Language // lazy loader
 	HighlightQuery     string
+	InheritHighlights  string                                                                 // language name to inherit highlight queries from (e.g. "javascript" for TypeScript)
 	TagsQuery          string                                                                 // tree-sitter tags.scm query for symbol extraction
 	TokenSourceFactory func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource // nil = use DFA
 	Quality            ParseQuality                                                           // populated by AuditParseSupport
 }
 
 var registry []LangEntry
+var highlightInheritanceResolved bool
 
 // Register adds a language to the registry.
 func Register(entry LangEntry) {
@@ -34,6 +36,29 @@ func Register(entry LangEntry) {
 		entry.TokenSourceFactory = defaultTokenSourceFactory(entry.Name)
 	}
 	registry = append(registry, entry)
+	highlightInheritanceResolved = false
+}
+
+// resolveHighlightInheritance composes highlight queries for languages that
+// inherit from a parent. Called lazily on first access.
+func resolveHighlightInheritance() {
+	if highlightInheritanceResolved {
+		return
+	}
+	highlightInheritanceResolved = true
+	for i := range registry {
+		parent := registry[i].InheritHighlights
+		if parent == "" {
+			continue
+		}
+		for j := range registry {
+			if registry[j].Name == parent {
+				// Prepend parent query so child overrides win (last match wins in tree-sitter).
+				registry[i].HighlightQuery = registry[j].HighlightQuery + "\n" + registry[i].HighlightQuery
+				break
+			}
+		}
+	}
 }
 
 // DetectLanguage returns the LangEntry for a filename, or nil if unknown.
@@ -42,6 +67,7 @@ func Register(entry LangEntry) {
 // suffix matching so that e.g. ".tmux.conf" resolves to bash rather than
 // matching the generic ".conf" extension.
 func DetectLanguage(filename string) *LangEntry {
+	resolveHighlightInheritance()
 	// 1. Exact filename match (e.g., "Makefile", "Dockerfile", ".bashrc",
 	//    "nginx.conf"). Most specific, so checked first.
 	base := path.Base(filename)
@@ -133,6 +159,7 @@ func extractInterpreter(line string) string {
 // Languages that lack an explicit TagsQuery will have an empty TagsQuery
 // field; call [ResolveTagsQuery] when you actually need the inferred query.
 func AllLanguages() []LangEntry {
+	resolveHighlightInheritance()
 	out := make([]LangEntry, len(registry))
 	copy(out, registry)
 	return out
@@ -151,6 +178,7 @@ func ResolveTagsQuery(entry LangEntry) string {
 
 // lookupByName returns the LangEntry with the given grammar name, or nil.
 func lookupByName(name string) *LangEntry {
+	resolveHighlightInheritance()
 	for i := range registry {
 		if registry[i].Name == name {
 			return &registry[i]
