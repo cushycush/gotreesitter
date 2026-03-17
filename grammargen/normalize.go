@@ -2412,6 +2412,7 @@ func flattenHiddenChoiceAlts(g *Grammar) *Grammar {
 	out.Word = g.Word
 	out.Supertypes = g.Supertypes
 	out.Inline = g.Inline
+	out.NonKeywordStrings = g.NonKeywordStrings
 	return out
 }
 
@@ -2754,6 +2755,7 @@ func expandInlineRules(g *Grammar) *Grammar {
 	}
 	out.Word = g.Word
 	out.Supertypes = g.Supertypes
+	out.NonKeywordStrings = g.NonKeywordStrings
 	// Don't propagate Inline — they've been expanded.
 
 	return out

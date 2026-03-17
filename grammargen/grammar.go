@@ -55,8 +55,9 @@ type Grammar struct {
 	Word              string
 	Supertypes        []string
 	Tests             []TestCase // embedded test cases
-	EnableLRSplitting bool       // opt-in: attempt LR(1) state splitting for merge pathology
-	BinaryRepeatMode  bool       // use tree-sitter's binary repeat helper shape (aux→seq(aux,aux)|inner)
+	EnableLRSplitting   bool       // opt-in: attempt LR(1) state splitting for merge pathology
+	BinaryRepeatMode    bool       // use tree-sitter's binary repeat helper shape (aux→seq(aux,aux)|inner)
+	NonKeywordStrings   map[string]bool // strings that should NOT be promoted via keyword DFA (extension keywords that coexist as identifiers)
 }
 
 // NewGrammar creates a new grammar with the given name.
