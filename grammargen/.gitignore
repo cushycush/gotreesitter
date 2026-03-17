@@ -1,4 +1,2 @@
-dingo_*.go
-transpile_dingo*.go
 emit_grammar_go*.go
 go_grammar*.go
