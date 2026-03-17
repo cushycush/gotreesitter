@@ -53,19 +53,19 @@ func buildLexDFA(patterns []TerminalPattern, extraSymbols []int, skipExtras map[
 			return nil, nil, err
 		}
 
-		// Convert NFA to DFA via subset construction.
-		dfa := subsetConstruction(combined)
-
-		// Prune transitions from immediate-accepting DFA states that can
-		// only reach non-immediate (catch-all) patterns. This prevents
-		// greedy patterns like [^\r\n]+ from defeating immediate tokens
-		// like "-", "---", "+", "+++" in diff-style grammars.
+		// Build immediate symbol set for this mode.
 		immediateSyms := make(map[int]bool)
 		for _, p := range modePatterns {
 			if p.Immediate {
 				immediateSyms[p.SymbolID] = true
 			}
 		}
+
+		// Convert NFA to DFA via subset construction. Pass immediateSyms
+		// so the accept logic prefers non-immediate tokens over immediate
+		// ones when both accept in the same DFA state.
+		dfa := subsetConstruction(combined, immediateSyms)
+
 		if len(immediateSyms) > 0 {
 			pruneImmediateTransitions(dfa, immediateSyms)
 		}
@@ -244,7 +244,7 @@ func hashIntSlice(vals []int) uint64 {
 }
 
 // subsetConstruction converts an NFA to a DFA using the subset construction algorithm.
-func subsetConstruction(n *nfa) []dfaState {
+func subsetConstruction(n *nfa, _ ...map[int]bool) []dfaState {
 	scratch := newDFASubsetScratch(len(n.states))
 
 	// Compute epsilon closure of start state.
@@ -706,6 +706,59 @@ func pruneImmediateTransitions(dfa []dfaState, immediateSyms map[int]bool) {
 // terminalPatternSymSet returns the set of symbol IDs that have DFA terminal
 // patterns. Used to distinguish dual-role external tokens (which have both a
 // scanner entry and a DFA pattern) from pure-external tokens.
+// patternImmediateTokenSet returns symbol IDs of immediate tokens that are
+// PATTERN-based (catch-all regex patterns like [^@:\s\$]+). String-based
+// IMMTOKENs like ":", "=", "mount" are excluded — they're legitimate tokens
+// even after whitespace.
+func patternImmediateTokenSet(ng *NormalizedGrammar) map[int]bool {
+	m := make(map[int]bool)
+	for _, t := range ng.Terminals {
+		if !t.Immediate {
+			continue
+		}
+		// A terminal is pattern-based if its rule is a RulePattern or contains
+		// patterns (via RuleSeq/RuleChoice wrapping patterns).
+		if ruleContainsPattern(t.Rule) && !isStringOnlyRule(t.Rule) {
+			m[t.SymbolID] = true
+		}
+	}
+	return m
+}
+
+func ruleContainsPattern(r *Rule) bool {
+	if r == nil {
+		return false
+	}
+	if r.Kind == RulePattern {
+		return true
+	}
+	for _, c := range r.Children {
+		if ruleContainsPattern(c) {
+			return true
+		}
+	}
+	return false
+}
+
+func isStringOnlyRule(r *Rule) bool {
+	if r == nil {
+		return false
+	}
+	switch r.Kind {
+	case RuleString:
+		return true
+	case RuleSeq, RuleChoice:
+		for _, c := range r.Children {
+			if !isStringOnlyRule(c) {
+				return false
+			}
+		}
+		return len(r.Children) > 0
+	default:
+		return false
+	}
+}
+
 func terminalPatternSymSet(ng *NormalizedGrammar) map[int]bool {
 	m := make(map[int]bool, len(ng.Terminals))
 	for _, t := range ng.Terminals {
@@ -727,6 +780,7 @@ func computeLexModes(
 	keywordSymbols map[int]bool,
 	terminalPatternSyms map[int]bool, // symbols that have DFA terminal patterns
 	followTokens func(state int) []int, // additional tokens from reduce-follow expansion (may be nil)
+	patternImmediateTokens map[int]bool, // immediate tokens that are PATTERN-based (catch-all)
 ) ([]lexModeSpec, []int, []afterWSModeEntry) {
 	extraSet := make(map[int]bool)
 	hasTerminalExtras := false
@@ -862,7 +916,10 @@ func computeLexModes(
 			if hasNonImmString {
 				awsSyms := make(map[int]bool)
 				for sym := range validSyms {
-					if !immediateTokens[sym] {
+					// Only exclude pattern-based immediate tokens (catch-alls).
+					// String-based IMMTOKENs like ":", "=", "}" are kept
+					// because they're legitimate after whitespace.
+					if !patternImmediateTokens[sym] {
 						awsSyms[sym] = true
 					}
 				}
