@@ -479,3 +479,75 @@ unit "table driven" {
 		t.Error("expected sumsRow struct type")
 	}
 }
+
+func TestTranspileDanmujiFullStack(t *testing.T) {
+	source, err := os.ReadFile("testdata/full_stack.dmj")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	goCode, err := TranspileDanmuji(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Transpiled Go:\n%s", goCode)
+
+	// Structural checks
+	if !strings.Contains(goCode, "func TestUserService(t *testing.T)") {
+		t.Error("expected TestUserService function")
+	}
+	if !strings.Contains(goCode, "func BenchmarkStringOperations(b *testing.B)") {
+		t.Error("expected BenchmarkStringOperations function")
+	}
+	if !strings.Contains(goCode, "type mockUserRepo struct") {
+		t.Error("expected mockUserRepo struct")
+	}
+	if !strings.Contains(goCode, "assert.Equal") {
+		t.Error("expected assert.Equal call")
+	}
+	if !strings.Contains(goCode, "t.Run(") {
+		t.Error("expected t.Run calls for BDD nesting")
+	}
+	if !strings.Contains(goCode, "t.Cleanup(") {
+		t.Error("expected t.Cleanup from after each hook")
+	}
+	if !strings.Contains(goCode, "b.ReportAllocs()") {
+		t.Error("expected b.ReportAllocs() in benchmark")
+	}
+
+	// Compile and run
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module testmod\n\ngo 1.21\n"), 0644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "full_test.go"), []byte(goCode), 0644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+
+	// Add testify dependency and tidy
+	getCmd := exec.Command("go", "get", "github.com/stretchr/testify@latest")
+	getCmd.Dir = tmpDir
+	if out, err := getCmd.CombinedOutput(); err != nil {
+		t.Fatalf("go get testify: %v\n%s", err, out)
+	}
+	tidyCmd := exec.Command("go", "mod", "tidy")
+	tidyCmd.Dir = tmpDir
+	if out, err := tidyCmd.CombinedOutput(); err != nil {
+		t.Fatalf("go mod tidy: %v\n%s", err, out)
+	}
+
+	cmd := exec.Command("go", "test", "-v", "-bench=.", "-benchtime=1x", "./...")
+	cmd.Dir = tmpDir
+	out, err := cmd.CombinedOutput()
+	t.Logf("go test output:\n%s", string(out))
+	if err != nil {
+		t.Fatalf("go test failed: %v\n%s", err, out)
+	}
+
+	if !strings.Contains(string(out), "PASS") {
+		t.Error("expected PASS in test output")
+	}
+	if !strings.Contains(string(out), "BenchmarkStringOperations") {
+		t.Error("expected BenchmarkStringOperations in test output")
+	}
+}
