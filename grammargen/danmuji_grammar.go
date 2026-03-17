@@ -282,6 +282,25 @@ func DanmujiGrammar() *Grammar {
 		))
 
 		// ---------------------------------------------------------------
+		// Profiling blocks
+		// ---------------------------------------------------------------
+		g.Define("profile_type", Choice(
+			Str("cpu"), Str("mem"), Str("allocs"),
+			Str("routines"), Str("blockprofile"), Str("mutexprofile"),
+		))
+
+		g.Define("profile_directive", Choice(
+			Seq(Str("show"), Str("top"), Sym("int_literal")),
+			Seq(Str("save"), Sym("_string_literal")),
+		))
+
+		g.Define("profile_block", Seq(
+			Str("profile"),
+			Field("type", Sym("profile_type")),
+			Optional(Sym("block")),
+		))
+
+		// ---------------------------------------------------------------
 		// Wire into Go: extend _top_level_declaration and _statement
 		// ---------------------------------------------------------------
 		AppendChoice(g, "_top_level_declaration",
@@ -314,6 +333,7 @@ func DanmujiGrammar() *Grammar {
 			Sym("run_command"),
 			Sym("load_config"),
 			Sym("target_block"),
+			Sym("profile_block"),
 		)
 
 		// ---------------------------------------------------------------
@@ -342,6 +362,7 @@ func DanmujiGrammar() *Grammar {
 		AddConflict(g, "_statement", "run_command")
 		AddConflict(g, "_statement", "load_config")
 		AddConflict(g, "_statement", "target_block")
+		AddConflict(g, "_statement", "profile_block")
 
 		g.EnableLRSplitting = true
 	})

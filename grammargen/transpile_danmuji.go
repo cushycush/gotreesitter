@@ -107,6 +107,11 @@ func (t *dmjTranspiler) collectTopLevel(n *gotreesitter.Node) {
 		t.collectedMockStarts[n.StartByte()] = true
 		return
 	}
+	if nt == "fake_declaration" {
+		t.mockDecls = append(t.mockDecls, t.buildFakeDecl(n))
+		t.collectedMockStarts[n.StartByte()] = true
+		return
+	}
 	for i := 0; i < int(n.ChildCount()); i++ {
 		t.collectTopLevel(n.Child(i))
 	}
@@ -149,11 +154,35 @@ func (t *dmjTranspiler) emit(n *gotreesitter.Node) string {
 		return "" // handled by emitLoad
 	case "target_block":
 		return "" // handled by emitLoad
+	case "benchmark_block":
+		return t.emitBenchmark(n)
+	case "setup_block":
+		return "" // handled by emitBenchmark
+	case "measure_block":
+		return "" // handled by emitBenchmark
+	case "parallel_measure_block":
+		return "" // handled by emitBenchmark
+	case "report_directive":
+		return "" // handled by emitBenchmark
 	case "exec_block":
 		return t.emitExec(n)
 	case "run_command":
 		return "" // handled by emitExec
-		default:
+	case "profile_block":
+		return t.emitProfile(n)
+	case "fake_declaration":
+		// Already collected at package level — emit a blank.
+		if t.collectedMockStarts[n.StartByte()] {
+			return ""
+		}
+		return t.text(n)
+	case "spy_declaration":
+		return t.emitSpy(n)
+	case "table_declaration":
+		return t.emitTable(n)
+	case "each_row_block":
+		return t.emitEachRow(n)
+	default:
 		return t.emitDefault(n)
 	}
 }
@@ -286,6 +315,153 @@ func (t *dmjTranspiler) emitTestBlock(n *gotreesitter.Node) string {
 	b.WriteString("\n")
 
 	return b.String()
+}
+
+// ---------------------------------------------------------------------------
+// benchmark_block → func BenchmarkXxx(b *testing.B)
+// ---------------------------------------------------------------------------
+
+func (t *dmjTranspiler) emitBenchmark(n *gotreesitter.Node) string {
+	// Save and set testVar for benchmark context
+	oldTestVar := t.testVar
+	t.testVar = "b"
+	defer func() { t.testVar = oldTestVar }()
+
+	// Extract name
+	nameNode := t.childByField(n, "name")
+	name := "Benchmark"
+	if nameNode != nil {
+		name = sanitizeTestName(t.text(nameNode))
+	}
+
+	// Walk the body block's children for setup_block, measure_block,
+	// parallel_measure_block, report_directive, then_block
+	bodyNode := t.childByField(n, "body")
+	if bodyNode == nil {
+		return t.text(n)
+	}
+
+	var setupBlocks []*gotreesitter.Node
+	var measureBlocks []*gotreesitter.Node
+	var parallelMeasureBlocks []*gotreesitter.Node
+	hasReportAllocs := false
+	var thenBlocks []*gotreesitter.Node
+
+	t.walkChildren(bodyNode, func(child *gotreesitter.Node) {
+		switch t.nodeType(child) {
+		case "setup_block":
+			setupBlocks = append(setupBlocks, child)
+		case "measure_block":
+			measureBlocks = append(measureBlocks, child)
+		case "parallel_measure_block":
+			parallelMeasureBlocks = append(parallelMeasureBlocks, child)
+		case "report_directive":
+			hasReportAllocs = true
+		case "then_block":
+			thenBlocks = append(thenBlocks, child)
+		}
+	})
+
+	var b strings.Builder
+
+	// Emit any collected mock declarations before the function
+	if len(t.mockDecls) > 0 {
+		for _, md := range t.mockDecls {
+			b.WriteString(md)
+		}
+		t.mockDecls = nil
+	}
+
+	// Function signature
+	fmt.Fprintf(&b, "func Benchmark%s(b *testing.B) {\n", name)
+
+	// Emit setup code
+	for _, sb := range setupBlocks {
+		b.WriteString(t.emitBlockContents(sb))
+	}
+
+	// Report allocs
+	if hasReportAllocs {
+		fmt.Fprintf(&b, "\tb.ReportAllocs()\n")
+	}
+
+	// Reset timer after setup
+	if len(setupBlocks) > 0 || hasReportAllocs {
+		fmt.Fprintf(&b, "\tb.ResetTimer()\n")
+	}
+
+	// Emit parallel measure blocks
+	if len(parallelMeasureBlocks) > 0 {
+		for _, pmb := range parallelMeasureBlocks {
+			fmt.Fprintf(&b, "\tb.RunParallel(func(pb *testing.PB) {\n")
+			fmt.Fprintf(&b, "\t\tfor pb.Next() {\n")
+			b.WriteString(t.emitBlockContentsIndented(pmb, "\t\t\t"))
+			fmt.Fprintf(&b, "\t\t}\n")
+			fmt.Fprintf(&b, "\t})\n")
+		}
+	}
+
+	// Emit measure blocks
+	if len(measureBlocks) > 0 {
+		for _, mb := range measureBlocks {
+			fmt.Fprintf(&b, "\tfor i := 0; i < b.N; i++ {\n")
+			b.WriteString(t.emitBlockContentsIndented(mb, "\t\t"))
+			fmt.Fprintf(&b, "\t}\n")
+		}
+	}
+
+	// Emit then blocks
+	for _, tb := range thenBlocks {
+		b.WriteString("\t")
+		b.WriteString(t.emitBDDBlock(tb, "then"))
+		b.WriteString("\n")
+	}
+
+	fmt.Fprintf(&b, "}\n")
+
+	return b.String()
+}
+
+// emitBlockContents extracts the inner content of a *_block node (which has
+// a Sym("block") child) and emits it with one tab indent.
+func (t *dmjTranspiler) emitBlockContents(n *gotreesitter.Node) string {
+	// Find the block child
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		c := n.NamedChild(i)
+		if t.nodeType(c) == "block" {
+			return t.emitBlockInner(c, "\t")
+		}
+	}
+	return ""
+}
+
+// emitBlockContentsIndented extracts and emits block inner content with a given indent.
+func (t *dmjTranspiler) emitBlockContentsIndented(n *gotreesitter.Node, indent string) string {
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		c := n.NamedChild(i)
+		if t.nodeType(c) == "block" {
+			return t.emitBlockInner(c, indent)
+		}
+	}
+	return ""
+}
+
+// emitBlockInner emits the inner contents of a block node (statement_list children),
+// with each statement at the given indent level.
+func (t *dmjTranspiler) emitBlockInner(blockNode *gotreesitter.Node, indent string) string {
+	var b strings.Builder
+	// Find statement_list inside the block
+	for i := 0; i < int(blockNode.NamedChildCount()); i++ {
+		c := blockNode.NamedChild(i)
+		if t.nodeType(c) == "statement_list" {
+			for j := 0; j < int(c.NamedChildCount()); j++ {
+				stmt := c.NamedChild(j)
+				fmt.Fprintf(&b, "%s%s\n", indent, t.emit(stmt))
+			}
+			return b.String()
+		}
+	}
+	return ""
 }
 
 // ---------------------------------------------------------------------------
@@ -969,4 +1145,254 @@ func (t *dmjTranspiler) translateExecIdent(ident string) string {
 	default:
 		return ident
 	}
+}
+
+// ---------------------------------------------------------------------------
+// profile_block → runtime profiling instrumentation
+// ---------------------------------------------------------------------------
+
+func (t *dmjTranspiler) emitProfile(n *gotreesitter.Node) string {
+	// Extract profile_type from children
+	profileType := ""
+	for i := 0; i < int(n.ChildCount()); i++ {
+		c := n.Child(i)
+		if t.nodeType(c) == "profile_type" {
+			profileType = t.text(c)
+			break
+		}
+	}
+
+	var b strings.Builder
+	switch profileType {
+	case "routines":
+		t.addImport("runtime")
+		t.addImport("time")
+		b.WriteString("_goroutinesBefore := runtime.NumGoroutine()\n")
+		b.WriteString("defer func() {\n")
+		b.WriteString("\truntime.GC()\n")
+		b.WriteString("\ttime.Sleep(100 * time.Millisecond)\n")
+		b.WriteString("\t_goroutinesAfter := runtime.NumGoroutine()\n")
+		b.WriteString("\t_goroutineDelta := _goroutinesAfter - _goroutinesBefore\n")
+		b.WriteString("\t_ = _goroutineDelta // available for assertions\n")
+		b.WriteString("}()\n")
+	case "cpu":
+		t.addImport("runtime/pprof")
+		t.addImport("os")
+		b.WriteString("_cpuProfFile, _cpuProfErr := os.CreateTemp(\"\", \"cpu_profile_*.prof\")\n")
+		b.WriteString("if _cpuProfErr == nil {\n")
+		b.WriteString("\tpprof.StartCPUProfile(_cpuProfFile)\n")
+		b.WriteString("\tdefer func() {\n")
+		b.WriteString("\t\tpprof.StopCPUProfile()\n")
+		b.WriteString("\t\t_cpuProfFile.Close()\n")
+		b.WriteString("\t}()\n")
+		b.WriteString("}\n")
+	case "mem":
+		t.addImport("runtime")
+		t.addImport("runtime/pprof")
+		t.addImport("os")
+		b.WriteString("defer func() {\n")
+		b.WriteString("\truntime.GC()\n")
+		b.WriteString("\t_memProfFile, _memProfErr := os.CreateTemp(\"\", \"mem_profile_*.prof\")\n")
+		b.WriteString("\tif _memProfErr == nil {\n")
+		b.WriteString("\t\tpprof.WriteHeapProfile(_memProfFile)\n")
+		b.WriteString("\t\t_memProfFile.Close()\n")
+		b.WriteString("\t}\n")
+		b.WriteString("}()\n")
+	case "allocs":
+		t.addImport("runtime")
+		b.WriteString("var _memStatsBefore runtime.MemStats\n")
+		b.WriteString("runtime.ReadMemStats(&_memStatsBefore)\n")
+		b.WriteString("defer func() {\n")
+		b.WriteString("\tvar _memStatsAfter runtime.MemStats\n")
+		b.WriteString("\truntime.ReadMemStats(&_memStatsAfter)\n")
+		b.WriteString("\t_allocsDelta := _memStatsAfter.TotalAlloc - _memStatsBefore.TotalAlloc\n")
+		b.WriteString("\t_ = _allocsDelta // available for assertions\n")
+		b.WriteString("}()\n")
+	case "blockprofile":
+		t.addImport("runtime")
+		b.WriteString("runtime.SetBlockProfileRate(1)\n")
+		b.WriteString("defer runtime.SetBlockProfileRate(0)\n")
+	case "mutexprofile":
+		t.addImport("runtime")
+		b.WriteString("runtime.SetMutexProfileFraction(1)\n")
+		b.WriteString("defer runtime.SetMutexProfileFraction(0)\n")
+	default:
+		b.WriteString(fmt.Sprintf("// unsupported profile type: %s\n", profileType))
+	}
+	return b.String()
+}
+
+// ---------------------------------------------------------------------------
+// fake_declaration → struct with real method bodies (package-level)
+// ---------------------------------------------------------------------------
+
+type fakeMethodInfo struct {
+	name       string
+	params     string
+	returnType string
+	bodyText   string
+}
+
+func (t *dmjTranspiler) parseFakeMethod(n *gotreesitter.Node) fakeMethodInfo {
+	info := fakeMethodInfo{}
+	if name := t.childByField(n, "name"); name != nil {
+		info.name = t.text(name)
+	}
+	if params := t.childByField(n, "parameters"); params != nil {
+		info.params = t.text(params)
+	}
+	if ret := t.childByField(n, "return_type"); ret != nil {
+		info.returnType = t.text(ret)
+	}
+	if body := t.childByField(n, "body"); body != nil {
+		info.bodyText = t.emitTestBody(body)
+	}
+	return info
+}
+
+func (t *dmjTranspiler) buildFakeDecl(n *gotreesitter.Node) string {
+	nameNode := t.childByField(n, "name")
+	if nameNode == nil {
+		return t.text(n)
+	}
+	fakeName := t.text(nameNode)
+	structName := "fake" + fakeName
+
+	var methods []fakeMethodInfo
+	t.findFakeMethods(n, &methods)
+
+	var b strings.Builder
+
+	// Struct definition
+	fmt.Fprintf(&b, "type %s struct{}\n\n", structName)
+
+	// Methods with real bodies
+	for _, m := range methods {
+		fmt.Fprintf(&b, "func (f *%s) %s%s", structName, m.name, m.params)
+		if m.returnType != "" {
+			fmt.Fprintf(&b, " %s", m.returnType)
+		}
+		fmt.Fprintf(&b, " %s\n\n", m.bodyText)
+	}
+
+	return b.String()
+}
+
+func (t *dmjTranspiler) findFakeMethods(n *gotreesitter.Node, out *[]fakeMethodInfo) {
+	for i := 0; i < int(n.ChildCount()); i++ {
+		c := n.Child(i)
+		if t.nodeType(c) == "fake_method" {
+			*out = append(*out, t.parseFakeMethod(c))
+		} else {
+			t.findFakeMethods(c, out)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// spy_declaration → placeholder comment
+// ---------------------------------------------------------------------------
+
+func (t *dmjTranspiler) emitSpy(n *gotreesitter.Node) string {
+	nameNode := t.childByField(n, "name")
+	name := "Unknown"
+	if nameNode != nil {
+		name = t.text(nameNode)
+	}
+	return fmt.Sprintf("// TODO: spy for %s — wrap real implementation with call recording", name)
+}
+
+// ---------------------------------------------------------------------------
+// table_declaration → Go slice literal of anonymous struct rows
+// ---------------------------------------------------------------------------
+
+func (t *dmjTranspiler) emitTable(n *gotreesitter.Node) string {
+	t.addImport("fmt")
+	nameNode := t.childByField(n, "name")
+	tableName := "cases"
+	if nameNode != nil {
+		tableName = t.text(nameNode)
+	}
+
+	// Collect table rows
+	var rows [][]string
+	maxCols := 0
+	for i := 0; i < int(n.ChildCount()); i++ {
+		c := n.Child(i)
+		if t.nodeType(c) == "table_row" {
+			var cells []string
+			for j := 0; j < int(c.NamedChildCount()); j++ {
+				cell := c.NamedChild(j)
+				cells = append(cells, t.emit(cell))
+			}
+			if len(cells) > maxCols {
+				maxCols = len(cells)
+			}
+			rows = append(rows, cells)
+		}
+	}
+
+	var b strings.Builder
+
+	// Build struct field names
+	var fields []string
+	for i := 0; i < maxCols; i++ {
+		fields = append(fields, fmt.Sprintf("col%d", i))
+	}
+
+	// Emit type and slice
+	fmt.Fprintf(&b, "type %sRow struct { ", tableName)
+	for i, f := range fields {
+		if i > 0 {
+			b.WriteString("; ")
+		}
+		fmt.Fprintf(&b, "%s interface{}", f)
+	}
+	b.WriteString(" }\n")
+	fmt.Fprintf(&b, "%s := []%sRow{\n", tableName, tableName)
+	for _, row := range rows {
+		b.WriteString("\t{")
+		for i, cell := range row {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(cell)
+		}
+		b.WriteString("},\n")
+	}
+	b.WriteString("}\n")
+	fmt.Fprintf(&b, "_ = %s\n", tableName)
+
+	return b.String()
+}
+
+// ---------------------------------------------------------------------------
+// each_row_block → for range iteration over table
+// ---------------------------------------------------------------------------
+
+func (t *dmjTranspiler) emitEachRow(n *gotreesitter.Node) string {
+	t.addImport("fmt")
+	tableNode := t.childByField(n, "table")
+	tableName := "cases"
+	if tableNode != nil {
+		tableName = t.text(tableNode)
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "for _, row := range %s {\n", tableName)
+	fmt.Fprintf(&b, "\t%s.Run(fmt.Sprintf(\"row_%%v\", row), func(%s *testing.T) {\n", t.testVar, t.testVar)
+
+	// Find and emit the block body
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		c := n.NamedChild(i)
+		if t.nodeType(c) == "block" {
+			b.WriteString(t.emitBlockInner(c, "\t\t"))
+			break
+		}
+	}
+
+	fmt.Fprintf(&b, "\t})\n")
+	b.WriteString("}\n")
+
+	return b.String()
 }

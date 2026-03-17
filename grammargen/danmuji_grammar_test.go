@@ -339,6 +339,23 @@ load "checkout" {
 	}
 }
 
+// TestDanmujiProfileBlock tests profile block parsing.
+func TestDanmujiProfileBlock(t *testing.T) {
+	input := `package main
+func f() {
+	profile routines {}
+}
+`
+	sexp := parseDanmuji(t, input)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "profile_block") {
+		t.Error("expected profile_block node")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("unexpected ERROR: %s", sexp)
+	}
+}
+
 // TestDanmujiExecBlock tests exec block with run command parsing.
 func TestDanmujiExecBlock(t *testing.T) {
 	input := `package main

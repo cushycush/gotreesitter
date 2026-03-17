@@ -330,3 +330,152 @@ unit "echo" {
 		t.Fatalf("go test failed: %v\n%s", err, out)
 	}
 }
+
+func TestTranspileDanmujiBenchmark(t *testing.T) {
+	source, err := os.ReadFile("testdata/benchmark.dmj")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	goCode, err := TranspileDanmuji(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Transpiled Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "func BenchmarkStringConcat(b *testing.B)") {
+		t.Error("expected BenchmarkStringConcat function")
+	}
+	if !strings.Contains(goCode, "b.ReportAllocs()") {
+		t.Error("expected b.ReportAllocs()")
+	}
+	if !strings.Contains(goCode, "b.ResetTimer()") {
+		t.Error("expected b.ResetTimer()")
+	}
+	if !strings.Contains(goCode, "for i := 0; i < b.N; i++") {
+		t.Error("expected b.N loop")
+	}
+}
+
+func TestTranspileDanmujiBenchmarkCompile(t *testing.T) {
+	source := []byte(`package bench_test
+
+import "testing"
+
+benchmark "addition" {
+	measure {
+		x := 1 + 2
+		_ = x
+	}
+}
+`)
+	goCode, err := TranspileDanmuji(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Transpiled Go:\n%s", goCode)
+
+	tmpDir := t.TempDir()
+	os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module testmod\n\ngo 1.21\n"), 0644)
+	os.WriteFile(filepath.Join(tmpDir, "bench_test.go"), []byte(goCode), 0644)
+
+	cmd := exec.Command("go", "test", "-bench=.", "-benchtime=1x", "-v", "./...")
+	cmd.Dir = tmpDir
+	out, err := cmd.CombinedOutput()
+	t.Logf("go test output:\n%s", string(out))
+	if err != nil {
+		t.Fatalf("go test failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "BenchmarkAddition") {
+		t.Error("expected BenchmarkAddition in output")
+	}
+}
+
+func TestTranspileDanmujiProfile(t *testing.T) {
+	source := []byte(`package prof_test
+
+import "testing"
+
+unit "goroutine check" {
+	profile routines {}
+	then "no leaks" {
+		expect true
+	}
+}
+`)
+	goCode, err := TranspileDanmuji(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Transpiled Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "runtime.NumGoroutine") {
+		t.Error("expected runtime.NumGoroutine in output")
+	}
+	if !strings.Contains(goCode, "_goroutinesBefore") {
+		t.Error("expected _goroutinesBefore variable")
+	}
+	if !strings.Contains(goCode, "defer func()") {
+		t.Error("expected deferred goroutine check")
+	}
+}
+
+func TestTranspileDanmujiFake(t *testing.T) {
+	source := []byte(`package fake_test
+
+import "testing"
+
+unit "with fake" {
+	fake Store {
+		Get(key string) -> string {
+			return "cached"
+		}
+	}
+	s := &fakeStore{}
+	then "returns cached" {
+		expect s.Get("x") == "cached"
+	}
+}
+`)
+	goCode, err := TranspileDanmuji(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Transpiled Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "fakeStore") {
+		t.Error("expected fakeStore struct in output")
+	}
+	if !strings.Contains(goCode, "type fakeStore struct{}") {
+		t.Error("expected fakeStore struct definition")
+	}
+}
+
+func TestTranspileDanmujiTable(t *testing.T) {
+	source := []byte(`package table_test
+
+import "testing"
+
+unit "table driven" {
+	table sums {
+		| 1 | 2 | 3 |
+		| 4 | 5 | 9 |
+	}
+	each row in sums {
+		expect true
+	}
+}
+`)
+	goCode, err := TranspileDanmuji(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Transpiled Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "range sums") {
+		t.Error("expected range iteration over table")
+	}
+	if !strings.Contains(goCode, "sumsRow") {
+		t.Error("expected sumsRow struct type")
+	}
+}
