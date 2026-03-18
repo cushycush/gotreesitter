@@ -674,7 +674,7 @@ func flattenNamedChildren(n *gotreesitter.Node, lang *gotreesitter.Language) []*
 			// to pull out their visible named children.
 			typeName := c.Type(lang)
 			isHiddenRule := strings.HasPrefix(typeName, "_")
-			if isHiddenRule && c.ChildCount() > 0 && !c.IsError() {
+			if (isHiddenRule || isTransparentVisibleWrapper(typeName)) && c.ChildCount() > 0 && !c.IsError() {
 				result = append(result, flattenNamedChildren(c, lang)...)
 			} else {
 				result = append(result, c)
@@ -755,7 +755,27 @@ func isBinaryExprValueMismatch(a, b string) bool {
 // type mismatch.
 func isUnwrappableWrapper(typeName string) bool {
 	switch typeName {
-	case "sequence_expression":
+	case "sequence_expression",
+		// TS: grammargen may wrap `keyof X & Y` as index_type_query(intersection_type)
+		// while tree-sitter C produces intersection_type directly. When the wrapper
+		// has one named child matching the ref type, unwrap it.
+		"index_type_query":
+		return true
+	}
+	return false
+}
+
+// isTransparentVisibleWrapper returns true for visible named node types that
+// grammargen may produce as wrappers around children that tree-sitter C keeps
+// flat. During flattening (flattenNamedChildren), these nodes are recursed
+// into so their children become siblings of the wrapper's own siblings.
+//
+// In TypeScript, grammargen may produce instantiation_expression to wrap
+// (expression, type_arguments) where tree-sitter C keeps them as separate
+// children of the parent node (e.g. extends_clause, call_expression).
+func isTransparentVisibleWrapper(typeName string) bool {
+	switch typeName {
+	case "instantiation_expression":
 		return true
 	}
 	return false
