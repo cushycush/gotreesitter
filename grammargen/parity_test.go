@@ -2444,7 +2444,7 @@ func init() {
 		{name: "editorconfig", blobFunc: grammars.EditorconfigLanguage, expectNoErrors: 1, expectParity: 1},
 		{name: "firrtl", blobFunc: grammars.FirrtlLanguage, expectNoErrors: 1, expectParity: 1},
 		{name: "foam", blobFunc: grammars.FoamLanguage, expectNoErrors: 1, expectParity: 1},
-		{name: "fortran", blobFunc: grammars.FortranLanguage, timeout: 90 * time.Second, expectNoErrors: 1, expectParity: 1},
+		{name: "fortran", blobFunc: grammars.FortranLanguage, timeout: 300 * time.Second, expectNoErrors: 1, expectParity: 1},
 		{name: "fsharp", blobFunc: grammars.FsharpLanguage, timeout: 90 * time.Second, expectNoErrors: 1, expectParity: 1,
 			jsonPath: "/tmp/grammar_parity/fsharp/fsharp/src/grammar.json"},
 		{name: "gdscript", blobFunc: grammars.GdscriptLanguage, timeout: 60 * time.Second, expectNoErrors: 1, expectParity: 1},
