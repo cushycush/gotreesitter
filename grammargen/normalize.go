@@ -1715,10 +1715,18 @@ func extractTerminals(g *Grammar, st *symbolTable, stringLits []string, namedTok
 		if entry.immediate {
 			if expanded.Kind == RuleString && hasLongerStringPrefixPattern(patterns, expanded.Value) {
 				// IMMTOKEN "#" has a longer non-immediate sibling "#)".
-				// Don't apply -10000; use same prec-based priority so greedy
+				// Don't apply bonus; use same prec-based priority so greedy
 				// picks the longer non-immediate string over this IMMTOKEN.
+			} else if !isStringOnlyRule(expanded) {
+				// Pattern-based IMMTOKEN (e.g. [^\n'] for char content):
+				// use a modest -500 bonus so it beats regular tokens (prio 0)
+				// but loses to tokens with explicit PREC(1) (prio -1000).
+				// This prevents broad catch-all IMMTOKENs from defeating
+				// more specific TOKEN(PREC(1,...)) patterns like escape_sequence.
+				adjustedPriority -= 500
 			} else {
-				// No longer sibling: IMMTOKEN gets -10000 bonus to beat
+				// String-based IMMTOKEN: use the full -10000 bonus.
+				// String IMMTOKENs are specific and should always beat
 				// non-immediate tokens sharing the same lex mode.
 				adjustedPriority -= 10000
 			}

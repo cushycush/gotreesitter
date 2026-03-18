@@ -153,6 +153,21 @@ func fixExtrasOverrideConflicts(dfa []dfaState, modePatterns []TerminalPattern, 
 		return dfa
 	}
 
+	// Build set of symbol IDs that must never be overridden to skip:
+	// 1. Immediate tokens (e.g. IMMTOKEN(\r?\n) at end of C #define)
+	// 2. String tokens (e.g. STRING("\n") in C preproc_if after condition)
+	// These are explicit grammar-authored tokens that share characters with
+	// extras patterns but must be preserved for the parser to shift them.
+	protectedSyms := make(map[int]bool)
+	for _, p := range modePatterns {
+		if p.Immediate {
+			protectedSyms[p.SymbolID] = true
+		}
+		if p.Rule != nil && p.Rule.Kind == RuleString {
+			protectedSyms[p.SymbolID] = true
+		}
+	}
+
 	// Find the skip extras pattern(s) and compute their first-char set.
 	skipSymID := 0
 	extrasFirstChars := make(map[rune]bool)
@@ -222,6 +237,15 @@ func fixExtrasOverrideConflicts(dfa []dfaState, modePatterns []TerminalPattern, 
 
 		target := &dfa[tr.nextState]
 		if target.accept <= 0 || target.skip {
+			continue
+		}
+
+		// Never override protected tokens (immediate or string) to skip.
+		// These are significant grammar tokens: immediate tokens like the
+		// terminating \r?\n in C preprocessor directives, or string tokens
+		// like "\n" in C preproc_if. They share characters with extras
+		// (\s matches \n) but must be preserved for the parser to shift.
+		if protectedSyms[target.accept] {
 			continue
 		}
 
@@ -795,6 +819,12 @@ func addWhitespaceSkip(state *gotreesitter.LexState) {
 // lexer matches an immediate token like "-", it can only continue to other
 // immediate tokens like "--" or "---", but never fall through to a catch-all
 // like "context". This function replicates that behavior in our combined DFA.
+//
+// Exception: transitions leading to non-immediate tokens with BETTER priority
+// than the current immediate accept are kept. This handles cases like C's
+// char_literal where the character IMMTOKEN [^\n'] (prio -500) accepts at '\'
+// but escape_sequence TOKEN(PREC(1,...)) (prio -1000) accepts at '\0'. The
+// escape_sequence has better priority and should be reachable.
 func pruneImmediateTransitions(dfa []dfaState, immediateSyms map[int]bool) {
 	n := len(dfa)
 	if n == 0 {
@@ -828,15 +858,48 @@ func pruneImmediateTransitions(dfa []dfaState, immediateSyms map[int]bool) {
 		}
 	}
 
+	// Step 1b: Compute bestReachablePriority[i] = lowest (best) accept
+	// priority reachable from state i. Used to preserve transitions to
+	// non-immediate tokens that have better priority than the current accept.
+	const maxPrio = int(^uint(0) >> 1) // max int
+	bestReachablePriority := make([]int, n)
+	for i := range bestReachablePriority {
+		bestReachablePriority[i] = maxPrio
+	}
+	for i, s := range dfa {
+		if s.accept > 0 && s.acceptPriority < bestReachablePriority[i] {
+			bestReachablePriority[i] = s.acceptPriority
+		}
+	}
+	// Propagate backwards.
+	for changed := true; changed; {
+		changed = false
+		for i, s := range dfa {
+			for _, t := range s.transitions {
+				if bestReachablePriority[t.nextState] < bestReachablePriority[i] {
+					bestReachablePriority[i] = bestReachablePriority[t.nextState]
+					changed = true
+				}
+			}
+		}
+	}
+
 	// Step 2: For each state that accepts an immediate token, keep only
-	// transitions whose targets can reach another immediate token accept.
+	// transitions whose targets can reach another immediate token accept
+	// OR can reach a non-immediate token with better priority.
 	for i := range dfa {
 		if dfa[i].accept == 0 || !immediateSyms[dfa[i].accept] {
 			continue
 		}
+		curPrio := dfa[i].acceptPriority
 		var kept []dfaTransition
 		for _, t := range dfa[i].transitions {
 			if canReachImmediate[t.nextState] {
+				kept = append(kept, t)
+			} else if bestReachablePriority[t.nextState] < curPrio {
+				// Keep transition to non-immediate token with better priority.
+				// This preserves paths like '\' (character IMMTOKEN prio -500)
+				// continuing to '\0' (escape_sequence TOKEN prio -1000).
 				kept = append(kept, t)
 			}
 		}
