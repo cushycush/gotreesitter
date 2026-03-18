@@ -790,7 +790,12 @@ func isUnwrappableWrapper(typeName string) bool {
 		// TS: grammargen may wrap `keyof X & Y` as index_type_query(intersection_type)
 		// while tree-sitter C produces intersection_type directly. When the wrapper
 		// has one named child matching the ref type, unwrap it.
-		"index_type_query":
+		"index_type_query",
+		// Haskell: grammargen routes `variable` through `pattern` CHOICE nonterminal
+		// (pattern = variable | constructor_pattern | ...) while tree-sitter C
+		// resolves directly to `variable`. When pattern has one named child
+		// matching the ref type, unwrap it.
+		"pattern":
 		return true
 	}
 	return false
