@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 for tags and release notes while still in `0.x`.
 
+## [Unreleased]
+
+### Added
+- `grammargen.GenerateLanguageAndBlob` and `GenerateLanguageAndBlobWithContext` to expose the compiled language and serialized blob from one generation pass without coupling callers to diagnostic reports.
+
 ## [0.7.3] - 2026-03-16
 
 ### Added

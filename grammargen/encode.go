@@ -29,6 +29,12 @@ func GenerateLanguage(g *Grammar) (*gotreesitter.Language, error) {
 	return GenerateLanguageWithContext(context.Background(), g)
 }
 
+// GenerateLanguageAndBlob compiles a Grammar into both a Language struct and
+// its serialized blob form in a single generation pass.
+func GenerateLanguageAndBlob(g *Grammar) (*gotreesitter.Language, []byte, error) {
+	return GenerateLanguageAndBlobWithContext(context.Background(), g)
+}
+
 // GenerateLanguageWithContext is like GenerateLanguage but accepts a context
 // for cancellation. When the context is cancelled, LR table construction and
 // DFA building abort promptly, allowing the caller to reclaim memory that
@@ -39,6 +45,19 @@ func GenerateLanguageWithContext(ctx context.Context, g *Grammar) (*gotreesitter
 		return nil, err
 	}
 	return report.Language, nil
+}
+
+// GenerateLanguageAndBlobWithContext is like GenerateLanguageAndBlob but
+// accepts a context for cancellation.
+func GenerateLanguageAndBlobWithContext(ctx context.Context, g *Grammar) (*gotreesitter.Language, []byte, error) {
+	report, err := generateWithReportCtx(ctx, g, reportBuildOptions{
+		includeLanguage: true,
+		includeBlob:     true,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return report.Language, report.Blob, nil
 }
 
 // allSymbolsSet returns a set containing all symbol IDs from the patterns.
