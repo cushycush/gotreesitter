@@ -547,26 +547,7 @@ func buildExternalLexStates(lang *gotreesitter.Language, tables *LRTables, ng *N
 		}
 	}
 
-	// Build production-position counterpart map for hidden external symbols.
-	// A hidden external symbol (name starts with "_") like _automatic_semicolon
-	// may share a production position with a non-external terminal like ";":
-	//   expression_statement → [expression, _automatic_semicolon]
-	//   expression_statement → [expression, ";"]
-	// In states where the external symbol has reduce-only actions identical to
-	// this counterpart, the external scanner need not fire — the reduce action
-	// is an LALR FOLLOW-set artifact. Suppressing prevents spurious zero-width
-	// tokens (e.g. ASI before "}" in JSX expressions).
-	extProdCp := make(map[int][]int) // external symID -> production-position counterpart symIDs
-	for _, symID := range ng.ExternalSymbols {
-		name := ng.Symbols[symID].Name
-		if name == "" || name[0] != '_' {
-			continue
-		}
-		prodAlts := findProductionAlternativeCounterparts(ng, symID, extSymSet, tokenCount)
-		if len(prodAlts) > 0 {
-			extProdCp[symID] = prodAlts
-		}
-	}
+
 
 	// Row 0: all-false (no external tokens valid).
 	rows := [][]bool{make([]bool, extCount)}
@@ -610,25 +591,6 @@ func buildExternalLexStates(lang *gotreesitter.Language, tables *LRTables, ng *N
 							if cpOk && len(cpActs) > 0 && actListsEqual(actionList, cpActs) {
 								suppressed = true
 								break
-							}
-						}
-					}
-					// For hidden external symbols with production-position
-					// counterparts: suppress when the external symbol has
-					// reduce-only actions matching the counterpart. These
-					// reduce entries are LALR FOLLOW-set contamination —
-					// the external scanner would produce a spurious
-					// zero-width token that triggers the same reduce as
-					// the DFA terminal, but at the wrong time (e.g. ASI
-					// before "}" inside a JSX expression).
-					if !suppressed && actionsAreReduceOnly(actionList) {
-						if cpSyms, hasCp := extProdCp[symID]; hasCp {
-							for _, cpSym := range cpSyms {
-								cpActs, cpOk := acts[cpSym]
-								if cpOk && len(cpActs) > 0 && actListsEqual(actionList, cpActs) {
-									suppressed = true
-									break
-								}
 							}
 						}
 					}
