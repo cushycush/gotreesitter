@@ -417,10 +417,13 @@ func TestWalkAndParseLargeFile(t *testing.T) {
 	policy.MaxConcurrent = 2
 	policy.ChannelBuffer = 3
 
+	var mu sync.Mutex
 	var largeFileSeen bool
 	policy.OnProgress = func(ev ProgressEvent) {
 		if ev.Phase == "large_file" {
+			mu.Lock()
 			largeFileSeen = true
+			mu.Unlock()
 		}
 	}
 
@@ -440,7 +443,10 @@ func TestWalkAndParseLargeFile(t *testing.T) {
 	if stats.LargeFiles < 1 {
 		t.Errorf("LargeFiles = %d, want >= 1", stats.LargeFiles)
 	}
-	if !largeFileSeen {
+	mu.Lock()
+	seenLargeFile := largeFileSeen
+	mu.Unlock()
+	if !seenLargeFile {
 		t.Error("OnProgress never received large_file event")
 	}
 }
@@ -457,9 +463,12 @@ func TestWalkAndParseProgress(t *testing.T) {
 	policy.MaxConcurrent = 1
 	policy.ChannelBuffer = 2
 
+	var mu sync.Mutex
 	phases := map[string]int{}
 	policy.OnProgress = func(ev ProgressEvent) {
+		mu.Lock()
 		phases[ev.Phase]++
+		mu.Unlock()
 	}
 
 	ch, statsFn := WalkAndParse(context.Background(), dir, policy)
@@ -468,8 +477,15 @@ func TestWalkAndParseProgress(t *testing.T) {
 	}
 	_ = statsFn()
 
+	mu.Lock()
+	phaseCounts := make(map[string]int, len(phases))
+	for phase, count := range phases {
+		phaseCounts[phase] = count
+	}
+	mu.Unlock()
+
 	for _, required := range []string{"walking", "parsing", "walk_complete", "done"} {
-		if phases[required] == 0 {
+		if phaseCounts[required] == 0 {
 			t.Errorf("missing progress phase: %s", required)
 		}
 	}

@@ -196,6 +196,7 @@ func buildParityCorpusDocs() []parityCorpusDoc {
 // TestParityCorpusFreshParse runs larger generated corpora through both
 // gotreesitter and the upstream C parser and compares tree structure.
 func TestParityCorpusFreshParse(t *testing.T) {
+	parityRequireExhaustive(t, "TestParityCorpusFreshParse")
 	docs := buildParityCorpusDocs()
 	if len(docs) == 0 {
 		t.Skip("no corpus docs selected")

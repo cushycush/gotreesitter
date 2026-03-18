@@ -773,7 +773,12 @@ func isNonSpanExtendingInvisibleSymbol(sym Symbol, symbolNames []string) bool {
 	if idx < 0 || idx >= len(symbolNames) {
 		return false
 	}
-	return false
+	switch symbolNames[idx] {
+	case "_line_ending_or_eof":
+		return true
+	default:
+		return false
+	}
 }
 
 const (

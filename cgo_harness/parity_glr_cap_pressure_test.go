@@ -98,6 +98,7 @@ func assertGLRCapPressureRuntime(t *testing.T, tc parityCase, src []byte, minWid
 // These cases are intentionally shaped to drive MaxStacksSeen well above the
 // grammar's conflict-width floor while still requiring exact C parity.
 func TestParityGLRCapPressureTopLanguages(t *testing.T) {
+	parityRequireExhaustive(t, "TestParityGLRCapPressureTopLanguages")
 	cases := []struct {
 		lang      string
 		name      string

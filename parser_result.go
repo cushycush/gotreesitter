@@ -1,6 +1,9 @@
 package gotreesitter
 
-import "bytes"
+import (
+	"bytes"
+	"strings"
+)
 
 // buildResultFromGLR picks the best stack and constructs the final tree.
 // Prefers accepted stacks, then highest score, then most entries. When
@@ -289,11 +292,12 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 
 	if len(nodes) == 1 {
 		candidate := nodes[0]
+		candidate = flattenInvisibleRootChildren(candidate, arena, p.language)
 		candidate = repairPythonRootNode(candidate, arena, p.language)
-		extendNodeToTrailingWhitespace(candidate, source)
-		p.normalizeRootSourceStart(candidate, source)
-		normalizeKnownSpanAttribution(candidate, source, p)
 		if !hasExpectedRoot || candidate.symbol == expectedRootSymbol {
+			extendNodeToTrailingWhitespace(candidate, source)
+			p.normalizeRootSourceStart(candidate, source)
+			normalizeKnownSpanAttribution(candidate, source, p)
 			if shouldWireParentLinks {
 				wireParentLinksWithScratch(candidate, linkScratch)
 			}
@@ -1188,8 +1192,8 @@ func normalizeCSizeofUnknownTypeIdentifiers(root *Node, source []byte, lang *Lan
 			if typeDescriptor != nil && typeDescriptor.symbol == typeDescriptorSym && len(typeDescriptor.children) == 1 {
 				typeIdent := typeDescriptor.children[0]
 				if typeIdent != nil && typeIdent.symbol == typeIdentifierSym {
-					name := typeIdent.Text(source)
-					if _, ok := localTypes[name]; !ok {
+					name := canonicalCTypeName(typeIdent.Text(source))
+					if _, ok := localTypes[name]; !ok && !looksLikeCTypedefName(name) {
 						ident := newLeafNodeInArena(n.ownerArena, identifierSym, identifierNamed, typeIdent.startByte, typeIdent.endByte, typeIdent.startPoint, typeIdent.endPoint)
 						paren := newParentNodeInArena(n.ownerArena, parenthesizedSym, parenthesizedNamed, []*Node{n.children[1], ident, n.children[3]}, nil, 0)
 						replaceChildRangeWithSingleNode(n, 1, 4, paren)
@@ -1233,6 +1237,10 @@ func normalizeCCastUnknownTypeIdentifiers(root *Node, source []byte, lang *Langu
 	if !ok {
 		return
 	}
+	castSym, ok := lang.SymbolByName("cast_expression")
+	if !ok {
+		return
+	}
 	argumentListSym, ok := lang.SymbolByName("argument_list")
 	if !ok {
 		return
@@ -1242,9 +1250,22 @@ func normalizeCCastUnknownTypeIdentifiers(root *Node, source []byte, lang *Langu
 	if !hasFunctionField || !hasArgumentsField {
 		return
 	}
+	typeFieldID, hasTypeField := lang.FieldByName("type")
+	valueFieldID, hasValueField := lang.FieldByName("value")
+	if !hasTypeField || !hasValueField {
+		return
+	}
 	identifierNamed := false
 	if int(identifierSym) < len(lang.SymbolMetadata) {
 		identifierNamed = lang.SymbolMetadata[identifierSym].Named
+	}
+	typeDescriptorNamed := false
+	if int(typeDescriptorSym) < len(lang.SymbolMetadata) {
+		typeDescriptorNamed = lang.SymbolMetadata[typeDescriptorSym].Named
+	}
+	typeIdentifierNamed := false
+	if int(typeIdentifierSym) < len(lang.SymbolMetadata) {
+		typeIdentifierNamed = lang.SymbolMetadata[typeIdentifierSym].Named
 	}
 	parenthesizedNamed := false
 	if int(parenthesizedSym) < len(lang.SymbolMetadata) {
@@ -1253,6 +1274,10 @@ func normalizeCCastUnknownTypeIdentifiers(root *Node, source []byte, lang *Langu
 	callNamed := false
 	if int(callSym) < len(lang.SymbolMetadata) {
 		callNamed = lang.SymbolMetadata[callSym].Named
+	}
+	castNamed := false
+	if int(castSym) < len(lang.SymbolMetadata) {
+		castNamed = lang.SymbolMetadata[castSym].Named
 	}
 	argumentListNamed := false
 	if int(argumentListSym) < len(lang.SymbolMetadata) {
@@ -1320,6 +1345,101 @@ func normalizeCCastUnknownTypeIdentifiers(root *Node, source []byte, lang *Langu
 		}
 	}
 	rewrite(root)
+
+	var repair func(*Node)
+	repair = func(n *Node) {
+		if n == nil {
+			return
+		}
+		if n.Type(lang) == "call_expression" && len(n.children) == 2 {
+			function := n.children[0]
+			arguments := n.children[1]
+			if function != nil && arguments != nil &&
+				function.Type(lang) == "parenthesized_expression" &&
+				arguments.Type(lang) == "argument_list" &&
+				len(function.children) >= 3 {
+				var ident *Node
+				for _, child := range function.children {
+					if child != nil && child.Type(lang) == "identifier" {
+						ident = child
+						break
+					}
+				}
+				if ident != nil {
+					name := canonicalCTypeName(ident.Text(source))
+					if _, ok := localTypes[name]; ok || looksLikeCTypedefName(name) {
+						typeIdent := newLeafNodeInArena(n.ownerArena, typeIdentifierSym, typeIdentifierNamed, ident.startByte, ident.endByte, ident.startPoint, ident.endPoint)
+						typeDescriptor := newParentNodeInArena(n.ownerArena, typeDescriptorSym, typeDescriptorNamed, []*Node{typeIdent}, nil, 0)
+						var valueNode *Node
+						for _, child := range arguments.children {
+							if child != nil && child.isNamed {
+								valueNode = child
+								break
+							}
+						}
+						if valueNode != nil {
+							children := []*Node{function.children[0], typeDescriptor, function.children[len(function.children)-1], valueNode}
+							if n.ownerArena != nil {
+								buf := n.ownerArena.allocNodeSlice(len(children))
+								copy(buf, children)
+								children = buf
+							}
+							fieldIDs := make([]FieldID, len(children))
+							fieldIDs[1] = typeFieldID
+							fieldIDs[3] = valueFieldID
+							if n.ownerArena != nil {
+								buf := n.ownerArena.allocFieldIDSlice(len(fieldIDs))
+								copy(buf, fieldIDs)
+								fieldIDs = buf
+							}
+							n.symbol = castSym
+							n.isNamed = castNamed
+							n.children = children
+							n.fieldIDs = fieldIDs
+							n.fieldSources = make([]uint8, len(children))
+							n.fieldSources[1] = fieldSourceDirect
+							n.fieldSources[3] = fieldSourceDirect
+							n.productionID = 0
+							for i, child := range n.children {
+								if child == nil {
+									continue
+								}
+								child.parent = n
+								child.childIndex = i
+							}
+						}
+					}
+				}
+			}
+		}
+		for _, child := range n.children {
+			repair(child)
+		}
+	}
+	repair(root)
+}
+
+func looksLikeCTypedefName(name string) bool {
+	return strings.HasSuffix(name, "_t") || strings.HasSuffix(name, "_T")
+}
+
+func canonicalCTypeName(name string) string {
+	name = strings.TrimSpace(name)
+	start, end := 0, len(name)
+	for start < end && !isCTypeNameChar(name[start]) {
+		start++
+	}
+	for end > start && !isCTypeNameChar(name[end-1]) {
+		end--
+	}
+	return name[start:end]
+}
+
+func isCTypeNameChar(b byte) bool {
+	return b == '_' ||
+		(b >= 'a' && b <= 'z') ||
+		(b >= 'A' && b <= 'Z') ||
+		(b >= '0' && b <= '9')
 }
 
 func collectCLocalTypeNames(root *Node, source []byte, lang *Language) map[string]struct{} {
@@ -1337,7 +1457,7 @@ func collectCLocalTypeNames(root *Node, source []byte, lang *Language) map[strin
 				if child == nil || child.Type(lang) != "type_identifier" {
 					continue
 				}
-				if name := child.Text(source); name != "" {
+				if name := canonicalCTypeName(child.Text(source)); name != "" {
 					localTypes[name] = struct{}{}
 				}
 			}
@@ -2657,6 +2777,51 @@ func flattenRootSelfFragments(nodes []*Node, arena *nodeArena, rootSymbol Symbol
 		return buf
 	}
 	return out
+}
+
+func flattenInvisibleRootChildren(root *Node, arena *nodeArena, lang *Language) *Node {
+	if root == nil || lang == nil || len(root.children) == 0 {
+		return root
+	}
+	changed := false
+	out := make([]*Node, 0, len(root.children))
+	for _, child := range root.children {
+		if child == nil {
+			continue
+		}
+		if shouldFlattenInvisibleRootChild(child, lang) {
+			for _, grandchild := range child.children {
+				if grandchild != nil {
+					out = append(out, grandchild)
+				}
+			}
+			changed = true
+			continue
+		}
+		out = append(out, child)
+	}
+	if !changed {
+		return root
+	}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(out))
+		copy(buf, out)
+		out = buf
+	}
+	root.children = out
+	root.fieldIDs = nil
+	root.fieldSources = nil
+	return root
+}
+
+func shouldFlattenInvisibleRootChild(child *Node, lang *Language) bool {
+	if child == nil || child.isExtra || child.isNamed || len(child.children) == 0 {
+		return false
+	}
+	if idx := int(child.symbol); idx < len(lang.SymbolMetadata) {
+		return !lang.SymbolMetadata[idx].Visible
+	}
+	return false
 }
 
 func normalizePHPSingletonTypeWrappers(root *Node, lang *Language) {
@@ -7363,9 +7528,17 @@ func normalizeCSharpSwitchTupleCasePatterns(root *Node, lang *Language) {
 	if !ok {
 		return
 	}
+	tupleExprSym, ok := lang.SymbolByName("tuple_expression")
+	if !ok {
+		return
+	}
 	named := false
 	if idx := int(patternSym); idx < len(lang.SymbolMetadata) {
 		named = lang.SymbolMetadata[patternSym].Named
+	}
+	tupleNamed := false
+	if idx := int(tupleExprSym); idx < len(lang.SymbolMetadata) {
+		tupleNamed = lang.SymbolMetadata[tupleExprSym].Named
 	}
 	var walk func(*Node)
 	walk = func(n *Node) {
@@ -7375,8 +7548,18 @@ func normalizeCSharpSwitchTupleCasePatterns(root *Node, lang *Language) {
 		if n.Type(lang) == "switch_section" && len(n.children) > 1 {
 			pat := n.children[1]
 			if n.children[0] != nil && n.children[0].Type(lang) == "case" &&
-				pat != nil && pat.Type(lang) == "tuple_expression" {
-				repl := newParentNodeInArena(n.ownerArena, patternSym, named, []*Node{pat}, nil, 0)
+				pat != nil && (pat.Type(lang) == "tuple_expression" || pat.Type(lang) == "recursive_pattern") {
+				tuple := pat
+				if pat.Type(lang) != "tuple_expression" {
+					tupleChildren := append([]*Node(nil), pat.children...)
+					if n.ownerArena != nil && len(tupleChildren) > 0 {
+						buf := n.ownerArena.allocNodeSlice(len(tupleChildren))
+						copy(buf, tupleChildren)
+						tupleChildren = buf
+					}
+					tuple = newParentNodeInArena(n.ownerArena, tupleExprSym, tupleNamed, tupleChildren, nil, 0)
+				}
+				repl := newParentNodeInArena(n.ownerArena, patternSym, named, []*Node{tuple}, nil, 0)
 				repl.parent = n
 				repl.childIndex = 1
 				n.children[1] = repl

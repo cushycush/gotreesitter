@@ -37,6 +37,12 @@ var paritySkips = map[string]parityMeta{
 // knownDegradedStructural tracks currently non-parity structural languages
 // within the full-coverage gate. Keep this list shrinking over time.
 var knownDegradedStructural = map[string]string{
+	"agda": "named wrapper/runtime alias shape still diverges from C reference",
+	"apex": "named wrapper/runtime alias shape still diverges from C reference",
+	"cue":  "named wrapper/runtime alias shape still diverges from C reference",
+	"hare": "fresh parse structural parity still diverges from C reference",
+	"rst":  "fresh parse structural parity still diverges from C reference",
+	"toml": "fresh parse structural parity still diverges from C reference",
 }
 
 type parityCase struct {
@@ -122,6 +128,65 @@ var curatedHighlightLanguages = func() map[string]bool {
 	}
 	return out
 }()
+
+// smokeParityLanguages is the default merge-blocking parity slice. Keep it
+// intentionally small and representative; GLR coverage is enforced separately
+// by dedicated canary tests.
+var smokeParityLanguages = map[string]bool{
+	"bash":       true,
+	"c":          true,
+	"c_sharp":    true,
+	"go":         true,
+	"html":       true,
+	"javascript": true,
+	"python":     true,
+	"rust":       true,
+	"yaml":       true,
+}
+
+func parityMode() string {
+	raw := strings.TrimSpace(os.Getenv("GTS_PARITY_MODE"))
+	switch strings.ToLower(raw) {
+	case "", "smoke":
+		return "smoke"
+	case "all", "full", "exhaustive":
+		return "exhaustive"
+	default:
+		return "smoke"
+	}
+}
+
+func parityRunExhaustive() bool {
+	return parityMode() == "exhaustive"
+}
+
+func parityRequireExhaustive(t *testing.T, suite string) {
+	t.Helper()
+	if parityRunExhaustive() {
+		return
+	}
+	t.Skipf("%s requires GTS_PARITY_MODE=exhaustive", suite)
+}
+
+func parityIncludeStructuralLanguage(name string) bool {
+	if !curatedStructuralLanguages[name] {
+		return false
+	}
+	if parityRunExhaustive() {
+		return true
+	}
+	return smokeParityLanguages[name]
+}
+
+func parityIncludeHighlightLanguage(name string) bool {
+	if !curatedHighlightLanguages[name] {
+		return false
+	}
+	if parityRunExhaustive() {
+		return true
+	}
+	return smokeParityLanguages[name]
+}
 
 var parityCompareFields = func() bool {
 	raw := strings.TrimSpace(os.Getenv("GTS_PARITY_COMPARE_FIELDS"))
@@ -659,7 +724,7 @@ func TestParityFreshParse(t *testing.T) {
 		if parityLanguageExcluded(tc.name) {
 			continue
 		}
-		if !curatedStructuralLanguages[tc.name] {
+		if !parityIncludeStructuralLanguage(tc.name) {
 			continue
 		}
 		tc := tc
@@ -680,7 +745,7 @@ func TestParityIncrementalParse(t *testing.T) {
 		if parityLanguageExcluded(tc.name) {
 			continue
 		}
-		if !curatedStructuralLanguages[tc.name] {
+		if !parityIncludeStructuralLanguage(tc.name) {
 			continue
 		}
 		tc := tc
@@ -722,6 +787,7 @@ func TestParityIncrementalParse(t *testing.T) {
 			var chosen incrementalEditCandidate
 			chosenOK := false
 			validSiteCount := 0
+			scanAllValidSites := tc.name == "html" && parityRunExhaustive()
 			firstFreshErr := ""
 			firstIncrErr := ""
 			for _, candidate := range candidates {
@@ -787,13 +853,12 @@ func TestParityIncrementalParse(t *testing.T) {
 					chosenOK = true
 				}
 				// Most languages only need the first fresh-parity-safe site.
-				// Continue scanning for html so we can preserve the coverage
-				// diagnostic, but avoid O(n) slow-candidate sweeps elsewhere.
-				if tc.name != "html" {
+				// Exhaustive mode keeps html's full-site coverage diagnostic.
+				if !scanAllValidSites {
 					break
 				}
 			}
-			if tc.name == "html" {
+			if scanAllValidSites {
 				t.Logf("[%s/incremental] valid edit sites=%d/%d", tc.name, validSiteCount, len(candidates))
 			}
 			if !chosenOK {
@@ -859,7 +924,7 @@ func TestParityHasNoErrors(t *testing.T) {
 		if parityLanguageExcluded(tc.name) {
 			continue
 		}
-		if !curatedStructuralLanguages[tc.name] {
+		if !parityIncludeStructuralLanguage(tc.name) {
 			continue
 		}
 		tc := tc

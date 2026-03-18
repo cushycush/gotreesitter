@@ -258,7 +258,7 @@ func TestParityHighlight(t *testing.T) {
 		if parityLanguageExcluded(tc.name) {
 			continue
 		}
-		if !curatedHighlightLanguages[tc.name] {
+		if !parityIncludeHighlightLanguage(tc.name) {
 			continue
 		}
 		tc := tc
@@ -307,6 +307,7 @@ func highlightThresholdsForLanguage(name string) (goOnly, cMissing int) {
 // as a diagnostic. Non-curated languages use the knownDegradedHighlight list:
 // regressions (worse than recorded) fail; improvements are logged.
 func TestParityHighlightAllGrammars(t *testing.T) {
+	parityRequireExhaustive(t, "TestParityHighlightAllGrammars")
 	for _, tc := range parityCases {
 		if parityLanguageExcluded(tc.name) {
 			continue

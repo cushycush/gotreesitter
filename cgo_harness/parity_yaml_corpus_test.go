@@ -901,6 +901,7 @@ groups:
 // samples. For each sample, it parses with both Go and C tree-sitter, runs
 // the YAML highlight query, and compares capture ranges.
 func TestParityYAMLCorpus(t *testing.T) {
+	parityRequireExhaustive(t, "TestParityYAMLCorpus")
 	const langName = "yaml"
 
 	entry, ok := parityEntriesByName[langName]
@@ -990,6 +991,7 @@ func TestParityYAMLCorpus(t *testing.T) {
 // across all YAML corpus samples, ensuring Go and C parse trees are identical
 // node-by-node.
 func TestParityYAMLCorpusStructural(t *testing.T) {
+	parityRequireExhaustive(t, "TestParityYAMLCorpusStructural")
 	const langName = "yaml"
 
 	// Load C reference language once.
@@ -1054,6 +1056,7 @@ func TestParityYAMLCorpusStructural(t *testing.T) {
 // TestParityYAMLCorpusSummary prints aggregate statistics across the YAML
 // corpus. This is informational and always passes.
 func TestParityYAMLCorpusSummary(t *testing.T) {
+	parityRequireExhaustive(t, "TestParityYAMLCorpusSummary")
 	const langName = "yaml"
 
 	entry, ok := parityEntriesByName[langName]

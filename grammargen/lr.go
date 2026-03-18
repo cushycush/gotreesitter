@@ -964,7 +964,7 @@ func (b *extraChainBuilder) addProdContinuation(stateIdx, prodIdx, pos int, foll
 			prec:    prod.Prec,
 			assoc:   prod.Assoc,
 			lhsSym:  prod.LHS,
-			isExtra: prod.IsExtra,
+			isExtra: false,
 			repeat:  b.ctx.isRepetitionShift(stateIdx, nextSym, targetState),
 		})
 		return
@@ -1014,7 +1014,7 @@ func (b *extraChainBuilder) addNonterminalEntries(stateIdx, sym int, follow bits
 				prec:    prod.Prec,
 				assoc:   prod.Assoc,
 				lhsSym:  prod.LHS,
-				isExtra: prod.IsExtra,
+				isExtra: false,
 				repeat:  b.ctx.isRepetitionShift(stateIdx, firstSym, targetState),
 			})
 			continue
@@ -2349,13 +2349,17 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 
 	// Shift/reduce conflict.
 	if len(shifts) > 0 && len(reduces) > 0 {
-		if repeated, ok := repetitionShiftActions(shifts, reduces, ng); ok {
+		if repeated, ok := repetitionShiftActions(lookaheadSym, shifts, reduces, ng); ok {
 			return repeated, nil
 		}
 
 		shift := shifts[0]
 		reduce := reduces[0]
 		prod := &ng.Productions[reduce.prodIdx]
+
+		if isRepeatHelperReduce(reduce, ng) && !shift.repeat {
+			return []lrAction{reduce}, nil
+		}
 
 		// Tree-sitter keeps S/R as GLR when the reduce LHS and a shift LHS
 		// are both in the same declared conflict group.
@@ -2558,7 +2562,7 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 	return actions, nil
 }
 
-func repetitionShiftActions(shifts, reduces []lrAction, ng *NormalizedGrammar) ([]lrAction, bool) {
+func repetitionShiftActions(lookaheadSym int, shifts, reduces []lrAction, ng *NormalizedGrammar) ([]lrAction, bool) {
 	if len(shifts) != 1 || len(reduces) == 0 {
 		return nil, false
 	}
@@ -2567,9 +2571,12 @@ func repetitionShiftActions(shifts, reduces []lrAction, ng *NormalizedGrammar) (
 			return nil, false
 		}
 	}
+	shift := shifts[0]
+	if !shift.repeat && lookaheadSym != shift.lhsSym {
+		return nil, false
+	}
 	kept := make([]lrAction, 0, len(reduces)+1)
 	kept = append(kept, reduces...)
-	shift := shifts[0]
 	shift.repeat = true
 	kept = append(kept, shift)
 	return kept, true
@@ -2592,6 +2599,17 @@ func isRecursiveRepeatReduce(action lrAction, ng *NormalizedGrammar) bool {
 		}
 	}
 	return false
+}
+
+func isRepeatHelperReduce(action lrAction, ng *NormalizedGrammar) bool {
+	if action.kind != lrReduce || action.prodIdx < 0 || action.prodIdx >= len(ng.Productions) {
+		return false
+	}
+	prod := &ng.Productions[action.prodIdx]
+	if prod.LHS < 0 || prod.LHS >= len(ng.Symbols) {
+		return false
+	}
+	return strings.Contains(ng.Symbols[prod.LHS].Name, "repeat")
 }
 
 func resolveReduceReduceLegacy(lookaheadSym int, reduces []lrAction, ng *NormalizedGrammar, cache *conflictResolutionCache) ([]lrAction, error) {

@@ -85,6 +85,20 @@ func (g *Grammar) Define(name string, rule *Rule) {
 	g.Rules[name] = rule
 }
 
+// AppendChoice appends an alternative to an existing rule, wrapping the prior
+// definition in a Choice if needed.
+func AppendChoice(g *Grammar, name string, rule *Rule) {
+	if existing, ok := g.Rules[name]; ok && existing != nil {
+		if existing.Kind == RuleChoice {
+			existing.Children = append(existing.Children, rule)
+			return
+		}
+		g.Rules[name] = Choice(existing, rule)
+		return
+	}
+	g.Define(name, rule)
+}
+
 // SetExtras sets the extra rules (e.g. whitespace, comments).
 func (g *Grammar) SetExtras(rules ...*Rule) {
 	g.Extras = rules
@@ -93,6 +107,11 @@ func (g *Grammar) SetExtras(rules ...*Rule) {
 // SetConflicts declares grammar conflicts for GLR.
 func (g *Grammar) SetConflicts(conflicts ...[]string) {
 	g.Conflicts = conflicts
+}
+
+// AddConflict appends a GLR conflict declaration to the grammar.
+func AddConflict(g *Grammar, names ...string) {
+	g.Conflicts = append(g.Conflicts, names)
 }
 
 // SetExternals declares external scanner tokens.

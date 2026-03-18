@@ -1,6 +1,7 @@
 package grammargen
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -30,6 +31,9 @@ type ntTransition struct {
 // buildItemSetsLALR constructs LALR(1) item sets using the DeRemer/Pennello algorithm.
 // Returns the item sets with lookaheads attached only to reduce items.
 func (ctx *lrContext) buildItemSetsLALR() []lrItemSet {
+	if ctx.bgCtx == nil {
+		ctx.bgCtx = context.Background()
+	}
 	debugLALR := os.Getenv("GOT_DEBUG_LALR") == "1"
 
 	// Phase 1: Build LR(0) automaton.
@@ -71,7 +75,7 @@ func (ctx *lrContext) buildLR0() {
 	// BFS through states.
 	for stateIdx := 0; stateIdx < len(ctx.itemSets); stateIdx++ {
 		// Check for cancellation periodically (every 64 iterations).
-		if stateIdx&63 == 0 {
+		if ctx.bgCtx != nil && stateIdx&63 == 0 {
 			select {
 			case <-ctx.bgCtx.Done():
 				return
@@ -364,7 +368,7 @@ func (ctx *lrContext) computeLALRLookaheads() {
 
 	for pi := range ng.Productions {
 		// Check for cancellation every 256 productions.
-		if pi&255 == 0 {
+		if ctx.bgCtx != nil && pi&255 == 0 {
 			select {
 			case <-ctx.bgCtx.Done():
 				return

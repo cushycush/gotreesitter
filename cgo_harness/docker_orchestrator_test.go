@@ -160,6 +160,7 @@ func (r *dockerParityRunner) runTest(t *testing.T, opts containerOpts) *parityRe
 		"GOT_GLR_MAX_STACKS",
 		"GOT_PARSE_NODE_LIMIT_SCALE",
 		"GOT_GLR_FORCE_CONFLICT_WIDTH",
+		"GTS_PARITY_MODE",
 		"GTS_PARITY_SKIP_LANGS",
 		"GTS_PARITY_RUN_SKIPPED_BACKLOG",
 		"GTS_PARITY_BREAKER",

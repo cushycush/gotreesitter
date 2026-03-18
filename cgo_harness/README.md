@@ -35,13 +35,32 @@ Framework details (oracles, corpus tiers, gate policy):
 
 ## Run Parity Tests
 
+Default parity runs use `smoke` mode: a small representative subset that is
+fast enough for normal development and required CI.
+
 ```sh
 go test . -tags treesitter_c_parity \
-  -run '^TestParityFreshParse$|^TestParityHasNoErrors$|^TestParityIssue3Repros$|^TestParityGLRCanaryGo$|^TestParityGLRCanarySet$|^TestParityGLRCapPressureTopLanguages$' \
+  -run '^TestParityFreshParse$|^TestParityIncrementalParse$|^TestParityHasNoErrors$|^TestParityIssue3Repros$|^TestParityGLRCanaryGo$|^TestParityGLRCanarySet$|^TestParityGLRCapPressureTopLanguages$|^TestParityGateCoverageRatchet$|^TestParityHighlight$' \
+  -count=1 -v
+```
+
+Set `GTS_PARITY_MODE=exhaustive` for the full curated sweep and the larger
+diagnostic suites:
+
+```sh
+GTS_PARITY_MODE=exhaustive \
+go test . -tags treesitter_c_parity \
+  -run '^TestParityFreshParse$|^TestParityIncrementalParse$|^TestParityHasNoErrors$|^TestParityIssue3Repros$|^TestParityGLRCanaryGo$|^TestParityGLRCanarySet$|^TestParityGLRCapPressureTopLanguages$|^TestParityGateCoverageRatchet$|^TestParityHighlight$|^TestParityHighlightAllGrammars$' \
   -count=1 -v
 
+GTS_PARITY_MODE=exhaustive \
 go test . -tags treesitter_c_parity \
   -run '^TestParityCorpusFreshParse$' \
+  -count=1 -v
+
+GTS_PARITY_MODE=exhaustive \
+go test . -tags treesitter_c_parity \
+  -run '^TestParityYAMLCorpus$|^TestParityYAMLCorpusStructural$|^TestParityYAMLCorpusSummary$' \
   -count=1 -v
 ```
 
@@ -58,6 +77,12 @@ cgo_harness/docker/run_parity_in_docker.sh \
 
 # Optional: exclude one or more languages from parity loops in this run.
 GTS_PARITY_SKIP_LANGS=scala \
+  cgo_harness/docker/run_parity_in_docker.sh \
+  --memory 8g \
+  --cpus 4
+
+# Optional: force the full exhaustive sweep inside the container.
+GTS_PARITY_MODE=exhaustive \
   cgo_harness/docker/run_parity_in_docker.sh \
   --memory 8g \
   --cpus 4

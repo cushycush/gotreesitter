@@ -9,8 +9,14 @@ package grammargen
 func CalcGrammar() *Grammar {
 	g := NewGrammar("calc")
 
-	// program: repeat(expression)
-	g.Define("program", Repeat(Sym("expression")))
+	// program: a single expression
+	//
+	// Keeping the built-in calculator grammar to one top-level expression avoids
+	// an otherwise intentional ambiguity between adjacent expressions and unary
+	// prefix operators, e.g. `1 - 2 * 3` parsing as `1` followed by `-(2 * 3)`.
+	// The calc grammar exists to exercise precedence/associativity, not
+	// statement-list parsing, so a single-expression entrypoint is sufficient.
+	g.Define("program", Sym("expression"))
 
 	// expression: choice of binary ops, unary minus, parens, number
 	g.Define("expression", Choice(

@@ -122,7 +122,7 @@ jobs:
   parity-cgo:
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -130,32 +130,60 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: CGo Structural Parity Gate (Fresh + No Errors + Issue3)
+      - name: CGo Parity Smoke Gate
         run: |
           cd cgo_harness
+          GTS_PARITY_MODE=smoke \
+          go test . -tags treesitter_c_parity \
+            -run '^TestParityFreshParse$|^TestParityIncrementalParse$|^TestParityHasNoErrors$|^TestParityIssue3Repros$|^TestParityGLRCanaryGo$|^TestParityGLRCanarySet$|^TestParityGLRCapPressureTopLanguages$|^TestParityGateCoverageRatchet$|^TestParityHighlight$' \
+            -timeout=20m \
+            -count=1 -v
+
+  parity-cgo-exhaustive:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: CGo Structural Parity Exhaustive (Fresh + No Errors + Issue3)
+        run: |
+          cd cgo_harness
+          GTS_PARITY_MODE=exhaustive \
           go test . -tags treesitter_c_parity \
             -run '^TestParityFreshParse$|^TestParityHasNoErrors$|^TestParityIssue3Repros$' \
+            -timeout=30m \
             -count=1 -v
 
-      - name: CGo Structural Parity Gate (Incremental + GLR)
+      - name: CGo Structural Parity Exhaustive (Incremental + GLR)
         run: |
           cd cgo_harness
+          GTS_PARITY_MODE=exhaustive \
           go test . -tags treesitter_c_parity \
             -run '^TestParityIncrementalParse$|^TestParityGLRCanaryGo$|^TestParityGLRCanarySet$|^TestParityGLRCapPressureTopLanguages$|^TestParityGateCoverageRatchet$' \
+            -timeout=30m \
             -count=1 -v
 
-      - name: CGo Structural Parity Gate (Corpus)
+      - name: CGo Structural Parity Exhaustive (Corpus)
         run: |
           cd cgo_harness
+          GTS_PARITY_MODE=exhaustive \
           go test . -tags treesitter_c_parity \
             -run '^TestParityCorpusFreshParse$' \
+            -timeout=30m \
             -count=1 -v
 
-      - name: CGo Highlight + YAML Parity Gate
+      - name: CGo Highlight + YAML Parity Exhaustive
         run: |
           cd cgo_harness
+          GTS_PARITY_MODE=exhaustive \
           go test . -tags treesitter_c_parity \
-            -run '^TestParityHighlight$|^TestParityHighlightAllGrammars$|^TestParityYAMLCorpus$|^TestParityYAMLCorpusSummural$|^TestParityYAMLCorpusSummary$' \
+            -run '^TestParityHighlight$|^TestParityHighlightAllGrammars$|^TestParityYAMLCorpus$|^TestParityYAMLCorpusStructural$|^TestParityYAMLCorpusSummary$' \
+            -timeout=30m \
             -count=1 -v
 
   perf-regression:
