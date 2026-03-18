@@ -2410,6 +2410,25 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 				}
 				return []lrAction{shift}, nil
 			}
+			// Before applying associativity, check SYMBOL vs SYMBOL
+			// ordering from the precedences table. When two symbols
+			// in the same precedence level have equal numeric prec,
+			// the ordering determines which binds tighter.
+			if shiftP == reduceP && ng.PrecedenceOrder != nil &&
+				prod.LHS >= 0 && prod.LHS < len(ng.Symbols) &&
+				shift.lhsSym >= 0 && shift.lhsSym < len(ng.Symbols) {
+				reduceLHSName := ng.Symbols[prod.LHS].Name
+				shiftLHSName := ng.Symbols[shift.lhsSym].Name
+				if reduceLHSName != shiftLHSName {
+					cmp := ng.PrecedenceOrder.resolveSymbolVsSymbol(shiftLHSName, reduceLHSName)
+					if cmp > 0 {
+						return []lrAction{shift}, nil
+					}
+					if cmp < 0 {
+						return []lrAction{reduce}, nil
+					}
+				}
+			}
 			// Same precedence or both zero — check associativity.
 			if shiftP == reduceP && prod.Assoc != AssocNone {
 				switch prod.Assoc {
@@ -2455,7 +2474,6 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 				return []lrAction{reduce}, nil
 			}
 		}
-
 		// Apply precedence/associativity resolution when either side has a
 		// non-zero precedence OR the production declares explicit associativity.
 		if reducePrec != 0 || shiftPrec != 0 || prod.Assoc != AssocNone {
@@ -2464,6 +2482,30 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 			}
 			if shiftPrec > reducePrec {
 				return []lrAction{shift}, nil
+			}
+			// Prec values are equal — before applying associativity,
+			// check if the SYMBOL ordering from the precedences table
+			// can break the tie. Two symbols in the same level with
+			// equal numeric prec but different ordering positions should
+			// be resolved by position (higher-ordered binds tighter).
+			// Example: TypeScript [intersection_type, union_type,
+			// conditional_type, function_type] all have PREC_LEFT(0).
+			// For "() => T | U", union_type (higher pos) should bind
+			// tighter than function_type (lower pos), so shift wins.
+			if ng.PrecedenceOrder != nil &&
+				prod.LHS >= 0 && prod.LHS < len(ng.Symbols) &&
+				shift.lhsSym >= 0 && shift.lhsSym < len(ng.Symbols) {
+				reduceLHSName := ng.Symbols[prod.LHS].Name
+				shiftLHSName := ng.Symbols[shift.lhsSym].Name
+				if reduceLHSName != shiftLHSName {
+					cmp := ng.PrecedenceOrder.resolveSymbolVsSymbol(shiftLHSName, reduceLHSName)
+					if cmp > 0 {
+						return []lrAction{shift}, nil
+					}
+					if cmp < 0 {
+						return []lrAction{reduce}, nil
+					}
+				}
 			}
 			switch prod.Assoc {
 			case AssocLeft:

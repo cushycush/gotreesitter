@@ -2,6 +2,7 @@ package grammargen
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -81,6 +82,10 @@ func localLR1Rebuild(
 			transSym  int
 		}
 		var preds []predInfo
+		// Collect predecessors in deterministic order. Map iteration order
+		// in Go is non-deterministic, so without sorting, the set of
+		// predecessors (and particularly which ones survive the
+		// maxPredsPerCandidate cap) varies across runs.
 		for srcState, syms := range trans {
 			for sym, target := range syms {
 				if target == stateIdx {
@@ -88,6 +93,13 @@ func localLR1Rebuild(
 				}
 			}
 		}
+		// Sort by (srcState, sym) ascending for determinism.
+		sort.Slice(preds, func(i, j int) bool {
+			if preds[i].predState != preds[j].predState {
+				return preds[i].predState < preds[j].predState
+			}
+			return preds[i].transSym < preds[j].transSym
+		})
 
 		if len(preds) < 2 {
 			continue

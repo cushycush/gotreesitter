@@ -26,6 +26,11 @@ type precOrderTable struct {
 	// Higher value = higher precedence.
 	symbolPositions map[string]int
 
+	// symbolLevels maps SYMBOL rule names to their precedences level index.
+	// Two symbols in the same level are directly comparable; symbols in
+	// different levels are not (they serve different ordering purposes).
+	symbolLevels map[string]int
+
 	// namedPrecPositions maps STRING-only numeric prec values (from
 	// buildNamedPrecMap) to their global position. This reverse mapping
 	// enables conflict resolution to compare shift prec values (which
@@ -52,16 +57,18 @@ func buildPrecOrderTable(levels [][]PrecEntry, namedPrecs map[string]int) *precO
 	}
 
 	symbolPositions := make(map[string]int)
+	symbolLevels := make(map[string]int)
 	namedPrecPositions := make(map[int]int)
 
 	idx := 0
-	for _, level := range levels {
+	for levelIdx, level := range levels {
 		for _, e := range level {
 			val := total - 1 - idx // higher value = higher precedence
 			idx++
 			if e.IsSymbol {
 				if existing, ok := symbolPositions[e.Name]; !ok || val > existing {
 					symbolPositions[e.Name] = val
+					symbolLevels[e.Name] = levelIdx
 				}
 			} else {
 				// Look up the STRING entry's numeric prec value.
@@ -80,6 +87,7 @@ func buildPrecOrderTable(levels [][]PrecEntry, namedPrecs map[string]int) *precO
 
 	return &precOrderTable{
 		symbolPositions:    symbolPositions,
+		symbolLevels:       symbolLevels,
 		namedPrecPositions: namedPrecPositions,
 	}
 }
@@ -109,6 +117,46 @@ func buildNamedPrecMapFromLevels(levels [][]PrecEntry) map[string]int {
 		}
 	}
 	return m
+}
+
+// resolveSymbolVsSymbol checks whether SYMBOL entry symbolA outranks
+// SYMBOL entry symbolB according to the precedences table. Only compares
+// symbols that appear in the same precedence level — symbols in different
+// levels serve different ordering purposes and are not directly comparable.
+// Returns:
+//
+//	 1 if symbolA has higher precedence (earlier in the same level)
+//	-1 if symbolB has higher precedence
+//	 0 if not comparable (different levels, not in table, or same position)
+func (t *precOrderTable) resolveSymbolVsSymbol(symbolA, symbolB string) int {
+	if t == nil {
+		return 0
+	}
+
+	posA, okA := t.symbolPositions[symbolA]
+	if !okA {
+		return 0
+	}
+
+	posB, okB := t.symbolPositions[symbolB]
+	if !okB {
+		return 0
+	}
+
+	// Only compare symbols in the same precedence level.
+	levelA, _ := t.symbolLevels[symbolA]
+	levelB, _ := t.symbolLevels[symbolB]
+	if levelA != levelB {
+		return 0
+	}
+
+	if posA > posB {
+		return 1
+	}
+	if posA < posB {
+		return -1
+	}
+	return 0
 }
 
 // resolveSymbolVsNamedPrec checks whether a SYMBOL entry (symbolName)
