@@ -526,6 +526,27 @@ func buildExternalLexStates(lang *gotreesitter.Language, tables *LRTables, ng *N
 		}
 	}
 
+	// Build counterpart map: external symbol ID -> non-external terminals
+	// with the same surface token name. Used to detect LALR merging artifacts
+	// where expression contexts (needing external scanner) and type contexts
+	// (needing regular terminal) get conflated into the same LR state.
+	extCp := make(map[int][]int) // external symID -> counterpart symIDs
+	for extSym := range extSymSet {
+		extName := ng.Symbols[extSym].Name
+		if extName == "" {
+			continue
+		}
+		for sym := 1; sym < tokenCount; sym++ {
+			if _, isExt := extSymSet[sym]; isExt {
+				continue
+			}
+			tn := ng.Symbols[sym].Name
+			if tn == extName || tn == "\\"+extName {
+				extCp[extSym] = append(extCp[extSym], sym)
+			}
+		}
+	}
+
 	// Row 0: all-false (no external tokens valid).
 	rows := [][]bool{make([]bool, extCount)}
 	rowMap := make(map[string]int) // serialized row → row index
@@ -551,7 +572,27 @@ func buildExternalLexStates(lang *gotreesitter.Language, tables *LRTables, ng *N
 		if lrState >= 0 {
 			if acts, ok := tables.ActionTable[lrState]; ok {
 				for symID, extIdx := range extSymSet {
-					if actionList, ok := acts[symID]; ok && len(actionList) > 0 {
+					actionList, ok := acts[symID]
+					if !ok || len(actionList) == 0 {
+						continue
+					}
+					// Suppress external symbol when a non-external terminal
+					// counterpart has the exact same action list. This means
+					// LALR merging conflated contexts where the external
+					// scanner should fire with contexts where only the
+					// regular terminal is valid. Deferring to the DFA is
+					// safe because the parser action is identical either way.
+					suppressed := false
+					if cpSyms, hasCp := extCp[symID]; hasCp {
+						for _, cpSym := range cpSyms {
+							cpActs, cpOk := acts[cpSym]
+							if cpOk && len(cpActs) > 0 && actListsEqual(actionList, cpActs) {
+								suppressed = true
+								break
+							}
+						}
+					}
+					if !suppressed {
 						row[extIdx] = true
 						anyValid = true
 					}
@@ -591,6 +632,19 @@ func serializeBoolRow(row []bool) string {
 		}
 	}
 	return string(buf)
+}
+
+// actListsEqual checks if two LR action lists are structurally identical.
+func actListsEqual(a, b []lrAction) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].kind != b[i].kind || a[i].state != b[i].state || a[i].prodIdx != b[i].prodIdx {
+			return false
+		}
+	}
+	return true
 }
 
 // fieldID looks up a field name in the normalized grammar.
