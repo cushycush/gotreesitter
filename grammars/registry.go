@@ -27,13 +27,21 @@ type LangEntry struct {
 var registry []LangEntry
 var highlightInheritanceResolved bool
 
-// Register adds a language to the registry.
+// Register adds a language to the registry. If an entry with the same name
+// already exists, it is replaced so that grammar updates take effect.
 func Register(entry LangEntry) {
 	if !languageEnabled(entry.Name) {
 		return
 	}
 	if entry.TokenSourceFactory == nil {
 		entry.TokenSourceFactory = defaultTokenSourceFactory(entry.Name)
+	}
+	for i := range registry {
+		if registry[i].Name == entry.Name {
+			registry[i] = entry
+			highlightInheritanceResolved = false
+			return
+		}
 	}
 	registry = append(registry, entry)
 	highlightInheritanceResolved = false
