@@ -179,6 +179,89 @@ func TestCobolLeadingAreaStartMatchesC(t *testing.T) {
 	}
 }
 
+func TestCobolDivisionAndPerformStartsMatchC(t *testing.T) {
+	const src = "" +
+		"       identification division.\n" +
+		"       program-id. a.\n" +
+		"       procedure division.\n" +
+		"       perform aa.\n" +
+		"       aa.\n"
+	tree, lang := parseByLanguageName(t, "cobol", src)
+	root := tree.RootNode()
+	if root.HasError() {
+		t.Fatalf("unexpected cobol parse error: %s", root.SExpr(lang))
+	}
+	def := root.Child(0)
+	if def == nil || def.Type(lang) != "program_definition" {
+		t.Fatalf("cobol child=%v, want program_definition", def)
+	}
+	if def.ChildCount() != 2 {
+		t.Fatalf("cobol program_definition.ChildCount=%d, want 2", def.ChildCount())
+	}
+	idDiv := def.Child(0)
+	if idDiv == nil || idDiv.Type(lang) != "identification_division" {
+		t.Fatalf("cobol first child=%v, want identification_division", idDiv)
+	}
+	if got, want := idDiv.StartByte(), uint32(7); got != want {
+		t.Fatalf("cobol identification_division.StartByte=%d, want %d", got, want)
+	}
+	if got, want := idDiv.EndByte(), uint32(53); got != want {
+		t.Fatalf("cobol identification_division.EndByte=%d, want %d", got, want)
+	}
+	procDiv := def.Child(1)
+	if procDiv == nil || procDiv.Type(lang) != "procedure_division" {
+		t.Fatalf("cobol second child=%v, want procedure_division", procDiv)
+	}
+	if got, want := procDiv.StartByte(), uint32(61); got != want {
+		t.Fatalf("cobol procedure_division.StartByte=%d, want %d", got, want)
+	}
+	if procDiv.ChildCount() < 2 {
+		t.Fatalf("cobol procedure_division.ChildCount=%d, want >= 2", procDiv.ChildCount())
+	}
+	performStmt := procDiv.Child(1)
+	if performStmt == nil || performStmt.Type(lang) != "perform_statement_call_proc" {
+		t.Fatalf("cobol procedure_division.Child(1)=%v, want perform_statement_call_proc", performStmt)
+	}
+	if got, want := performStmt.StartByte(), uint32(88); got != want {
+		t.Fatalf("cobol perform_statement_call_proc.StartByte=%d, want %d", got, want)
+	}
+}
+
+func TestCobolPerformOptionEndMatchesC(t *testing.T) {
+	const src = "" +
+		"       identification division.\n" +
+		"       program-id. a.\n" +
+		"       procedure division.\n" +
+		"       perform aa forever.\n" +
+		"       aa.\n"
+	tree, lang := parseByLanguageName(t, "cobol", src)
+	root := tree.RootNode()
+	if root.HasError() {
+		t.Fatalf("unexpected cobol parse error: %s", root.SExpr(lang))
+	}
+	procDiv := root.Child(0).Child(1)
+	if procDiv == nil || procDiv.Type(lang) != "procedure_division" {
+		t.Fatalf("cobol procedure_division=%v, want procedure_division", procDiv)
+	}
+	performStmt := procDiv.Child(1)
+	if performStmt == nil || performStmt.Type(lang) != "perform_statement_call_proc" {
+		t.Fatalf("cobol procedure_division.Child(1)=%v, want perform_statement_call_proc", performStmt)
+	}
+	if got, want := performStmt.EndByte(), uint32(106); got != want {
+		t.Fatalf("cobol perform_statement_call_proc.EndByte=%d, want %d", got, want)
+	}
+	if performStmt.ChildCount() != 2 {
+		t.Fatalf("cobol perform_statement_call_proc.ChildCount=%d, want 2", performStmt.ChildCount())
+	}
+	option := performStmt.Child(1)
+	if option == nil || option.Type(lang) != "perform_option" {
+		t.Fatalf("cobol perform_statement_call_proc.Child(1)=%v, want perform_option", option)
+	}
+	if got, want := option.EndByte(), uint32(106); got != want {
+		t.Fatalf("cobol perform_option.EndByte=%d, want %d", got, want)
+	}
+}
+
 func TestNginxAttributesCarryTrailingLineBreaks(t *testing.T) {
 	const src = "http {\n  server {\n    listen 80;\n    server_name example.com;\n  }\n}\n"
 	tree, lang := parseByLanguageName(t, "nginx", src)

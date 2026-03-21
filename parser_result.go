@@ -516,6 +516,7 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, p *Parser) {
 	case "cobol", "COBOL":
 		normalizeCobolLeadingAreaStart(root, source, lang)
 		normalizeCobolTopLevelDefinitionEnd(root, source, lang)
+		normalizeCobolDivisionSiblingEnds(root, source, lang)
 	case "comment":
 		normalizeCommentTrailingExtraTrivia(root, source, lang)
 	case "cooklang":
@@ -4025,6 +4026,32 @@ func normalizeCobolTopLevelDefinitionEnd(root *Node, source []byte, lang *Langua
 	}
 	def.endByte = end
 	def.endPoint = advancePointByBytes(Point{}, source[:end])
+}
+
+func normalizeCobolDivisionSiblingEnds(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil || (lang.Name != "cobol" && lang.Name != "COBOL") || root.Type(lang) != "start" || len(root.children) != 1 {
+		return
+	}
+	def := root.children[0]
+	if def == nil || def.IsExtra() || def.Type(lang) != "program_definition" {
+		return
+	}
+	for i := 0; i+1 < len(def.children); i++ {
+		cur := def.children[i]
+		next := def.children[i+1]
+		if cur == nil || next == nil || cur.IsExtra() || next.IsExtra() {
+			continue
+		}
+		if !strings.HasSuffix(cur.Type(lang), "_division") {
+			continue
+		}
+		end := lastNonTriviaByteEnd(source[:next.startByte])
+		if end == 0 || end <= cur.startByte || end >= cur.endByte {
+			continue
+		}
+		cur.endByte = end
+		cur.endPoint = advancePointByBytes(Point{}, source[:end])
+	}
 }
 
 func normalizeNimTopLevelCallEnd(root *Node, source []byte, lang *Language) {

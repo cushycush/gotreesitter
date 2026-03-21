@@ -3,6 +3,7 @@ package gotreesitter
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -215,6 +216,20 @@ func NewParser(lang *Language) *Parser {
 				p.forceRawSpanTable = make([]bool, len(lang.SymbolNames))
 			}
 			p.forceRawSpanTable[i] = true
+		}
+		if lang.Name == "cobol" || lang.Name == "COBOL" {
+			for i, name := range lang.SymbolNames {
+				if !strings.HasSuffix(name, "_division") &&
+					!strings.Contains(name, "_statement") &&
+					!strings.HasSuffix(name, "_option") &&
+					!strings.HasSuffix(name, "_clause") {
+					continue
+				}
+				if p.forceRawSpanTable == nil {
+					p.forceRawSpanTable = make([]bool, len(lang.SymbolNames))
+				}
+				p.forceRawSpanTable[i] = true
+			}
 		}
 		if lang.LargeStateCount > 0 {
 			p.denseLimit = int(lang.LargeStateCount)
