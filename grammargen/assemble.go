@@ -578,19 +578,23 @@ func buildExternalLexStates(lang *gotreesitter.Language, tables *LRTables, ng *N
 					if !ok || len(actionList) == 0 {
 						continue
 					}
-					// Suppress external symbol when a non-external terminal
-					// counterpart has the exact same action list. This means
-					// LALR merging conflated contexts where the external
-					// scanner should fire with contexts where only the
-					// regular terminal is valid. Deferring to the DFA is
-					// safe because the parser action is identical either way.
+					// Suppress hidden external symbols when a non-external
+					// counterpart has the exact same action list. This helps
+					// with merge artifacts like automatic semicolons, but
+					// visible aliased externals (for example TypeScript's
+					// ternary "?") still need the external scanner path even
+					// when the immediate parser action matches a plain token.
+					// Otherwise the lexer can commit to the plain token too
+					// early and lose the follow-up reduction chain.
 					suppressed := false
-					if cpSyms, hasCp := extCp[symID]; hasCp {
-						for _, cpSym := range cpSyms {
-							cpActs, cpOk := acts[cpSym]
-							if cpOk && len(cpActs) > 0 && actListsEqual(actionList, cpActs) {
-								suppressed = true
-								break
+					if !ng.Symbols[symID].Visible {
+						if cpSyms, hasCp := extCp[symID]; hasCp {
+							for _, cpSym := range cpSyms {
+								cpActs, cpOk := acts[cpSym]
+								if cpOk && len(cpActs) > 0 && actListsEqual(actionList, cpActs) {
+									suppressed = true
+									break
+								}
 							}
 						}
 					}

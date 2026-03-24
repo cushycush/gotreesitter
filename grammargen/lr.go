@@ -49,6 +49,7 @@ const (
 	templateContextTagShift          = 16
 	templateContextTagMask    uint32 = 0x00ff0000
 	templateContextPendingTag uint32 = 1 << templateContextTagShift
+	conditionalTypeContextTag uint32 = 1 << 10
 )
 
 func (set *lrItemSet) coreLookup(prodIdx, dot int) (int, bool) {
@@ -142,6 +143,9 @@ func buildLRTablesInternal(bgCtx context.Context, ng *NormalizedGrammar, trackPr
 			betaCache:       make(map[uint32]*betaResult),
 			trackProvenance: trackProvenance,
 		}
+		if trackProvenance && os.Getenv("GOT_DEBUG_LALR_LOOKAHEADS") == "1" {
+			ctx.trackLookaheadContributors = true
+		}
 
 		tokenCount := ng.TokenCount()
 		ctx.tokenCount = tokenCount
@@ -161,6 +165,24 @@ func buildLRTablesInternal(bgCtx context.Context, ng *NormalizedGrammar, trackPr
 			if sym >= 0 && sym < tokenCount {
 				ctx.boundaryLookaheads.add(sym)
 			}
+		}
+		// JS/TS-style grammars rely on an external automatic-semicolon token and
+		// frequently need to distinguish declaration-complete states that are
+		// immediately followed by a block-closing brace. Preserving `}` as an
+		// additional boundary lookahead keeps those states from collapsing under
+		// large-grammar core merging.
+		hasAutomaticSemicolon := false
+		closeBraceSym := -1
+		for sym := 0; sym < tokenCount; sym++ {
+			switch ng.Symbols[sym].Name {
+			case "_automatic_semicolon":
+				hasAutomaticSemicolon = true
+			case "}":
+				closeBraceSym = sym
+			}
+		}
+		if hasAutomaticSemicolon && closeBraceSym >= 0 {
+			ctx.boundaryLookaheads.add(closeBraceSym)
 		}
 		// Preserve large-grammar declaration boundaries that otherwise disappear
 		// under early core merging. Only activate for Scala-like grammars that
@@ -208,7 +230,13 @@ func buildLRTablesInternal(bgCtx context.Context, ng *NormalizedGrammar, trackPr
 		ctx.operatorIdentSym = -1
 		ctx.operatorStarSym = -1
 		ctx.nonNullLiteralSym = -1
+		ctx.conditionalTypeSym = -1
+		ctx.conditionalTypeExternalQmarkSym = -1
+		ctx.conditionalTypeExtendsSym = -1
+		ctx.conditionalTypePlainQmarkSym = -1
 		ctx.annotationArgCarrierLHS = make([]bool, len(ng.Symbols))
+		ctx.repeatWrapperLHS = make([]bool, len(ng.Symbols))
+		ctx.conditionalTypeCarrierLHS = make([]bool, len(ng.Symbols))
 		annotationArgCarrierNames := map[string]bool{
 			"arguments":                true,
 			"_exprs_in_parens":         true,
@@ -272,6 +300,35 @@ func buildLRTablesInternal(bgCtx context.Context, ng *NormalizedGrammar, trackPr
 			"_start_var":               true,
 			"type_definition":          true,
 		}
+		conditionalTypeCarrierNames := map[string]bool{
+			"type":                   true,
+			"primary_type":           true,
+			"conditional_type":       true,
+			"function_type":          true,
+			"readonly_type":          true,
+			"constructor_type":       true,
+			"infer_type":             true,
+			"parenthesized_type":     true,
+			"predefined_type":        true,
+			"generic_type":           true,
+			"object_type":            true,
+			"array_type":             true,
+			"tuple_type":             true,
+			"flow_maybe_type":        true,
+			"type_query":             true,
+			"index_type_query":       true,
+			"existential_type":       true,
+			"literal_type":           true,
+			"lookup_type":            true,
+			"template_literal_type":  true,
+			"intersection_type":      true,
+			"union_type":             true,
+			"type_arguments":         true,
+			"nested_type_identifier": true,
+			"identifier":             true,
+			"member_expression":      true,
+			"call_expression":        true,
+		}
 		for i, sym := range ng.Symbols {
 			switch sym.Name {
 			case "@":
@@ -294,12 +351,26 @@ func buildLRTablesInternal(bgCtx context.Context, ng *NormalizedGrammar, trackPr
 				ctx.operatorStarSym = i
 			case "_non_null_literal":
 				ctx.nonNullLiteralSym = i
+			case "conditional_type":
+				ctx.conditionalTypeSym = i
+			case "?":
+				ctx.conditionalTypeExternalQmarkSym = i
+			case "extends":
+				ctx.conditionalTypeExtendsSym = i
+			case "\\?":
+				ctx.conditionalTypePlainQmarkSym = i
 			}
 			if annotationArgCarrierNames[sym.Name] {
 				ctx.annotationArgCarrierLHS[i] = true
 			}
 			if templateDefinitionCarrierNames[sym.Name] {
 				ctx.templateDefinitionCarrierLHS[i] = true
+			}
+			if strings.Contains(sym.Name, "repeat") {
+				ctx.repeatWrapperLHS[i] = true
+			}
+			if conditionalTypeCarrierNames[sym.Name] {
+				ctx.conditionalTypeCarrierLHS[i] = true
 			}
 		}
 		expandTemplateDefinitionCarriers(ng, ctx.templateDefinitionCarrierLHS, tokenCount)
@@ -590,6 +661,7 @@ type lrContext struct {
 	// reconstruct nonterminal predecessor partitions with meaningful lookaheads
 	// instead of the empty LR(0) kernels emitted by DeRemer/Pennello.
 	lalrFollowByTransition map[[2]int]bitset
+	lalrNTTransitions      []ntTransition
 
 	// Merge provenance tracking (diagnostic metadata, does not affect construction)
 	provenance                 *mergeProvenance
@@ -625,9 +697,15 @@ type lrContext struct {
 	definitionBoundaryTagBySym   []uint32
 	annotationArgCarrierLHS      []bool
 	templateDefinitionCarrierLHS []bool
+	repeatWrapperLHS             []bool
 	operatorIdentSym             int
 	operatorStarSym              int
 	nonNullLiteralSym            int
+	conditionalTypeSym           int
+	conditionalTypeExternalQmarkSym int
+	conditionalTypeExtendsSym    int
+	conditionalTypePlainQmarkSym int
+	conditionalTypeCarrierLHS    []bool
 
 	// Reusable closure queue scratch keeps closureToSet/closureIncremental from
 	// reallocating worklists and in-queue tracking on every item-set build.
@@ -645,6 +723,8 @@ type lrContext struct {
 	lookaheadWordCount int
 	lookaheadWordPool  [][]uint64
 	maxLookaheadPool   int
+
+	repeatWrapperStateSymCache map[uint64]int
 
 	// preciseStateBudgetExceeded marks that the precise external-grammar LR(1)
 	// builder crossed its configured state budget and should be retried via the
@@ -750,6 +830,8 @@ func (ctx *lrContext) releaseScratch() {
 	ctx.gotoSymbolsScratch = nil
 	ctx.gotoAdvancedScratch = nil
 	ctx.lookaheadWordPool = nil
+	ctx.repeatWrapperStateSymCache = nil
+	ctx.lalrNTTransitions = nil
 }
 
 func (ctx *lrContext) allocLookaheadBitset() bitset {
@@ -784,6 +866,21 @@ func (ctx *lrContext) recycleItemSetLookaheads(set *lrItemSet) {
 	set.cores = nil
 	set.coreIndex = nil
 	set.packedCoreIndex = nil
+}
+
+func (ctx *lrContext) ensureRepeatWrapperLHS() {
+	if ctx == nil || ctx.ng == nil {
+		return
+	}
+	if len(ctx.repeatWrapperLHS) == len(ctx.ng.Symbols) {
+		return
+	}
+	ctx.repeatWrapperLHS = make([]bool, len(ctx.ng.Symbols))
+	for i, sym := range ctx.ng.Symbols {
+		if strings.Contains(sym.Name, "repeat") {
+			ctx.repeatWrapperLHS[i] = true
+		}
+	}
 }
 
 type extraChainBuilder struct {
@@ -1717,6 +1814,7 @@ func (ctx *lrContext) completedRepeatWrapperLHS(set *lrItemSet, sym int) int {
 }
 
 func (ctx *lrContext) completedRepeatWrapperLHSAcrossTransitions(set *lrItemSet, sym int, allowTerminal bool) int {
+	ctx.ensureRepeatWrapperLHS()
 	if sym < ctx.tokenCount {
 		if !allowTerminal {
 			return -1
@@ -1730,18 +1828,34 @@ func (ctx *lrContext) completedRepeatWrapperLHSAcrossTransitions(set *lrItemSet,
 		if prod.LHS < 0 || prod.LHS >= len(ctx.ng.Symbols) {
 			continue
 		}
-		if strings.Contains(ctx.ng.Symbols[prod.LHS].Name, "repeat") {
+		if ctx.repeatWrapperLHS[prod.LHS] {
 			return prod.LHS
 		}
 	}
 	return -1
 }
 
+func (ctx *lrContext) completedRepeatWrapperStateLHS(state, sym int) int {
+	if ctx == nil || state < 0 || state >= len(ctx.itemSets) {
+		return -1
+	}
+	if ctx.repeatWrapperStateSymCache == nil {
+		ctx.repeatWrapperStateSymCache = make(map[uint64]int)
+	}
+	key := packCoreItemKey(state, sym)
+	if cached := ctx.repeatWrapperStateSymCache[key]; cached != 0 {
+		return cached - 2
+	}
+	lhs := ctx.completedRepeatWrapperLHSAcrossTransitions(&ctx.itemSets[state], sym, true)
+	ctx.repeatWrapperStateSymCache[key] = lhs + 2
+	return lhs
+}
+
 func (ctx *lrContext) isRepetitionShift(sourceState, sym, targetState int) bool {
 	if ctx == nil || sourceState < 0 || targetState < 0 || sourceState >= len(ctx.itemSets) || targetState >= len(ctx.itemSets) {
 		return false
 	}
-	lhs := ctx.completedRepeatWrapperLHSAcrossTransitions(&ctx.itemSets[targetState], sym, true)
+	lhs := ctx.completedRepeatWrapperStateLHS(targetState, sym)
 	if lhs < 0 {
 		return false
 	}
@@ -1779,6 +1893,63 @@ func (ctx *lrContext) repeatWrapperSourceTagForTransition(sourceState, sym int, 
 	}
 	if ctx.stateHasRecursiveRepeatSource(&ctx.itemSets[sourceState], lhs) {
 		return 1 << 24
+	}
+	return 0
+}
+
+func (ctx *lrContext) isConditionalTypeCarrierSet(set *lrItemSet) bool {
+	if ctx == nil || len(ctx.conditionalTypeCarrierLHS) == 0 {
+		return false
+	}
+	for _, ce := range set.cores {
+		prod := ctx.ng.Productions[ce.prodIdx]
+		if prod.LHS >= 0 && prod.LHS < len(ctx.conditionalTypeCarrierLHS) && ctx.conditionalTypeCarrierLHS[prod.LHS] {
+			return true
+		}
+	}
+	return false
+}
+
+func (ctx *lrContext) stateEntersConditionalTypeRHS(state, sym int) bool {
+	if ctx == nil || state < 0 || state >= len(ctx.itemSets) {
+		return false
+	}
+	if ctx.conditionalTypeSym < 0 || ctx.conditionalTypeExtendsSym < 0 || ctx.conditionalTypePlainQmarkSym < 0 {
+		return false
+	}
+	if sym == ctx.conditionalTypePlainQmarkSym {
+		return false
+	}
+	for _, ce := range ctx.itemSets[state].cores {
+		prod := ctx.ng.Productions[ce.prodIdx]
+		if prod.LHS != ctx.conditionalTypeSym || len(prod.RHS) < 4 {
+			continue
+		}
+		if prod.RHS[1] != ctx.conditionalTypeExtendsSym || prod.RHS[3] != ctx.conditionalTypePlainQmarkSym {
+			continue
+		}
+		if ce.dot == 1 && ce.dot < len(prod.RHS) && prod.RHS[ce.dot] == ctx.conditionalTypeExtendsSym && sym == ctx.conditionalTypeExtendsSym {
+			return true
+		}
+	}
+	return false
+}
+
+func (ctx *lrContext) conditionalTypeContextTagForTransition(sourceState, sym int, closedSet *lrItemSet) uint32 {
+	if os.Getenv("GOT_LR_DISABLE_CONTEXT_TAGS") == "1" {
+		return 0
+	}
+	if len(ctx.ng.Productions) < 2000 || sourceState < 0 || sourceState >= len(ctx.itemSets) {
+		return 0
+	}
+	if !ctx.isConditionalTypeCarrierSet(closedSet) {
+		return 0
+	}
+	if ctx.itemSets[sourceState].annotationArgTag&conditionalTypeContextTag != 0 {
+		return conditionalTypeContextTag
+	}
+	if ctx.stateEntersConditionalTypeRHS(sourceState, sym) {
+		return conditionalTypeContextTag
 	}
 	return 0
 }
@@ -2119,6 +2290,7 @@ func (ctx *lrContext) buildItemSets() []lrItemSet {
 			closedSet.annotationArgTag = ctx.annotationArgTagForTransition(stateIdx, &closedSet)
 			closedSet.annotationArgTag |= ctx.templateContextTagForTransition(stateIdx, sym, &closedSet)
 			closedSet.annotationArgTag |= ctx.repeatWrapperSourceTagForTransition(stateIdx, sym, &closedSet)
+			closedSet.annotationArgTag |= ctx.conditionalTypeContextTagForTransition(stateIdx, sym, &closedSet)
 			closedSet.annotationArgTag |= ctx.operatorLiteralMergeTag(&closedSet)
 			ctx.gotoAdvancedScratch = advanced[:0]
 
@@ -2649,6 +2821,12 @@ func resolveReduceReduceLegacy(lookaheadSym int, reduces []lrAction, ng *Normali
 	if allInDeclaredConflict(reduces, ng, cache) {
 		return reduces, nil
 	}
+	if shouldKeepTypeValueTokenReduces(lookaheadSym, reduces, ng) {
+		if resolvedByPrec := rrPrecResolve(reduces, ng); resolvedByPrec != nil {
+			return resolvedByPrec, nil
+		}
+		return reduces, nil
+	}
 	if shouldKeepRepeatedAnnotationReduces(lookaheadSym, reduces, ng) {
 		return reduces, nil
 	}
@@ -2677,6 +2855,70 @@ func resolveReduceReduceLegacy(lookaheadSym int, reduces []lrAction, ng *Normali
 	return rrPickBest(reduces, ng), nil
 }
 
+func shouldKeepTypeValueTokenReduces(lookaheadSym int, reduces []lrAction, ng *NormalizedGrammar) bool {
+	if len(reduces) < 2 || ng == nil {
+		return false
+	}
+	if lookaheadSym < 0 || lookaheadSym >= len(ng.Symbols) {
+		return false
+	}
+	switch ng.Symbols[lookaheadSym].Name {
+	case ">", "?", ":", ";", ",", ")", "]", "extends":
+	default:
+		return false
+	}
+
+	rhsSym := -1
+	hasTypeLike := false
+	hasValueLike := false
+	for _, r := range reduces {
+		if r.prodIdx < 0 || r.prodIdx >= len(ng.Productions) {
+			return false
+		}
+		prod := ng.Productions[r.prodIdx]
+		if len(prod.RHS) != 1 {
+			return false
+		}
+		if rhsSym == -1 {
+			rhsSym = prod.RHS[0]
+		} else if prod.RHS[0] != rhsSym {
+			return false
+		}
+		if prod.LHS < 0 || prod.LHS >= len(ng.Symbols) {
+			return false
+		}
+		lhsName := ng.Symbols[prod.LHS].Name
+		if isTypeLikeTokenWrapper(lhsName) {
+			hasTypeLike = true
+			continue
+		}
+		if isValueLikeTokenWrapper(lhsName) {
+			hasValueLike = true
+			continue
+		}
+		return false
+	}
+	return hasTypeLike && hasValueLike
+}
+
+func isTypeLikeTokenWrapper(name string) bool {
+	switch name {
+	case "type_identifier", "predefined_type", "literal_type", "primary_type":
+		return true
+	default:
+		return false
+	}
+}
+
+func isValueLikeTokenWrapper(name string) bool {
+	switch name {
+	case "identifier", "property_identifier", "primary_expression":
+		return true
+	default:
+		return false
+	}
+}
+
 // rrPrecResolve tries to resolve R/R conflicts via precedence. Returns nil
 // if all reduces share the same (prec, dynPrec) and no resolution is possible.
 func rrPrecResolve(reduces []lrAction, ng *NormalizedGrammar) []lrAction {
@@ -2702,6 +2944,53 @@ func rrPickBest(reduces []lrAction, ng *NormalizedGrammar) []lrAction {
 	bestProd := &ng.Productions[best.prodIdx]
 	for _, r := range reduces[1:] {
 		rProd := &ng.Productions[r.prodIdx]
+		if ng.PrecedenceOrder != nil {
+			bestLHSName := ""
+			if bestProd.LHS >= 0 && bestProd.LHS < len(ng.Symbols) {
+				bestLHSName = ng.Symbols[bestProd.LHS].Name
+			}
+			rLHSName := ""
+			if rProd.LHS >= 0 && rProd.LHS < len(ng.Symbols) {
+				rLHSName = ng.Symbols[rProd.LHS].Name
+			}
+
+			// Tree-sitter's named precedence levels can outrank or lose to
+			// symbol entries in the same precedence table. Preserve that for
+			// reduce/reduce conflicts too, not just shift/reduce conflicts.
+			if bestProd.Prec == 0 && rProd.Prec > 0 && bestLHSName != "" {
+				cmp := ng.PrecedenceOrder.resolveSymbolVsNamedPrec(bestLHSName, rProd.Prec)
+				if cmp > 0 {
+					continue
+				}
+				if cmp < 0 {
+					best = r
+					bestProd = rProd
+					continue
+				}
+			}
+			if rProd.Prec == 0 && bestProd.Prec > 0 && rLHSName != "" {
+				cmp := ng.PrecedenceOrder.resolveSymbolVsNamedPrec(rLHSName, bestProd.Prec)
+				if cmp > 0 {
+					best = r
+					bestProd = rProd
+					continue
+				}
+				if cmp < 0 {
+					continue
+				}
+			}
+			if bestProd.Prec == 0 && rProd.Prec == 0 && bestLHSName != "" && rLHSName != "" && bestLHSName != rLHSName {
+				cmp := ng.PrecedenceOrder.resolveSymbolVsSymbol(rLHSName, bestLHSName)
+				if cmp > 0 {
+					best = r
+					bestProd = rProd
+					continue
+				}
+				if cmp < 0 {
+					continue
+				}
+			}
+		}
 		if rProd.Prec > bestProd.Prec {
 			best = r
 			bestProd = rProd

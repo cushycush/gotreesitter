@@ -115,6 +115,7 @@ func (ctx *lrContext) buildLR0() {
 			closedSet.annotationArgTag = ctx.annotationArgTagForTransition(stateIdx, &closedSet)
 			closedSet.annotationArgTag |= ctx.templateContextTagForTransition(stateIdx, sym, &closedSet)
 			closedSet.annotationArgTag |= ctx.repeatWrapperSourceTagForTransition(stateIdx, sym, &closedSet)
+			closedSet.annotationArgTag |= ctx.conditionalTypeContextTagForTransition(stateIdx, sym, &closedSet)
 			closedSet.annotationArgTag |= ctx.operatorLiteralMergeTag(&closedSet)
 
 			// Find existing state with same core, or create new.
@@ -272,6 +273,9 @@ func (ctx *lrContext) computeLALRLookaheads() {
 			nonterm: p.sym,
 			target:  p.target,
 		})
+	}
+	if ctx.trackLookaheadContributors {
+		ctx.lalrNTTransitions = append(ctx.lalrNTTransitions[:0], ntTrans...)
 	}
 
 	numTrans := len(ntTrans)
@@ -508,9 +512,30 @@ func (ctx *lrContext) computeLALRLookaheads() {
 		}
 	}
 
+	ctx.pruneConditionalTypeQmarkLookaheads()
+
 	// Recompute hashes now that lookaheads are populated.
 	for i := range ctx.itemSets {
 		ctx.itemSets[i].computeHashes(ng.Productions, &ctx.boundaryLookaheads, false)
+	}
+}
+
+func (ctx *lrContext) pruneConditionalTypeQmarkLookaheads() {
+	if ctx == nil || ctx.conditionalTypeExternalQmarkSym < 0 || ctx.conditionalTypePlainQmarkSym < 0 {
+		return
+	}
+	for i := range ctx.itemSets {
+		set := &ctx.itemSets[i]
+		if set.annotationArgTag&conditionalTypeContextTag == 0 {
+			continue
+		}
+		for ci := range set.cores {
+			ce := &set.cores[ci]
+			if !ce.lookaheads.contains(ctx.conditionalTypeExternalQmarkSym) || !ce.lookaheads.contains(ctx.conditionalTypePlainQmarkSym) {
+				continue
+			}
+			ce.lookaheads.clear(ctx.conditionalTypeExternalQmarkSym)
+		}
 	}
 }
 

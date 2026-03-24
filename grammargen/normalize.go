@@ -2455,6 +2455,7 @@ func flattenRule2(r *Rule, lhsID int, st *symbolTable, prodIDCounter *int) []Pro
 		// Enumerate all alternatives from Choice-within-Seq by expanding
 		// the rule into a list of "flat" RHS sequences.
 		alternatives := enumerateAlternatives(inner)
+		trailingAutoSemiOptional := hasTrailingAutomaticSemicolonOptional(inner)
 		var prods []Production
 		for _, alt := range alternatives {
 			// Compute per-alternative prec: use rightmost element's prec
@@ -2483,7 +2484,8 @@ func flattenRule2(r *Rule, lhsID int, st *symbolTable, prodIDCounter *int) []Pro
 					altHasInnerPrec = true
 				}
 			}
-			if altIncludesBlankChoice && !altHasInnerPrec && prec == 0 && dynPrec == 0 {
+			trailingAutoSemiBlankOmission := trailingAutoSemiOptional && len(alt) > 0 && alt[len(alt)-1].blank
+			if altIncludesBlankChoice && !altHasInnerPrec && prec == 0 && dynPrec == 0 && !trailingAutoSemiBlankOmission {
 				// Alternatives expanded from a blank choice arm should not inherit
 				// an outer explicit zero-precedence wrapper. Otherwise optional
 				// suffixes like seq(name, choice(statement_block, blank)) get a
@@ -2518,6 +2520,70 @@ func flattenRule2(r *Rule, lhsID int, st *symbolTable, prodIDCounter *int) []Pro
 		}
 		return prods
 	}
+}
+
+func hasTrailingAutomaticSemicolonOptional(r *Rule) bool {
+	if r == nil || r.Kind != RuleSeq || len(r.Children) == 0 {
+		return false
+	}
+
+	last := r.Children[len(r.Children)-1]
+	for last != nil {
+		switch last.Kind {
+		case RuleField, RuleAlias, RulePrec, RulePrecLeft, RulePrecRight, RulePrecDynamic:
+			if len(last.Children) == 0 {
+				return false
+			}
+			last = last.Children[0]
+		default:
+			goto unwrapped
+		}
+	}
+
+unwrapped:
+	if last == nil || last.Kind != RuleChoice {
+		return false
+	}
+
+	hasBlank := false
+	hasAutoSemi := false
+	for _, child := range last.Children {
+		inner := child
+		for inner != nil {
+			switch inner.Kind {
+			case RuleField, RuleAlias, RulePrec, RulePrecLeft, RulePrecRight, RulePrecDynamic:
+				if len(inner.Children) == 0 {
+					return false
+				}
+				inner = inner.Children[0]
+			default:
+				goto childUnwrapped
+			}
+		}
+
+	childUnwrapped:
+		if inner == nil {
+			return false
+		}
+		switch inner.Kind {
+		case RuleBlank:
+			hasBlank = true
+		case RuleSymbol:
+			if inner.Value != "_automatic_semicolon" {
+				return false
+			}
+			hasAutoSemi = true
+		case RuleString:
+			if inner.Value != ";" {
+				return false
+			}
+			hasAutoSemi = true
+		default:
+			return false
+		}
+	}
+
+	return hasBlank && hasAutoSemi
 }
 
 // rhsElement is a single element in a flattened RHS.

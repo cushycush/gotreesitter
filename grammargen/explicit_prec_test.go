@@ -179,6 +179,47 @@ func TestFlattenRuleSeqBlankChoiceDoesNotInheritExplicitZeroPrecedence(t *testin
 	}
 }
 
+func TestFlattenRuleSeqTrailingAutomaticSemicolonKeepsExplicitZeroPrecedence(t *testing.T) {
+	st := newSymbolTable()
+	lhs := st.addSymbol("statement_block", SymbolInfo{Name: "statement_block", Kind: SymbolNonterminal})
+	st.addSymbol("{", SymbolInfo{Name: "{", Kind: SymbolTerminal})
+	st.addSymbol("}", SymbolInfo{Name: "}", Kind: SymbolTerminal})
+	st.addSymbol("statement", SymbolInfo{Name: "statement", Kind: SymbolNonterminal})
+	st.addSymbol("_automatic_semicolon", SymbolInfo{Name: "_automatic_semicolon", Kind: SymbolTerminal})
+
+	prodID := 0
+	prods := flattenRule2(PrecRight(0, Seq(
+		Str("{"),
+		Sym("statement"),
+		Str("}"),
+		Choice(Sym("_automatic_semicolon"), Blank()),
+	)), lhs, st, &prodID)
+	if len(prods) != 2 {
+		t.Fatalf("flattenRule2 produced %d productions, want 2", len(prods))
+	}
+
+	var sawWithSemi, sawWithoutSemi bool
+	for _, p := range prods {
+		switch len(p.RHS) {
+		case 4:
+			sawWithSemi = true
+			if !p.HasExplicitPrec || p.Assoc != AssocRight {
+				t.Fatalf("semicolon alternative lost explicit zero precedence metadata: %+v", p)
+			}
+		case 3:
+			sawWithoutSemi = true
+			if !p.HasExplicitPrec || p.Assoc != AssocRight {
+				t.Fatalf("blank-suffix alternative lost explicit zero precedence metadata: %+v", p)
+			}
+		default:
+			t.Fatalf("unexpected production shape: %+v", p)
+		}
+	}
+	if !sawWithSemi || !sawWithoutSemi {
+		t.Fatalf("missing expected trailing-semicolon alternatives: %+v", prods)
+	}
+}
+
 func TestFlattenRuleChoiceNonterminalWrapperDoesNotInheritExplicitZeroAssoc(t *testing.T) {
 	st := newSymbolTable()
 	lhs := st.addSymbol("_string", SymbolInfo{Name: "_string", Kind: SymbolNonterminal})
