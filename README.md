@@ -422,20 +422,50 @@ GOT_PARSE_NODE_LIMIT_SCALE=3
 ## Testing
 
 ```sh
-go test ./... -race -count=1
+bash cgo_harness/docker/run_single_grammar_parity.sh typescript
 ```
 
-Correctness/parity gate commands used in CI and performance work:
+For local correctness/parity work, prefer isolated one-language Docker runs:
 
 ```sh
-# Top-50 smoke correctness
-go test ./grammars -run '^TestTop50ParseSmokeNoErrors$' -count=1 -v
+# Real-corpus parity for one grammar
+bash cgo_harness/docker/run_single_grammar_parity.sh typescript
 
-# C-oracle parity suites
-cd cgo_harness
-go test . -tags treesitter_c_parity -run '^TestParityFreshParse$|^TestParityHasNoErrors$|^TestParityIssue3Repros$|^TestParityGLRCanaryGo$' -count=1 -v
-go test . -tags treesitter_c_parity -run '^TestParityCorpusFreshParse$' -count=1 -v
+# Focused grammargen real-corpus lane for one language
+bash cgo_harness/docker/run_grammargen_focus_targets.sh --mode real-corpus --langs typescript
+
+# Focused grammargen-vs-C lane for one language
+bash cgo_harness/docker/run_grammargen_focus_targets.sh --mode cgo --langs typescript
 ```
+
+If you only need a fast package-local regression check, keep it in Docker and
+narrow the `-run` regex:
+
+```sh
+bash cgo_harness/docker/run_parity_in_docker.sh \
+  -- "cd /workspace && go test ./grammargen -run '^TestTypeScriptConditionalTypeParity$' -count=1"
+```
+
+Avoid `go test ./...` and host-side multi-language or race sweeps on developer
+machines while chasing OOMs. Use CI or a dedicated container when broader race
+coverage is required.
+
+Other focused correctness/parity commands:
+
+```sh
+# Top-50 smoke correctness for the grammars package only
+bash cgo_harness/docker/run_parity_in_docker.sh \
+  -- "cd /workspace && go test ./grammars -run '^TestTop50ParseSmokeNoErrors$' -count=1 -v"
+
+# C-oracle parity suites inside the cgo harness
+bash cgo_harness/docker/run_parity_in_docker.sh \
+  --run '^TestParityFreshParse$|^TestParityHasNoErrors$|^TestParityIssue3Repros$|^TestParityGLRCanaryGo$'
+bash cgo_harness/docker/run_parity_in_docker.sh \
+  --run '^TestParityCorpusFreshParse$'
+```
+
+CI may still run broader race coverage on hosted runners. Do not copy those
+commands onto a developer host during OOM diagnosis.
 
 Test suite covers: smoke tests (206 grammars), golden S-expression snapshots, highlight query validation, query pattern matching, incremental reparse correctness, error recovery, GLR fork/merge, injection parsing, source rewriting, and fuzz targets.
 

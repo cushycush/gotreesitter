@@ -375,16 +375,25 @@ INNER_EOF
   local summary
   summary=$(grep -E 'real-corpus\[' "$log_file" 2>/dev/null | tail -1 || echo "NO SUMMARY")
   local is_oom="false"
+  local parity_status="fail"
   if grep -q '^oom_killed: true$' "$log_file" 2>/dev/null; then
     is_oom="true"
+  elif [[ "$summary" =~ no-error[[:space:]]+([0-9]+)/([0-9]+),[[:space:]]+sexpr[[:space:]]+parity[[:space:]]+([0-9]+)/([0-9]+),[[:space:]]+deep[[:space:]]+parity[[:space:]]+([0-9]+)/([0-9]+) ]]; then
+    if [[ "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" &&
+          "${BASH_REMATCH[3]}" == "${BASH_REMATCH[4]}" &&
+          "${BASH_REMATCH[5]}" == "${BASH_REMATCH[6]}" ]]; then
+      parity_status="ok"
+    fi
   fi
 
   if [[ "$is_oom" == "true" ]]; then
     echo "RESULT: $grammar — OOM KILLED"
   elif [[ "$exit_code" != "0" ]]; then
     echo "RESULT: $grammar — FAILED (exit=$exit_code) | $summary"
+  elif [[ "$parity_status" == "ok" ]]; then
+    echo "RESULT: $grammar — PARITY | $summary"
   else
-    echo "RESULT: $grammar — OK | $summary"
+    echo "RESULT: $grammar — MISMATCH | $summary"
   fi
   echo ""
 
@@ -407,7 +416,8 @@ for grammar in "${GRAMMARS[@]}"; do
   log="$REPORT_DIR/diag_${grammar}.log"
   if grep -q '^oom_killed: true$' "$log" 2>/dev/null; then
     ((oom++)) || true
-  elif grep -q '^exit_code: 0$' "$log" 2>/dev/null; then
+  elif grep -q '^exit_code: 0$' "$log" 2>/dev/null &&
+       grep -Eq 'real-corpus\[.*no-error[[:space:]]+([0-9]+)/\1,[[:space:]]+sexpr[[:space:]]+parity[[:space:]]+([0-9]+)/\2,[[:space:]]+deep[[:space:]]+parity[[:space:]]+([0-9]+)/\3' "$log" 2>/dev/null; then
     ((passed++)) || true
   else
     ((failed++)) || true
