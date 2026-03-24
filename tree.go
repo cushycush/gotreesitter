@@ -35,9 +35,27 @@ type Node struct {
 	hasError     bool
 	dirty        bool // set by Tree.Edit for nodes touched by edits
 	productionID uint16
+	equivVersion uint32
 	parent       *Node
 	childIndex   int
 	ownerArena   *nodeArena
+}
+
+func nodeInitEquivVersion(n *Node) {
+	if n == nil {
+		return
+	}
+	n.equivVersion = 1
+}
+
+func nodeBumpEquivVersion(n *Node) {
+	if n == nil {
+		return
+	}
+	n.equivVersion++
+	if n.equivVersion == 0 {
+		n.equivVersion = 1
+	}
 }
 
 func defaultFieldSources(fieldIDs []FieldID) []uint8 {
@@ -483,7 +501,7 @@ func (n *Node) NamedDescendantForPointRange(startPoint, endPoint Point) *Node {
 
 // NewLeafNode creates a terminal/leaf node.
 func NewLeafNode(sym Symbol, named bool, startByte, endByte uint32, startPoint, endPoint Point) *Node {
-	return &Node{
+	n := &Node{
 		symbol:     sym,
 		isNamed:    named,
 		startByte:  startByte,
@@ -492,6 +510,8 @@ func NewLeafNode(sym Symbol, named bool, startByte, endByte uint32, startPoint, 
 		endPoint:   endPoint,
 		childIndex: -1,
 	}
+	nodeInitEquivVersion(n)
+	return n
 }
 
 func populateParentNode(n *Node, children []*Node) {
@@ -634,6 +654,7 @@ func newParentNode(arena *nodeArena, sym Symbol, named bool, children []*Node, f
 	n.productionID = productionID
 	n.childIndex = -1
 	populateParentNode(n, children)
+	nodeInitEquivVersion(n)
 	return n
 }
 
@@ -666,6 +687,7 @@ func newLeafNodeInArena(arena *nodeArena, sym Symbol, named bool, startByte, end
 	n.endPoint = endPoint
 	n.childIndex = -1
 	n.ownerArena = arena
+	nodeInitEquivVersion(n)
 	if arena.audit != nil {
 		arena.audit.recordNodeAlloc(n, runtimeAuditNodeKindLeaf)
 	}
@@ -697,6 +719,7 @@ func newParentNodeInArenaWithFieldSources(arena *nodeArena, sym Symbol, named bo
 	n.productionID = productionID
 	n.childIndex = -1
 	populateParentNode(n, children)
+	nodeInitEquivVersion(n)
 	if arena.audit != nil {
 		arena.audit.recordNodeAlloc(n, runtimeAuditNodeKindParent)
 	}
@@ -728,6 +751,7 @@ func newParentNodeInArenaNoLinksWithFieldSources(arena *nodeArena, sym Symbol, n
 	n.productionID = productionID
 	n.childIndex = -1
 	populateParentNodeNoLinks(n, children, trackChildErrors)
+	nodeInitEquivVersion(n)
 	if arena.audit != nil {
 		arena.audit.recordNodeAlloc(n, runtimeAuditNodeKindParent)
 	}

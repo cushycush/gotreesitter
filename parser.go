@@ -1131,6 +1131,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		defer closer.Close()
 	}
 	scratch := acquireParserScratch()
+	scratch.merge.beginEquivEpoch()
 	if deferParentLinks {
 		scratch.gss.initialCap = p.fullGSSHintCapacity()
 	} else {
