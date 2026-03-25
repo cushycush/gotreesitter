@@ -508,6 +508,8 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, p *Parser) {
 		normalizeCTranslationUnitRoot(root, lang)
 		normalizeCPreprocessorDirectiveShapes(root, source, lang)
 		normalizeCDeclarationBounds(root, source, lang)
+		normalizeCBuiltinPrimitiveTypeIdentifiers(root, source, lang)
+		normalizeCVariadicParameterEllipsis(root, lang)
 		normalizeCSizeofUnknownTypeIdentifiers(root, source, lang)
 		normalizeCCastUnknownTypeIdentifiers(root, source, lang)
 		normalizeCPointerAssignmentPrecedence(root, lang)
@@ -1228,7 +1230,7 @@ func normalizeCPreprocessorDirectiveShapes(root *Node, source []byte, lang *Lang
 		}
 		if consumed, ok := normalizeCPreprocessorDirectiveRange(child, source, lang); ok {
 			changed = true
-			for i+1 < len(root.children) && root.children[i+1] != nil && root.children[i+1].startByte < consumed {
+			for i+1 < len(root.children) && root.children[i+1] != nil && root.children[i+1].startByte < consumed && root.children[i+1].endByte <= consumed {
 				i++
 			}
 		}
@@ -1502,7 +1504,7 @@ func normalizeCSizeofUnknownTypeIdentifiers(root *Node, source []byte, lang *Lan
 				typeIdent := typeDescriptor.children[0]
 				if typeIdent != nil && typeIdent.symbol == typeIdentifierSym {
 					name := canonicalCTypeName(typeIdent.Text(source))
-					if _, ok := localTypes[name]; !ok && !looksLikeCTypedefName(name) {
+					if _, ok := localTypes[name]; !ok {
 						ident := newLeafNodeInArena(n.ownerArena, identifierSym, identifierNamed, typeIdent.startByte, typeIdent.endByte, typeIdent.startPoint, typeIdent.endPoint)
 						paren := newParentNodeInArena(n.ownerArena, parenthesizedSym, parenthesizedNamed, []*Node{n.children[1], ident, n.children[3]}, nil, 0)
 						replaceChildRangeWithSingleNode(n, 1, 4, paren)
@@ -1514,6 +1516,67 @@ func normalizeCSizeofUnknownTypeIdentifiers(root *Node, source []byte, lang *Lan
 					}
 				}
 			}
+		}
+		for _, child := range n.children {
+			rewrite(child)
+		}
+	}
+	rewrite(root)
+}
+
+func normalizeCBuiltinPrimitiveTypeIdentifiers(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "c" {
+		return
+	}
+	primitiveTypeSym, ok := lang.SymbolByName("primitive_type")
+	if !ok {
+		return
+	}
+	primitiveTypeNamed := false
+	if int(primitiveTypeSym) < len(lang.SymbolMetadata) {
+		primitiveTypeNamed = lang.SymbolMetadata[primitiveTypeSym].Named
+	}
+	var rewrite func(*Node)
+	rewrite = func(n *Node) {
+		if n == nil {
+			return
+		}
+		if n.Type(lang) == "type_identifier" && isCBuiltinPrimitiveTypeName(canonicalCTypeName(n.Text(source))) {
+			n.symbol = primitiveTypeSym
+			n.isNamed = primitiveTypeNamed
+		}
+		for _, child := range n.children {
+			rewrite(child)
+		}
+	}
+	rewrite(root)
+}
+
+func normalizeCVariadicParameterEllipsis(root *Node, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "c" {
+		return
+	}
+	variadicSym, ok := lang.SymbolByName("variadic_parameter")
+	if !ok {
+		return
+	}
+	ellipsisSym, ok := lang.SymbolByName("...")
+	if !ok {
+		return
+	}
+	ellipsisNamed := false
+	if int(ellipsisSym) < len(lang.SymbolMetadata) {
+		ellipsisNamed = lang.SymbolMetadata[ellipsisSym].Named
+	}
+	var rewrite func(*Node)
+	rewrite = func(n *Node) {
+		if n == nil {
+			return
+		}
+		if n.symbol == variadicSym && len(n.children) == 0 {
+			child := newLeafNodeInArena(n.ownerArena, ellipsisSym, ellipsisNamed, n.startByte, n.endByte, n.startPoint, n.endPoint)
+			n.children = cloneNodeSliceInArena(n.ownerArena, []*Node{child})
+			populateParentNode(n, n.children)
 		}
 		for _, child := range n.children {
 			rewrite(child)
@@ -1676,7 +1739,7 @@ func normalizeCCastUnknownTypeIdentifiers(root *Node, source []byte, lang *Langu
 				}
 				if ident != nil {
 					name := canonicalCTypeName(ident.Text(source))
-					if _, ok := localTypes[name]; ok || looksLikeCTypedefName(name) {
+					if _, ok := localTypes[name]; ok {
 						typeIdent := newLeafNodeInArena(n.ownerArena, typeIdentifierSym, typeIdentifierNamed, ident.startByte, ident.endByte, ident.startPoint, ident.endPoint)
 						typeDescriptor := newParentNodeInArena(n.ownerArena, typeDescriptorSym, typeDescriptorNamed, []*Node{typeIdent}, nil, 0)
 						var valueNode *Node
@@ -1799,8 +1862,17 @@ func isCAssignmentOperatorToken(tok string) bool {
 	}
 }
 
-func looksLikeCTypedefName(name string) bool {
-	return strings.HasSuffix(name, "_t") || strings.HasSuffix(name, "_T")
+func isCBuiltinPrimitiveTypeName(name string) bool {
+	switch name {
+	case "char", "int", "float", "double", "void", "_Bool", "_Complex", "bool", "__int128",
+		"size_t", "ssize_t", "ptrdiff_t", "intptr_t", "uintptr_t",
+		"int8_t", "int16_t", "int32_t", "int64_t",
+		"uint8_t", "uint16_t", "uint32_t", "uint64_t",
+		"wchar_t", "char16_t", "char32_t":
+		return true
+	default:
+		return false
+	}
 }
 
 func canonicalCTypeName(name string) string {
