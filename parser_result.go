@@ -518,18 +518,6 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, p *Parser) {
 	case "c_sharp":
 		normalizeCSharpTypeConstraintKeywords(root, lang)
 		normalizeCSharpSwitchTupleCasePatterns(root, lang)
-		normalizeCollapsedNamedLeafChildren(root, lang, "predefined_type", "void")
-		normalizeCollapsedNamedLeafChildren(root, lang, "predefined_type", "int")
-		normalizeCollapsedNamedLeafChildren(root, lang, "predefined_type", "string")
-		normalizeCollapsedNamedLeafChildren(root, lang, "predefined_type", "bool")
-		normalizeCollapsedNamedLeafChildren(root, lang, "predefined_type", "object")
-		normalizeCollapsedNamedLeafChildren(root, lang, "predefined_type", "float")
-		normalizeCollapsedNamedLeafChildren(root, lang, "predefined_type", "double")
-		normalizeCollapsedNamedLeafChildren(root, lang, "predefined_type", "char")
-		normalizeCollapsedNamedLeafChildren(root, lang, "predefined_type", "byte")
-		normalizeCollapsedNamedLeafChildren(root, lang, "predefined_type", "long")
-		normalizeCollapsedNamedLeafChildren(root, lang, "predefined_type", "short")
-		normalizeCollapsedNamedLeafChildren(root, lang, "predefined_type", "decimal")
 	case "caddy":
 		normalizeTopLevelTrailingLineBreakSpan(root, source, lang)
 	case "cobol", "COBOL":
