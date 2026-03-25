@@ -2698,12 +2698,13 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 		if lookaheadSym >= 0 && lookaheadSym < len(ng.Symbols) {
 			lookaheadName = ng.Symbols[lookaheadSym].Name
 		}
-		// C-style assignment/comma conflicts need one extra distinction that the
+		// Assignment-expression conflicts need one extra distinction that the
 		// raw integer precedence cannot encode: an explicit negative shift prec
 		// on assignment_expression should not lose to an implicit default-zero
-		// reduce when the lookahead is "=". Keep this targeted so unrelated
-		// negative-precedence conflicts still use the normal resolver path.
-		if shiftLHSName == "assignment_expression" && lookaheadName == "=" &&
+		// reduce when the lookahead is an assignment operator. Keep this
+		// targeted so unrelated negative-precedence conflicts still use the
+		// normal resolver path.
+		if shiftLHSName == "assignment_expression" && isAssignmentOperatorLookahead(lookaheadName) &&
 			shiftHasPrec && shiftPrec < 0 && reducePrec == 0 && !reduceHasPrec {
 			return []lrAction{shift}, nil
 		}
@@ -2765,6 +2766,21 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 	}
 
 	return actions, nil
+}
+
+func isAssignmentOperatorLookahead(name string) bool {
+	if name == "=" {
+		return true
+	}
+	if !strings.HasSuffix(name, "=") {
+		return false
+	}
+	switch name {
+	case "==", "!=", "<=", ">=", "=>", "===", "!==":
+		return false
+	default:
+		return true
+	}
 }
 
 func repetitionShiftActions(lookaheadSym int, shifts, reduces []lrAction, ng *NormalizedGrammar) ([]lrAction, bool) {
