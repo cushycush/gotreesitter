@@ -205,3 +205,69 @@ func TestDFATokenSourceResetClearsScannerAndLexerState(t *testing.T) {
 		t.Fatalf("externalPayload state = %d, want %d", got, want)
 	}
 }
+
+func TestNextDFATokenUsesAfterWhitespaceLexState(t *testing.T) {
+	lang := &Language{
+		SymbolNames: []string{"end", "base_word", "after_ws_word"},
+		LexStates: []LexState{
+			{
+				Default: -1,
+				EOF:     -1,
+				Transitions: []LexTransition{
+					{Lo: ' ', Hi: ' ', NextState: 0, Skip: true},
+					{Lo: 'a', Hi: 'z', NextState: 1},
+				},
+			},
+			{
+				AcceptToken: 1,
+				Default:     -1,
+				EOF:         -1,
+				Transitions: []LexTransition{{Lo: 'a', Hi: 'z', NextState: 1}},
+			},
+			{
+				Default: -1,
+				EOF:     -1,
+				Transitions: []LexTransition{
+					{Lo: ' ', Hi: ' ', NextState: 2, Skip: true},
+					{Lo: 'a', Hi: 'z', NextState: 3},
+				},
+			},
+			{
+				AcceptToken: 2,
+				Default:     -1,
+				EOF:         -1,
+				Transitions: []LexTransition{{Lo: 'a', Hi: 'z', NextState: 3}},
+			},
+		},
+		LexModes: []LexMode{
+			{LexState: 0},
+			{LexState: 0, AfterWhitespaceLexState: 2},
+		},
+	}
+
+	d := &dfaTokenSource{
+		lexer:    NewLexer(lang.LexStates, []byte(" foo")),
+		language: lang,
+		state:    1,
+	}
+
+	tok := d.nextDFAToken()
+	if got, want := tok.Symbol, Symbol(2); got != want {
+		t.Fatalf("token symbol at whitespace = %d (%q), want %d (%q)", got, lang.SymbolNames[got], want, lang.SymbolNames[want])
+	}
+	if got, want := tok.Text, "foo"; got != want {
+		t.Fatalf("token text at whitespace = %q, want %q", got, want)
+	}
+
+	d.lexer = NewLexer(lang.LexStates, []byte(" foo"))
+	d.lexer.pos = 1
+	d.state = 1
+
+	tok = d.nextDFAToken()
+	if got, want := tok.Symbol, Symbol(2); got != want {
+		t.Fatalf("token symbol after whitespace = %d (%q), want %d (%q)", got, lang.SymbolNames[got], want, lang.SymbolNames[want])
+	}
+	if got, want := tok.Text, "foo"; got != want {
+		t.Fatalf("token text after whitespace = %q, want %q", got, want)
+	}
+}

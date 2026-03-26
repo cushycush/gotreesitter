@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -290,10 +291,7 @@ func (d *dfaTokenSource) nextDFAToken() Token {
 	if d == nil || d.lexer == nil || d.language == nil {
 		return Token{}
 	}
-	lexState := uint16(0)
-	if int(d.state) < len(d.language.LexModes) {
-		lexState = d.language.LexModes[d.state].LexState
-	}
+	lexState := d.lexStateForState(d.state)
 	tok := d.nextTokenForLexState(lexState)
 	tok = d.promoteKeyword(tok)
 	tok, endPos, endRow, endCol := d.normalizeDFAToken(tok, d.lexer.pos, d.lexer.row, d.lexer.col)
@@ -307,10 +305,7 @@ func (d *dfaTokenSource) shouldForceEOFLookahead() bool {
 	if d == nil || d.language == nil {
 		return false
 	}
-	if int(d.state) >= len(d.language.LexModes) {
-		return false
-	}
-	return d.language.LexModes[d.state].LexState == noLookaheadLexState
+	return d.lexStateForState(d.state) == noLookaheadLexState
 }
 
 func (d *dfaTokenSource) syntheticEOFLookaheadToken() Token {
@@ -342,16 +337,10 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 	}
 
 	// Check if all GLR states share the same lex mode — if so, no union needed.
-	primaryLexState := uint16(0)
-	if int(d.state) < len(d.language.LexModes) {
-		primaryLexState = d.language.LexModes[d.state].LexState
-	}
+	primaryLexState := d.lexStateForState(d.state)
 	allSame := true
 	for _, st := range d.glrStates {
-		ls := uint16(0)
-		if int(st) < len(d.language.LexModes) {
-			ls = d.language.LexModes[st].LexState
-		}
+		ls := d.lexStateForState(st)
 		if ls != primaryLexState {
 			allSame = false
 			break
@@ -377,10 +366,7 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 	// Deduplicate lex states to avoid redundant scans.
 	seen := make(map[uint16]struct{}, len(d.glrStates))
 	for _, st := range d.glrStates {
-		lexState := uint16(0)
-		if int(st) < len(d.language.LexModes) {
-			lexState = d.language.LexModes[st].LexState
-		}
+		lexState := d.lexStateForState(st)
 		if _, ok := seen[lexState]; ok {
 			continue
 		}
@@ -452,6 +438,34 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 	d.lexer.row = bestEndRow
 	d.lexer.col = bestEndCol
 	return bestTok, true
+}
+
+func (d *dfaTokenSource) lexStateForState(state StateID) uint16 {
+	if d == nil || d.language == nil || int(state) >= len(d.language.LexModes) {
+		return 0
+	}
+	mode := d.language.LexModes[state]
+	if mode.AfterWhitespaceLexState != 0 && d.isAfterWhitespacePosition() {
+		return mode.AfterWhitespaceLexState
+	}
+	return mode.LexState
+}
+
+func (d *dfaTokenSource) isAfterWhitespacePosition() bool {
+	if d == nil || d.lexer == nil {
+		return false
+	}
+	if d.lexer.pos < len(d.lexer.source) {
+		r, _ := utf8.DecodeRune(d.lexer.source[d.lexer.pos:])
+		if unicode.IsSpace(r) {
+			return true
+		}
+	}
+	if d.lexer.pos <= 0 || d.lexer.pos > len(d.lexer.source) {
+		return false
+	}
+	r, _ := utf8.DecodeLastRune(d.lexer.source[:d.lexer.pos])
+	return unicode.IsSpace(r)
 }
 
 func (d *dfaTokenSource) normalizeDFAToken(tok Token, endPos int, endRow, endCol uint32) (Token, int, uint32, uint32) {

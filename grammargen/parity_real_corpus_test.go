@@ -713,17 +713,32 @@ func parityGrammarRepoRoot(g importParityGrammar, root string) string {
 
 func importParityGrammarSource(g importParityGrammar) (*Grammar, error) {
 	if g.jsonPath != "" {
-		source, err := os.ReadFile(g.jsonPath)
+		source, err := os.ReadFile(fallbackParitySeedPath(g.jsonPath))
 		if err != nil {
 			return nil, fmt.Errorf("read grammar.json: %w", err)
 		}
 		return ImportGrammarJSON(source)
 	}
-	source, err := os.ReadFile(g.path)
+	source, err := os.ReadFile(fallbackParitySeedPath(g.path))
 	if err != nil {
 		return nil, fmt.Errorf("read grammar.js: %w", err)
 	}
 	return ImportGrammarJS(source)
+}
+
+func fallbackParitySeedPath(path string) string {
+	if _, err := os.Stat(path); err == nil || !strings.HasPrefix(path, "/tmp/grammar_parity/") {
+		return path
+	}
+	relSeedPath := filepath.Join(".parity_seed", strings.TrimPrefix(path, "/tmp/grammar_parity/"))
+	if _, err := os.Stat(relSeedPath); err == nil {
+		return relSeedPath
+	}
+	parentSeedPath := filepath.Join("..", relSeedPath)
+	if _, err := os.Stat(parentSeedPath); err == nil {
+		return parentSeedPath
+	}
+	return path
 }
 
 func collectGrammarCorpusCandidates(t *testing.T, repoRoot string, cfg realCorpusCollectConfig) []realCorpusSampleCandidate {
