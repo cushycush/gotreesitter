@@ -3134,6 +3134,7 @@ func flattenHiddenChoiceAlts(g *Grammar) *Grammar {
 		out.Externals = append(out.Externals, ext)
 	}
 	out.Word = g.Word
+	out.ReservedWordSets = cloneReservedWordSets(g.ReservedWordSets)
 	out.Supertypes = g.Supertypes
 	out.Inline = g.Inline
 	return out
@@ -3487,6 +3488,7 @@ func expandInlineRules(g *Grammar) *Grammar {
 		out.Externals = append(out.Externals, applyHiddenRenames(ext, hiddenRenames))
 	}
 	out.Word = g.Word
+	out.ReservedWordSets = cloneReservedWordSets(g.ReservedWordSets)
 	out.Supertypes = g.Supertypes
 	out.Precedences = g.Precedences
 	out.BinaryRepeatMode = g.BinaryRepeatMode

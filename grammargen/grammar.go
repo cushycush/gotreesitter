@@ -307,15 +307,16 @@ func Braces(rule *Rule) *Rule {
 //	})
 func ExtendGrammar(name string, base *Grammar, customize func(g *Grammar)) *Grammar {
 	g := &Grammar{
-		Name:       name,
-		Rules:      make(map[string]*Rule, len(base.Rules)),
-		RuleOrder:  make([]string, len(base.RuleOrder)),
-		Extras:     make([]*Rule, len(base.Extras)),
-		Conflicts:  make([][]string, len(base.Conflicts)),
-		Externals:  make([]*Rule, len(base.Externals)),
-		Inline:     make([]string, len(base.Inline)),
-		Word:       base.Word,
-		Supertypes: make([]string, len(base.Supertypes)),
+		Name:             name,
+		Rules:            make(map[string]*Rule, len(base.Rules)),
+		RuleOrder:        make([]string, len(base.RuleOrder)),
+		Extras:           make([]*Rule, len(base.Extras)),
+		Conflicts:        make([][]string, len(base.Conflicts)),
+		Externals:        make([]*Rule, len(base.Externals)),
+		Inline:           make([]string, len(base.Inline)),
+		Word:             base.Word,
+		ReservedWordSets: cloneReservedWordSets(base.ReservedWordSets),
+		Supertypes:       make([]string, len(base.Supertypes)),
 	}
 
 	// Deep copy rules.
@@ -336,6 +337,24 @@ func ExtendGrammar(name string, base *Grammar, customize func(g *Grammar)) *Gram
 	customize(g)
 
 	return g
+}
+
+func cloneReservedWordSets(src []ReservedWordSet) []ReservedWordSet {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]ReservedWordSet, len(src))
+	for i, set := range src {
+		out[i].Name = set.Name
+		if len(set.Rules) == 0 {
+			continue
+		}
+		out[i].Rules = make([]*Rule, len(set.Rules))
+		for j, rule := range set.Rules {
+			out[i].Rules[j] = cloneRule(rule)
+		}
+	}
+	return out
 }
 
 // cloneRule is defined in regex.go — reused here for grammar composition.
