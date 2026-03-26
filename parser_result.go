@@ -44,7 +44,7 @@ func stackCompareForResultSelection(p *Parser, a, b *glrStack) int {
 		}
 		return -1
 	}
-	if aErr, bErr := stackErrorRank(a), stackErrorRank(b); aErr != bErr {
+	if aErr, bErr := stackResultErrorRank(a), stackResultErrorRank(b); aErr != bErr {
 		if aErr < bErr {
 			return 1
 		}
@@ -86,6 +86,43 @@ func stackCompareForResultSelection(p *Parser, a, b *glrStack) int {
 		return -1
 	}
 	return 0
+}
+
+func stackResultErrorRank(s *glrStack) int {
+	if s == nil {
+		return 2
+	}
+	nodes := resultNodesFromStack(*s)
+	if len(nodes) == 0 {
+		return 0
+	}
+	rank := 0
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil || rank == 2 {
+			return
+		}
+		if n.IsError() {
+			rank = 2
+			return
+		}
+		if n.HasError() && rank == 0 {
+			rank = 1
+		}
+		for _, child := range n.children {
+			walk(child)
+			if rank == 2 {
+				return
+			}
+		}
+	}
+	for _, node := range nodes {
+		walk(node)
+		if rank == 2 {
+			break
+		}
+	}
+	return rank
 }
 
 func compareAcceptedStackAliasPreference(p *Parser, a, b glrStack) int {
@@ -274,6 +311,7 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 		hasExpectedRoot = true
 	}
 	if p != nil && p.language != nil && p.language.Name == "python" {
+		nodes, _ = repairPythonKeywordErrorNodes(nodes, source, arena, p.language)
 		nodes = collapsePythonRootFragments(nodes, arena, p.language)
 	}
 	if hasExpectedRoot && len(nodes) > 1 {
@@ -293,6 +331,7 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 	if len(nodes) == 1 {
 		candidate := nodes[0]
 		candidate = flattenInvisibleRootChildren(candidate, arena, p.language)
+		candidate = repairPythonKeywordErrorNode(candidate, source, arena, p.language)
 		candidate = repairPythonRootNode(candidate, arena, p.language)
 		if !hasExpectedRoot || candidate.symbol == expectedRootSymbol {
 			extendNodeToTrailingWhitespace(candidate, source)
@@ -439,6 +478,7 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 	}
 
 	rootChildren := filterZeroWidthExtras(nodes, arena)
+	rootChildren, _ = repairPythonKeywordErrorNodes(rootChildren, source, arena, p.language)
 	rootSymbol := rootChildren[len(rootChildren)-1].symbol
 	rootHasError := false
 	for _, n := range rootChildren {
@@ -598,6 +638,7 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, p *Parser) {
 	case "pug":
 		normalizeTopLevelTrailingLineBreakSpan(root, source, lang)
 	case "python":
+		normalizePythonInterpolationPatterns(root, lang)
 		normalizeCollapsedNamedLeafChildren(root, lang, "pass_statement", "pass")
 		normalizePythonStringContinuationEscapes(root, source, lang)
 	case "rst":
@@ -637,6 +678,50 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, p *Parser) {
 	case "zig":
 		normalizeZigEmptyInitListFields(root, lang)
 	}
+}
+
+func normalizePythonInterpolationPatterns(root *Node, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "python" {
+		return
+	}
+	patternListSym, ok := symbolByName(lang, "pattern_list")
+	if !ok {
+		return
+	}
+	listSplatPatternSym, hasListSplatPattern := symbolByName(lang, "list_splat_pattern")
+	expressionListSym, hasExpressionList := symbolByName(lang, "expression_list")
+	listSplatSym, hasListSplat := symbolByName(lang, "list_splat")
+
+	patternListNamed := false
+	if int(patternListSym) < len(lang.SymbolMetadata) {
+		patternListNamed = lang.SymbolMetadata[patternListSym].Named
+	}
+	listSplatPatternNamed := false
+	if hasListSplatPattern && int(listSplatPatternSym) < len(lang.SymbolMetadata) {
+		listSplatPatternNamed = lang.SymbolMetadata[listSplatPatternSym].Named
+	}
+
+	var rewrite func(*Node, bool)
+	rewrite = func(n *Node, inInterpolation bool) {
+		if n == nil {
+			return
+		}
+		here := inInterpolation || n.Type(lang) == "interpolation"
+		if here {
+			if hasExpressionList && n.symbol == expressionListSym {
+				n.symbol = patternListSym
+				n.isNamed = patternListNamed
+			}
+			if hasListSplatPattern && hasListSplat && n.symbol == listSplatSym {
+				n.symbol = listSplatPatternSym
+				n.isNamed = listSplatPatternNamed
+			}
+		}
+		for _, child := range n.children {
+			rewrite(child, here)
+		}
+	}
+	rewrite(root, false)
 }
 
 func bytesAreTrivia(b []byte) bool {
@@ -12535,6 +12620,102 @@ func repairPythonRootNode(root *Node, arena *nodeArena, lang *Language) *Node {
 		cloned.hasError = false
 	}
 	return cloned
+}
+
+func repairPythonKeywordErrorNodes(nodes []*Node, source []byte, arena *nodeArena, lang *Language) ([]*Node, bool) {
+	if len(nodes) == 0 || lang == nil || lang.Name != "python" || len(source) == 0 {
+		return nodes, false
+	}
+	out := make([]*Node, len(nodes))
+	changed := false
+	for i, node := range nodes {
+		repaired := repairPythonKeywordErrorNode(node, source, arena, lang)
+		if repaired != node {
+			changed = true
+		}
+		out[i] = repaired
+	}
+	if !changed {
+		return nodes, false
+	}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(out))
+		copy(buf, out)
+		out = buf
+	}
+	return out, true
+}
+
+func repairPythonKeywordErrorNode(node *Node, source []byte, arena *nodeArena, lang *Language) *Node {
+	if node == nil || lang == nil || lang.Name != "python" || len(source) == 0 {
+		return node
+	}
+	if node.Type(lang) == "ERROR" && len(node.children) == 0 {
+		if keyword, ok := pythonKeywordLeafSymbol(node, source, lang); ok {
+			named := false
+			if int(keyword) < len(lang.SymbolMetadata) {
+				named = lang.SymbolMetadata[keyword].Named
+			}
+			repl := newLeafNodeInArena(arena, keyword, named, node.startByte, node.endByte, node.startPoint, node.endPoint)
+			repl.isExtra = node.isExtra
+			return repl
+		}
+	}
+	if len(node.children) == 0 {
+		return node
+	}
+	children := make([]*Node, len(node.children))
+	changed := false
+	for i, child := range node.children {
+		repaired := repairPythonKeywordErrorNode(child, source, arena, lang)
+		if repaired != child {
+			changed = true
+		}
+		children[i] = repaired
+	}
+	if node.Type(lang) == "ERROR" && len(children) == 1 {
+		child := children[0]
+		if child != nil &&
+			!child.IsError() &&
+			!child.HasError() &&
+			child.startByte == node.startByte &&
+			child.endByte == node.endByte {
+			return child
+		}
+	}
+	if !changed {
+		return node
+	}
+	cloned := cloneNodeInArena(arena, node)
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(children))
+		copy(buf, children)
+		children = buf
+	}
+	cloned.children = children
+	return cloned
+}
+
+func pythonKeywordLeafSymbol(node *Node, source []byte, lang *Language) (Symbol, bool) {
+	if node == nil || node.startByte >= node.endByte || int(node.endByte) > len(source) {
+		return 0, false
+	}
+	text := string(source[node.startByte:node.endByte])
+	if text == "" {
+		return 0, false
+	}
+	sym, ok := symbolByName(lang, text)
+	if !ok {
+		return 0, false
+	}
+	if int(sym) >= len(lang.SymbolMetadata) {
+		return 0, false
+	}
+	meta := lang.SymbolMetadata[sym]
+	if meta.Named {
+		return 0, false
+	}
+	return sym, true
 }
 
 func repairPythonTopLevelNode(node *Node, arena *nodeArena, lang *Language) *Node {
