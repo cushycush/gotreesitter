@@ -4,13 +4,16 @@ This file defines how agents should work in this repo.
 
 ### 1) Non-negotiables
 - Do not use `gts-suite` for inspection/profiling (it can trigger memory pressure and process kills).
+- Do not run repo-wide `go test ./...` or `go test ./... -race` on the host. Broad host sweeps can OOM developer machines and make attribution harder.
+- For heavy correctness, parity, or race coverage, use Docker isolation only and keep runs to one language/grammar at a time.
 - Keep correctness gating separate from performance gating.
 - Prefer reproducible runs over ad-hoc spot checks.
+- When chasing an OOM, keep narrowing the workload until one language and one suite remain.
 
 ### 2) Correctness Gate (must stay green)
 Run before and after performance changes:
-- `go test ./...`
-- Parity-focused suites under `cgo_harness` when applicable.
+- Focused package/unit tests inside Docker, scoped with `-run` whenever possible.
+- Parity-focused Docker suites under `cgo_harness`, one language at a time.
 
 When changing GLR/incremental logic, require parity validation first, then perf validation.
 
@@ -64,10 +67,15 @@ Use profiled runs to decide whether the next win comes from:
 
 ### 7) Gate Presets
 Correctness preset:
-- `go test ./...`
-- `go test ./grammars -run '^TestTop50ParseSmokeNoErrors$' -count=1 -v`
-- `cd cgo_harness && go test . -tags treesitter_c_parity -run '^TestParityFreshParse$|^TestParityHasNoErrors$|^TestParityIssue3Repros$|^TestParityGLRCanaryGo$' -count=1 -v`
-- `cd cgo_harness && go test . -tags treesitter_c_parity -run '^TestParityCorpusFreshParse$' -count=1 -v`
+- `bash cgo_harness/docker/run_parity_in_docker.sh -- "cd /workspace && go test ./grammargen -run '^TestName$' -count=1"` for the smallest regression that covers the change
+- `bash cgo_harness/docker/run_single_grammar_parity.sh <grammar>`
+- `bash cgo_harness/docker/run_grammargen_focus_targets.sh --mode real-corpus --langs <language>`
+- `bash cgo_harness/docker/run_grammargen_focus_targets.sh --mode cgo --langs <language>`
+- Do not batch multiple languages together while diagnosing regressions or OOMs.
+
+Race preset:
+- CI or dedicated-container only.
+- Do not run host-side repo-wide race sweeps while diagnosing OOMs.
 
 Perf preset (stable settings):
 - `GOMAXPROCS=1 go test . -run '^$' -bench 'BenchmarkGoParseFullDFA|BenchmarkGoParseIncrementalSingleByteEditDFA|BenchmarkGoParseIncrementalNoEditDFA' -benchmem -count=10 -benchtime=750ms`

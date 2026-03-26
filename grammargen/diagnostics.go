@@ -441,249 +441,21 @@ func RunTests(g *Grammar) error {
 }
 
 type reportBuildOptions struct {
-	includeLanguage bool
-	includeBlob     bool
+	includeDiagnostics bool
+	includeLanguage    bool
+	includeBlob        bool
 }
 
 func generateWithReport(g *Grammar, opts reportBuildOptions) (*GenerateReport, error) {
-	report := &GenerateReport{}
-
-	// Validate first.
-	report.Warnings = Validate(g)
-
-	ng, err := Normalize(g)
-	if err != nil {
-		return nil, fmt.Errorf("normalize: %w", err)
-	}
-
-	tables, ctx, err := buildLRTablesWithProvenance(ng)
-	if err != nil {
-		return nil, fmt.Errorf("build LR tables: %w", err)
-	}
-	prov := ctx.provenance
-
-	// Resolve conflicts with diagnostics.
-	diags, err := resolveConflictsWithDiag(tables, ng, prov)
-	if err != nil {
-		return nil, fmt.Errorf("resolve conflicts: %w", err)
-	}
-	report.Conflicts = diags
-
-	// Run split oracle.
-	oracle := newSplitOracle(diags, prov, tables, ng)
-	report.SplitCandidates = oracle.candidates()
-
-	// Apply local LR(1) rebuild only when explicitly opted in. Splitting
-	// grammars that have declared conflicts but don't opt in can produce tables
-	// that parse incorrectly (fewer GLR conflicts ≠ correct parse trees).
-	if len(report.SplitCandidates) > 0 && g.EnableLRSplitting {
-		// Count pre-split GLR conflicts.
-		glrBefore := 0
-		for _, d := range diags {
-			if d.Resolution == "GLR (multiple actions kept)" {
-				glrBefore++
-			}
-		}
-
-		// Count external-token-motivated candidates.
-		extTokenCandidates := 0
-		for _, c := range report.SplitCandidates {
-			if c.reason == "hidden external token in merged LALR state" {
-				extTokenCandidates++
-			}
-		}
-
-		sr := &splitReport{CandidatesFound: len(report.SplitCandidates)}
-		sr.ConflictsBefore = len(diags)
-		statesBefore := tables.StateCount
-		splitCount, splitErr := localLR1Rebuild(tables, ng, ctx, report.SplitCandidates, 200)
-		sr.StatesSplit = splitCount
-		sr.NewStatesAdded = tables.StateCount - statesBefore
-		sr.Error = splitErr
-
-		// Re-resolve conflicts after splitting.
-		diagsAfter, _ := resolveConflictsWithDiag(tables, ng, prov)
-		sr.ConflictsAfter = len(diagsAfter)
-
-		// Count post-split GLR conflicts.
-		glrAfter := 0
-		for _, d := range diagsAfter {
-			if d.Resolution == "GLR (multiple actions kept)" {
-				glrAfter++
-			}
-		}
-		sr.GLRBefore = glrBefore
-		sr.GLRAfter = glrAfter
-
-		// Allow splits that reduce GLR conflicts, reduce total conflicts,
-		// or fix external token contamination (even without GLR improvement).
-		keepSplit := glrAfter < glrBefore || len(diagsAfter) < len(diags) ||
-			(extTokenCandidates > 0 && splitCount > 0)
-
-		if !keepSplit {
-			// Global rollback: splitting did not reduce GLR conflicts or the
-			// total number of raw conflict sites.
-			// Rebuild the original resolved tables instead of retaining a
-			// whole-table snapshot on the success path.
-			tables, err = buildLRTables(ng)
-			if err != nil {
-				return nil, fmt.Errorf("rebuild LR tables after split rollback: %w", err)
-			}
-			if err := resolveConflicts(tables, ng); err != nil {
-				return nil, fmt.Errorf("resolve conflicts after split rollback: %w", err)
-			}
-			sr.StatesSplit = 0
-			sr.NewStatesAdded = 0
-			sr.ConflictsAfter = sr.ConflictsBefore
-			sr.Error = fmt.Errorf("rollback: conflicts %d → %d, GLR conflicts %d → %d (not reduced)",
-				len(diags), len(diagsAfter), glrBefore, glrAfter)
-		} else {
-			report.Conflicts = diagsAfter
-			// Re-run oracle on new conflicts.
-			oracleAfter := newSplitOracle(diagsAfter, prov, tables, ng)
-			report.SplitCandidates = oracleAfter.candidates()
-		}
-		report.SplitResult = sr
-	}
-
-	// Add nonterminal extra parse chains (must be after conflict resolution
-	// and optional splitting, since both modify the tables).
-	addNonterminalExtraChains(tables, ng, ctx)
-
-	// The LR construction context is only needed through conflict diagnostics,
-	// optional split evaluation, and extra-chain synthesis. Drop its scratch
-	// data before building lex tables and encoding so those phases do not
-	// overlap with the full LR build heap for large grammars.
-	ctx.releaseScratch()
-	prov = nil
-	ctx = nil
-
-	report.SymbolCount = len(ng.Symbols)
-	report.StateCount = tables.StateCount + 1 // buildParseTables inserts error state 0
-	report.TokenCount = ng.TokenCount()
-
-	if !opts.includeLanguage {
-		return report, nil
-	}
-
-	// Build lex DFA.
-	tokenCount := ng.TokenCount()
-	immediateTokens := make(map[int]bool)
-	for _, t := range ng.Terminals {
-		if t.Immediate {
-			immediateTokens[t.SymbolID] = true
-		}
-	}
-
-	keywordSet := make(map[int]bool, len(ng.KeywordSymbols))
-	for _, ks := range ng.KeywordSymbols {
-		keywordSet[ks] = true
-	}
-	stringPrefixExtensions := computeStringPrefixExtensions(ng.Terminals)
-	termPatSyms := terminalPatternSymSet(ng)
-
-	var lexModes []lexModeSpec
-	var stateToMode []int
-	var afterWSModes []afterWSModeEntry
-	if useForcedBroadLexFallback() {
-		// Escape hatch only. The broad DFA is much faster to build for huge
-		// grammars, but it is not parser-correct for languages that rely on
-		// stateful contextual lexing such as C# and COBOL.
-		allSyms := make(map[int]bool)
-		for _, t := range ng.Terminals {
-			allSyms[t.SymbolID] = true
-		}
-		for _, e := range ng.ExtraSymbols {
-			if e > 0 && e < tokenCount {
-				allSyms[e] = true
-			}
-		}
-		lexModes = []lexModeSpec{{validSymbols: allSyms, skipWhitespace: true}}
-		stateToMode = make([]int, tables.StateCount)
-	} else {
-		lexModes, stateToMode, afterWSModes = computeLexModes(
-			tables.StateCount,
-			tokenCount,
-			func(state, sym int) bool {
-				if acts, ok := tables.ActionTable[state]; ok {
-					if entry, ok := acts[sym]; ok && len(entry) > 0 {
-						return true
-					}
-				}
-				return false
-			},
-			stringPrefixExtensions,
-			ng.ExtraSymbols,
-			tables.ExtraChainStateStart,
-			immediateTokens,
-			ng.ExternalSymbols,
-			ng.WordSymbolID,
-			keywordSet,
-			termPatSyms,
-			buildFollowTokensFunc(tables, tokenCount),
-			patternImmediateTokenSet(ng),
-		)
-	}
-
-	skipExtras := computeSkipExtras(ng)
-	lexStates, lexModeOffsets, err := buildLexDFA(context.Background(), ng.Terminals, ng.ExtraSymbols, skipExtras, lexModes)
-	if err != nil {
-		return nil, fmt.Errorf("build lex DFA: %w", err)
-	}
-
-	var keywordLexStates []gotreesitter.LexState
-	if len(ng.KeywordEntries) > 0 {
-		kls, _, err := buildLexDFA(context.Background(), ng.KeywordEntries, nil, nil, []lexModeSpec{{
-			validSymbols:   allSymbolsSet(ng.KeywordEntries),
-			skipWhitespace: false,
-		}})
-		if err != nil {
-			return nil, fmt.Errorf("build keyword DFA: %w", err)
-		}
-		keywordLexStates = kls
-	}
-
-	lang, err := assemble(ng, tables, lexStates, stateToMode, lexModeOffsets)
-	if err != nil {
-		return nil, fmt.Errorf("assemble: %w", err)
-	}
-	lang.Name = g.Name
-
-	// Set after-whitespace lex states for states that need IMMTOKEN exclusion.
-	for _, entry := range afterWSModes {
-		if entry.stateIdx < len(lang.LexModes) && entry.modeIdx < len(lexModeOffsets) {
-			lang.LexModes[entry.stateIdx].AfterWhitespaceLexState = uint16(lexModeOffsets[entry.modeIdx])
-		}
-	}
-
-	if len(keywordLexStates) > 0 {
-		lang.KeywordLexStates = keywordLexStates
-		lang.KeywordCaptureToken = gotreesitter.Symbol(ng.WordSymbolID)
-	}
-
-	report.Language = lang
-	report.SymbolCount = int(lang.SymbolCount)
-	report.StateCount = int(lang.StateCount)
-	report.TokenCount = int(lang.TokenCount)
-
-	if !opts.includeBlob {
-		return report, nil
-	}
-
-	blob, err := encodeLanguageBlob(lang)
-	if err != nil {
-		return nil, fmt.Errorf("encode: %w", err)
-	}
-	report.Blob = blob
-
-	return report, nil
+	return generateWithReportCtx(context.Background(), g, opts)
 }
 
 // GenerateWithReport compiles a grammar and returns a full diagnostic report.
 func GenerateWithReport(g *Grammar) (*GenerateReport, error) {
 	return generateWithReport(g, reportBuildOptions{
-		includeLanguage: true,
-		includeBlob:     true,
+		includeDiagnostics: true,
+		includeLanguage:    true,
+		includeBlob:        true,
 	})
 }
 
@@ -700,78 +472,93 @@ func generateWithReportCtx(bgCtx context.Context, g *Grammar, opts reportBuildOp
 		return nil, fmt.Errorf("normalize: %w", err)
 	}
 
-	tables, lrCtx, err := buildLRTablesWithProvenanceCtx(bgCtx, ng)
+	needDiagnostics := opts.includeDiagnostics || g.EnableLRSplitting
+	tables, lrCtx, err := buildLRTablesInternal(bgCtx, ng, needDiagnostics)
 	if err != nil {
 		return nil, fmt.Errorf("build LR tables: %w", err)
 	}
 	prov := lrCtx.provenance
 
-	diags, err := resolveConflictsWithDiag(tables, ng, prov)
-	if err != nil {
-		return nil, fmt.Errorf("resolve conflicts: %w", err)
-	}
-	report.Conflicts = diags
+	if needDiagnostics {
+		diags, err := resolveConflictsWithDiag(tables, ng, prov)
+		if err != nil {
+			return nil, fmt.Errorf("resolve conflicts: %w", err)
+		}
+		if opts.includeDiagnostics {
+			report.Conflicts = diags
+		}
 
-	oracle := newSplitOracle(diags, prov, tables, ng)
-	report.SplitCandidates = oracle.candidates()
-
-	if len(report.SplitCandidates) > 0 && g.EnableLRSplitting {
-		glrBefore := 0
-		for _, d := range diags {
-			if d.Resolution == "GLR (multiple actions kept)" {
-				glrBefore++
+		var splitCandidates []splitCandidate
+		if opts.includeDiagnostics || g.EnableLRSplitting {
+			splitCandidates = newSplitOracle(diags, prov, tables, ng).candidates()
+			if opts.includeDiagnostics {
+				report.SplitCandidates = splitCandidates
 			}
 		}
 
-		extTokenCandidates := 0
-		for _, c := range report.SplitCandidates {
-			if c.reason == "hidden external token in merged LALR state" {
-				extTokenCandidates++
+		if len(splitCandidates) > 0 && g.EnableLRSplitting {
+			glrBefore := 0
+			for _, d := range diags {
+				if d.Resolution == "GLR (multiple actions kept)" {
+					glrBefore++
+				}
+			}
+
+			extTokenCandidates := 0
+			for _, c := range splitCandidates {
+				if c.reason == "hidden external token in merged LALR state" {
+					extTokenCandidates++
+				}
+			}
+
+			sr := &splitReport{CandidatesFound: len(splitCandidates)}
+			sr.ConflictsBefore = len(diags)
+			statesBefore := tables.StateCount
+			splitCount, splitErr := localLR1Rebuild(tables, ng, lrCtx, splitCandidates, 200)
+			sr.StatesSplit = splitCount
+			sr.NewStatesAdded = tables.StateCount - statesBefore
+			sr.Error = splitErr
+
+			diagsAfter, _ := resolveConflictsWithDiag(tables, ng, prov)
+			sr.ConflictsAfter = len(diagsAfter)
+
+			glrAfter := 0
+			for _, d := range diagsAfter {
+				if d.Resolution == "GLR (multiple actions kept)" {
+					glrAfter++
+				}
+			}
+			sr.GLRBefore = glrBefore
+			sr.GLRAfter = glrAfter
+
+			keepSplit := glrAfter < glrBefore || len(diagsAfter) < len(diags) ||
+				(extTokenCandidates > 0 && splitCount > 0)
+
+			if !keepSplit {
+				tables, err = buildLRTables(ng)
+				if err != nil {
+					return nil, fmt.Errorf("rebuild LR tables after split rollback: %w", err)
+				}
+				if err := resolveConflicts(tables, ng); err != nil {
+					return nil, fmt.Errorf("resolve conflicts after split rollback: %w", err)
+				}
+				sr.StatesSplit = 0
+				sr.NewStatesAdded = 0
+				sr.ConflictsAfter = sr.ConflictsBefore
+				sr.Error = fmt.Errorf("rollback: conflicts %d -> %d, GLR conflicts %d -> %d (not reduced)",
+					len(diags), len(diagsAfter), glrBefore, glrAfter)
+			} else if opts.includeDiagnostics {
+				report.Conflicts = diagsAfter
+				report.SplitCandidates = newSplitOracle(diagsAfter, prov, tables, ng).candidates()
+			}
+			if opts.includeDiagnostics {
+				report.SplitResult = sr
 			}
 		}
-
-		sr := &splitReport{CandidatesFound: len(report.SplitCandidates)}
-		sr.ConflictsBefore = len(diags)
-		statesBefore := tables.StateCount
-		splitCount, splitErr := localLR1Rebuild(tables, ng, lrCtx, report.SplitCandidates, 200)
-		sr.StatesSplit = splitCount
-		sr.NewStatesAdded = tables.StateCount - statesBefore
-		sr.Error = splitErr
-
-		diagsAfter, _ := resolveConflictsWithDiag(tables, ng, prov)
-		sr.ConflictsAfter = len(diagsAfter)
-
-		glrAfter := 0
-		for _, d := range diagsAfter {
-			if d.Resolution == "GLR (multiple actions kept)" {
-				glrAfter++
-			}
+	} else {
+		if err := resolveConflicts(tables, ng); err != nil {
+			return nil, fmt.Errorf("resolve conflicts: %w", err)
 		}
-		sr.GLRBefore = glrBefore
-		sr.GLRAfter = glrAfter
-
-		keepSplit := glrAfter < glrBefore || len(diagsAfter) < len(diags) ||
-			(extTokenCandidates > 0 && splitCount > 0)
-
-		if !keepSplit {
-			tables, err = buildLRTables(ng)
-			if err != nil {
-				return nil, fmt.Errorf("rebuild LR tables after split rollback: %w", err)
-			}
-			if err := resolveConflicts(tables, ng); err != nil {
-				return nil, fmt.Errorf("resolve conflicts after split rollback: %w", err)
-			}
-			sr.StatesSplit = 0
-			sr.NewStatesAdded = 0
-			sr.ConflictsAfter = sr.ConflictsBefore
-			sr.Error = fmt.Errorf("rollback: conflicts %d -> %d, GLR conflicts %d -> %d (not reduced)",
-				len(diags), len(diagsAfter), glrBefore, glrAfter)
-		} else {
-			report.Conflicts = diagsAfter
-			oracleAfter := newSplitOracle(diagsAfter, prov, tables, ng)
-			report.SplitCandidates = oracleAfter.candidates()
-		}
-		report.SplitResult = sr
 	}
 
 	addNonterminalExtraChains(tables, ng, lrCtx)
@@ -904,5 +691,5 @@ func generateWithReportCtx(bgCtx context.Context, g *Grammar, opts reportBuildOp
 // work. It is intended for large-grammar diagnostic/perf tests that only need
 // conflicts, split metadata, warnings, and final table counts.
 func generateDiagnosticsReport(g *Grammar) (*GenerateReport, error) {
-	return generateWithReport(g, reportBuildOptions{})
+	return generateWithReport(g, reportBuildOptions{includeDiagnostics: true})
 }

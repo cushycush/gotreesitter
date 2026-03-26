@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -290,10 +291,7 @@ func (d *dfaTokenSource) nextDFAToken() Token {
 	if d == nil || d.lexer == nil || d.language == nil {
 		return Token{}
 	}
-	lexState := uint16(0)
-	if int(d.state) < len(d.language.LexModes) {
-		lexState = d.language.LexModes[d.state].LexState
-	}
+	lexState := d.lexStateForState(d.state)
 	tok := d.nextTokenForLexState(lexState)
 	tok = d.promoteKeyword(tok)
 	tok, endPos, endRow, endCol := d.normalizeDFAToken(tok, d.lexer.pos, d.lexer.row, d.lexer.col)
@@ -307,10 +305,7 @@ func (d *dfaTokenSource) shouldForceEOFLookahead() bool {
 	if d == nil || d.language == nil {
 		return false
 	}
-	if int(d.state) >= len(d.language.LexModes) {
-		return false
-	}
-	return d.language.LexModes[d.state].LexState == noLookaheadLexState
+	return d.lexStateForState(d.state) == noLookaheadLexState
 }
 
 func (d *dfaTokenSource) syntheticEOFLookaheadToken() Token {
@@ -342,16 +337,10 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 	}
 
 	// Check if all GLR states share the same lex mode — if so, no union needed.
-	primaryLexState := uint16(0)
-	if int(d.state) < len(d.language.LexModes) {
-		primaryLexState = d.language.LexModes[d.state].LexState
-	}
+	primaryLexState := d.lexStateForState(d.state)
 	allSame := true
 	for _, st := range d.glrStates {
-		ls := uint16(0)
-		if int(st) < len(d.language.LexModes) {
-			ls = d.language.LexModes[st].LexState
-		}
+		ls := d.lexStateForState(st)
 		if ls != primaryLexState {
 			allSame = false
 			break
@@ -377,10 +366,7 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 	// Deduplicate lex states to avoid redundant scans.
 	seen := make(map[uint16]struct{}, len(d.glrStates))
 	for _, st := range d.glrStates {
-		lexState := uint16(0)
-		if int(st) < len(d.language.LexModes) {
-			lexState = d.language.LexModes[st].LexState
-		}
+		lexState := d.lexStateForState(st)
 		if _, ok := seen[lexState]; ok {
 			continue
 		}
@@ -454,9 +440,40 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 	return bestTok, true
 }
 
+func (d *dfaTokenSource) lexStateForState(state StateID) uint16 {
+	if d == nil || d.language == nil || int(state) >= len(d.language.LexModes) {
+		return 0
+	}
+	mode := d.language.LexModes[state]
+	if mode.AfterWhitespaceLexState != 0 && d.isAfterWhitespacePosition() {
+		return mode.AfterWhitespaceLexState
+	}
+	return mode.LexState
+}
+
+func (d *dfaTokenSource) isAfterWhitespacePosition() bool {
+	if d == nil || d.lexer == nil {
+		return false
+	}
+	if d.lexer.pos < len(d.lexer.source) {
+		r, _ := utf8.DecodeRune(d.lexer.source[d.lexer.pos:])
+		if unicode.IsSpace(r) {
+			return true
+		}
+	}
+	if d.lexer.pos <= 0 || d.lexer.pos > len(d.lexer.source) {
+		return false
+	}
+	r, _ := utf8.DecodeLastRune(d.lexer.source[:d.lexer.pos])
+	return unicode.IsSpace(r)
+}
+
 func (d *dfaTokenSource) normalizeDFAToken(tok Token, endPos int, endRow, endCol uint32) (Token, int, uint32, uint32) {
 	if d == nil || d.language == nil || d.lexer == nil {
 		return tok, endPos, endRow, endCol
+	}
+	if splitTok, splitEndPos, splitEndRow, splitEndCol, ok := d.splitCompactCloseAngleToken(tok); ok {
+		return splitTok, splitEndPos, splitEndRow, splitEndCol
 	}
 	if d.language.Name != "bash" || tok.Symbol != 86 || tok.EndByte <= tok.StartByte+1 {
 		return tok, endPos, endRow, endCol
@@ -480,6 +497,286 @@ func (d *dfaTokenSource) normalizeDFAToken(tok Token, endPos int, endRow, endCol
 		tok.Text = tok.Text[:1]
 	}
 	return tok, start + 1, tok.StartPoint.Row + 1, 0
+}
+
+func (d *dfaTokenSource) splitCompactCloseAngleToken(tok Token) (Token, int, uint32, uint32, bool) {
+	if d == nil || d.language == nil || d.lookupActionIndex == nil {
+		return tok, 0, 0, 0, false
+	}
+	switch d.language.Name {
+	case "dart", "tsx", "typescript":
+	default:
+		return tok, 0, 0, 0, false
+	}
+	if d.symbolName(tok.Symbol) != ">>" {
+		return tok, 0, 0, 0, false
+	}
+
+	gtSym, ok := d.bestActiveSymbolByName(">")
+	if !ok {
+		return tok, 0, 0, 0, false
+	}
+	shiftSym, shiftOK := d.bestActiveSymbolByName(">>")
+	if !d.shouldSplitCompactCloseAngleToken(tok, gtSym, shiftSym, shiftOK) {
+		return tok, 0, 0, 0, false
+	}
+	if tok.EndByte != tok.StartByte+2 || tok.EndPoint.Row != tok.StartPoint.Row {
+		return tok, 0, 0, 0, false
+	}
+
+	tok.Symbol = gtSym
+	tok.EndByte = tok.StartByte + 1
+	tok.EndPoint = Point{Row: tok.StartPoint.Row, Column: tok.StartPoint.Column + 1}
+	if len(tok.Text) > 1 {
+		tok.Text = tok.Text[:1]
+	}
+	return tok, int(tok.EndByte), tok.EndPoint.Row, tok.EndPoint.Column, true
+}
+
+func (d *dfaTokenSource) shouldSplitCompactCloseAngleToken(tok Token, gtSym, shiftSym Symbol, shiftOK bool) bool {
+	if !shiftOK {
+		return true
+	}
+	gtSpec := d.activeActionSpecificity(gtSym)
+	shiftSpec := d.activeActionSpecificity(shiftSym)
+	if gtSpec > shiftSpec {
+		return true
+	}
+	if gtSpec < shiftSpec {
+		return false
+	}
+	next := d.nextNonSpaceByte(int(tok.EndByte))
+	switch next {
+	case 0, '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '?':
+		return true
+	default:
+		return isTypeScriptIdentifierStartByte(next) &&
+			d.sharesSameReduceOnlyActions(gtSym, shiftSym) &&
+			d.hasTypeAssertionStyleOpenerBefore(int(tok.StartByte))
+	}
+}
+
+func (d *dfaTokenSource) nextNonSpaceByte(pos int) byte {
+	if d == nil || d.lexer == nil {
+		return 0
+	}
+	for pos < len(d.lexer.source) {
+		switch d.lexer.source[pos] {
+		case ' ', '\t', '\n', '\r':
+			pos++
+			continue
+		default:
+			return d.lexer.source[pos]
+		}
+	}
+	return 0
+}
+
+func (d *dfaTokenSource) nextNonSpacePos(pos int) int {
+	if d == nil || d.lexer == nil {
+		return -1
+	}
+	for pos < len(d.lexer.source) {
+		switch d.lexer.source[pos] {
+		case ' ', '\t', '\n', '\r':
+			pos++
+			continue
+		default:
+			return pos
+		}
+	}
+	return len(d.lexer.source)
+}
+
+func (d *dfaTokenSource) scanBalancedTypeScriptKeywordSuffix(openPos int, open, close byte) (int, bool) {
+	if d == nil || d.lexer == nil || openPos < 0 || openPos >= len(d.lexer.source) || d.lexer.source[openPos] != open {
+		return -1, false
+	}
+	depth := 0
+	for i := openPos; i < len(d.lexer.source); i++ {
+		switch d.lexer.source[i] {
+		case open:
+			depth++
+		case close:
+			depth--
+			if depth == 0 {
+				return i + 1, true
+			}
+		}
+	}
+	return -1, false
+}
+
+func (d *dfaTokenSource) shouldPreferJavaScriptTypeScriptContextualIdentifier(tok, kwTok Token, kwHasAction, idHasAction bool) bool {
+	if d == nil || d.language == nil || d.lexer == nil || !idHasAction || !kwHasAction {
+		return false
+	}
+	switch d.language.Name {
+	case "javascript", "typescript", "tsx":
+	default:
+		return false
+	}
+	if int(kwTok.Symbol) >= len(d.language.SymbolNames) {
+		return false
+	}
+	switch d.language.SymbolNames[kwTok.Symbol] {
+	case "get", "set":
+	default:
+		return false
+	}
+	nextPos := d.nextNonSpacePos(int(tok.EndByte))
+	if nextPos < 0 || nextPos >= len(d.lexer.source) {
+		return false
+	}
+	switch d.lexer.source[nextPos] {
+	case '.', '(':
+		return true
+	case '[':
+		afterBracket, ok := d.scanBalancedTypeScriptKeywordSuffix(nextPos, '[', ']')
+		if !ok {
+			return false
+		}
+		afterBracket = d.nextNonSpacePos(afterBracket)
+		if afterBracket < 0 || afterBracket >= len(d.lexer.source) {
+			return true
+		}
+		switch d.lexer.source[afterBracket] {
+		case '.', '[', '}', ',', ';', ':', '?':
+			return true
+		case '(':
+			afterCall, ok := d.scanBalancedTypeScriptKeywordSuffix(afterBracket, '(', ')')
+			if !ok {
+				return true
+			}
+			afterCall = d.nextNonSpacePos(afterCall)
+			if afterCall < 0 || afterCall >= len(d.lexer.source) {
+				return true
+			}
+			switch d.lexer.source[afterCall] {
+			case '{', ';':
+				return false
+			default:
+				return true
+			}
+		default:
+			return true
+		}
+	default:
+		return false
+	}
+}
+
+func isTypeScriptIdentifierStartByte(ch byte) bool {
+	return ch == '_' || ch == '$' ||
+		(ch >= 'a' && ch <= 'z') ||
+		(ch >= 'A' && ch <= 'Z')
+}
+
+func (d *dfaTokenSource) hasTypeAssertionStyleOpenerBefore(pos int) bool {
+	if d == nil || d.lexer == nil || pos <= 0 {
+		return false
+	}
+	for i := pos - 1; i >= 0; i-- {
+		if isASCIIWhitespace(d.lexer.source[i]) {
+			continue
+		}
+		if d.lexer.source[i] != '<' {
+			continue
+		}
+		prev := d.prevNonSpaceByte(i - 1)
+		switch prev {
+		case 0, '\n', '=', '(', '[', '{', ':', ',', '?':
+			return true
+		default:
+			continue
+		}
+	}
+	return false
+}
+
+func (d *dfaTokenSource) prevNonSpaceByte(pos int) byte {
+	if d == nil || d.lexer == nil {
+		return 0
+	}
+	for pos >= 0 {
+		if !isASCIIWhitespace(d.lexer.source[pos]) {
+			return d.lexer.source[pos]
+		}
+		pos--
+	}
+	return 0
+}
+
+func isASCIIWhitespace(ch byte) bool {
+	switch ch {
+	case ' ', '\t', '\n', '\r':
+		return true
+	default:
+		return false
+	}
+}
+
+func (d *dfaTokenSource) sharesSameReduceOnlyActions(a, b Symbol) bool {
+	if d == nil || d.language == nil || d.lookupActionIndex == nil || a == 0 || b == 0 {
+		return false
+	}
+	aIdx := d.lookupActionIndex(d.state, a)
+	bIdx := d.lookupActionIndex(d.state, b)
+	if aIdx == 0 || bIdx == 0 || aIdx != bIdx || int(aIdx) >= len(d.language.ParseActions) {
+		return false
+	}
+	actions := d.language.ParseActions[aIdx].Actions
+	if len(actions) == 0 {
+		return false
+	}
+	for _, act := range actions {
+		if act.Type != ParseActionReduce {
+			return false
+		}
+	}
+	return true
+}
+
+func (d *dfaTokenSource) bestActiveSymbolByName(name string) (Symbol, bool) {
+	if d == nil || d.language == nil || d.lookupActionIndex == nil {
+		return 0, false
+	}
+	best := Symbol(0)
+	bestSpecificity := -1
+	bestVisible := false
+	found := false
+	for i := range d.language.SymbolNames {
+		sym := Symbol(i)
+		if d.symbolName(sym) != name || !d.hasAnyActionForSymbol(sym) {
+			continue
+		}
+		visible := false
+		if meta, ok := d.symbolMetadata(sym); ok {
+			visible = meta.Visible
+		}
+		specificity := d.activeActionSpecificity(sym)
+		if !found || specificity > bestSpecificity || (specificity == bestSpecificity && visible && !bestVisible) {
+			best = sym
+			bestSpecificity = specificity
+			bestVisible = visible
+			found = true
+		}
+	}
+	return best, found
+}
+
+func (d *dfaTokenSource) symbolName(sym Symbol) string {
+	if d == nil || d.language == nil {
+		return ""
+	}
+	if meta, ok := d.symbolMetadata(sym); ok && meta.Name != "" {
+		return meta.Name
+	}
+	idx := int(sym)
+	if idx < 0 || idx >= len(d.language.SymbolNames) {
+		return ""
+	}
+	return d.language.SymbolNames[idx]
 }
 
 func (d *dfaTokenSource) preferSpecificTokenOnExactMatch(candTok Token, candEndPos int, bestTok Token, bestEndPos int) bool {
@@ -1540,6 +1837,9 @@ func (d *dfaTokenSource) promoteKeyword(tok Token) Token {
 		}
 		if !kwHasAction && idHasAction {
 			return tok // no active stack needs the keyword
+		}
+		if d.shouldPreferJavaScriptTypeScriptContextualIdentifier(tok, kwTok, kwHasAction, idHasAction) {
+			return tok
 		}
 	}
 

@@ -506,8 +506,15 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, p *Parser) {
 		normalizeBashProgramVariableAssignments(root, lang)
 	case "c":
 		normalizeCTranslationUnitRoot(root, lang)
+		normalizeCPreprocessorDirectiveShapes(root, source, lang)
+		normalizeCDeclarationBounds(root, source, lang)
+		normalizeCBuiltinPrimitiveTypeIdentifiers(root, source, lang)
+		normalizeCVariadicParameterEllipsis(root, lang)
 		normalizeCSizeofUnknownTypeIdentifiers(root, source, lang)
 		normalizeCCastUnknownTypeIdentifiers(root, source, lang)
+		normalizeCBareTypeIdentifierExpressionStatements(root, source, lang)
+		normalizeCPreprocNewlineSpans(root, source, lang)
+		normalizeCPointerAssignmentPrecedence(root, lang)
 	case "c_sharp":
 		normalizeCSharpTypeConstraintKeywords(root, lang)
 		normalizeCSharpSwitchTupleCasePatterns(root, lang)
@@ -517,6 +524,7 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, p *Parser) {
 		normalizeCobolLeadingAreaStart(root, source, lang)
 		normalizeCobolTopLevelDefinitionEnd(root, source, lang)
 		normalizeCobolDivisionSiblingEnds(root, source, lang)
+		normalizeCobolPeriodChildren(root, source, lang)
 	case "comment":
 		normalizeCommentTrailingExtraTrivia(root, source, lang)
 	case "cooklang":
@@ -559,6 +567,11 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, p *Parser) {
 	case "ini":
 		normalizeIniSectionStarts(root, lang)
 	case "javascript":
+		normalizeJavaScriptProgramStart(root, lang)
+		normalizeJavaScriptTypeScriptOptionalChainLeaves(root, lang)
+		normalizeJavaScriptTypeScriptCallPrecedence(root, lang)
+		normalizeJavaScriptTypeScriptUnaryPrecedence(root, lang)
+		normalizeJavaScriptTypeScriptBinaryPrecedence(root, lang)
 		normalizeJavaScriptTrailingContinueComments(root, source, lang)
 		normalizeJavaScriptTopLevelExpressionStatementBounds(root, lang)
 		normalizeJavaScriptTopLevelObjectLiterals(root, lang)
@@ -585,6 +598,7 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, p *Parser) {
 	case "pug":
 		normalizeTopLevelTrailingLineBreakSpan(root, source, lang)
 	case "python":
+		normalizeCollapsedNamedLeafChildren(root, lang, "pass_statement", "pass")
 		normalizePythonStringContinuationEscapes(root, source, lang)
 	case "rst":
 		normalizeRSTTopLevelSectionEnd(root, source, lang)
@@ -613,8 +627,13 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, p *Parser) {
 	case "svelte":
 		normalizeSvelteTrailingExtraTrivia(root, source, lang)
 	case "tsx", "typescript":
+		normalizeJavaScriptTypeScriptOptionalChainLeaves(root, lang)
+		normalizeJavaScriptTypeScriptCallPrecedence(root, lang)
+		normalizeJavaScriptTypeScriptUnaryPrecedence(root, lang)
+		normalizeJavaScriptTypeScriptBinaryPrecedence(root, lang)
 		normalizeTypeScriptRecoveredNamespaceRoot(root, source, lang)
 		normalizeTypeScriptCompatibility(root, source, lang)
+		normalizeCollapsedNamedLeafChildren(root, lang, "existential_type", "*")
 	case "zig":
 		normalizeZigEmptyInitListFields(root, lang)
 	}
@@ -1153,6 +1172,301 @@ func rootLooksLikeCTopLevel(root *Node, lang *Language) bool {
 	return sawTopLevel
 }
 
+func normalizeCDeclarationBounds(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil {
+		return
+	}
+	if lang.Name != "c" && lang.Name != "cpp" {
+		return
+	}
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil {
+			return
+		}
+		if n.Type(lang) == "declaration" {
+			first, last := firstAndLastNonNilChild(n.children)
+			if first != nil && n.startByte < first.startByte &&
+				first.startByte <= uint32(len(source)) &&
+				cBytesAreCommentOrTrivia(source[n.startByte:first.startByte]) {
+				n.startByte = first.startByte
+				n.startPoint = first.startPoint
+			}
+			if last != nil && n.endByte > last.endByte &&
+				n.endByte <= uint32(len(source)) &&
+				bytesAreTrivia(source[last.endByte:n.endByte]) {
+				setNodeEndTo(n, last.endByte, source)
+			}
+		}
+		for _, child := range n.children {
+			walk(child)
+		}
+	}
+	walk(root)
+}
+
+func normalizeCPreprocessorDirectiveShapes(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil || len(root.children) == 0 {
+		return
+	}
+	if lang.Name != "c" && lang.Name != "cpp" {
+		return
+	}
+	if root.Type(lang) != "translation_unit" {
+		return
+	}
+	preprocDefSym, hasPreprocDef := symbolByName(lang, "preproc_def")
+	preprocArgSym, hasPreprocArg := symbolByName(lang, "preproc_arg")
+	nameFieldID, hasNameField := lang.FieldByName("name")
+	valueFieldID, hasValueField := lang.FieldByName("value")
+	preprocArgNamed := hasPreprocArg && int(preprocArgSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[preprocArgSym].Named
+
+	out := make([]*Node, 0, len(root.children))
+	changed := false
+	for i := 0; i < len(root.children); i++ {
+		child := root.children[i]
+		if child == nil {
+			continue
+		}
+		if hasPreprocDef && hasPreprocArg && hasNameField && hasValueField {
+			if normalizeCWhitespaceSeparatedFunctionMacro(child, source, lang, preprocDefSym, preprocArgSym, preprocArgNamed, nameFieldID, valueFieldID) {
+				changed = true
+			}
+		}
+		if consumed, ok := normalizeCPreprocessorDirectiveRange(child, source, lang); ok {
+			changed = true
+			for i+1 < len(root.children) && root.children[i+1] != nil && root.children[i+1].startByte < consumed && root.children[i+1].endByte <= consumed {
+				i++
+			}
+		}
+		out = append(out, child)
+	}
+	if !changed {
+		return
+	}
+	if root.ownerArena != nil {
+		buf := root.ownerArena.allocNodeSlice(len(out))
+		copy(buf, out)
+		out = buf
+	}
+	root.children = out
+	root.fieldIDs = nil
+	root.fieldSources = nil
+	populateParentNode(root, out)
+	extendNodeToTrailingWhitespace(root, source)
+}
+
+func normalizeCWhitespaceSeparatedFunctionMacro(node *Node, source []byte, lang *Language, preprocDefSym, preprocArgSym Symbol, preprocArgNamed bool, nameFieldID, valueFieldID FieldID) bool {
+	if node == nil || lang == nil || node.Type(lang) != "preproc_function_def" || len(node.children) < 3 || len(node.children) > 4 {
+		return false
+	}
+	name := node.children[1]
+	params := node.children[2]
+	if name == nil || params == nil || name.Type(lang) != "identifier" || params.Type(lang) != "preproc_params" {
+		return false
+	}
+	value := (*Node)(nil)
+	if len(node.children) == 4 {
+		value = node.children[3]
+		if value == nil || value.Type(lang) != "preproc_arg" {
+			return false
+		}
+	} else {
+		value = newParentNodeInArena(node.ownerArena, preprocArgSym, preprocArgNamed, nil, nil, 0)
+		value.startByte = params.startByte
+		value.startPoint = params.startPoint
+		value.endByte = params.endByte
+		value.endPoint = params.endPoint
+	}
+	if name.endByte >= params.startByte || params.startByte > uint32(len(source)) {
+		return false
+	}
+	if !bytesAreTrivia(source[name.endByte:params.startByte]) {
+		return false
+	}
+
+	value.startByte = params.startByte
+	value.startPoint = advancePointByBytes(Point{}, source[:params.startByte])
+	if value.endByte < value.startByte {
+		value.endByte = value.startByte
+		value.endPoint = value.startPoint
+	}
+
+	children := []*Node{node.children[0], name, value}
+	if node.ownerArena != nil {
+		buf := node.ownerArena.allocNodeSlice(len(children))
+		copy(buf, children)
+		children = buf
+	}
+	node.symbol = preprocDefSym
+	node.isNamed = int(preprocDefSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[preprocDefSym].Named
+	node.children = children
+	ensureNodeFieldStorage(node, len(children))
+	for i := range node.fieldIDs {
+		node.fieldIDs[i] = 0
+	}
+	for i := range node.fieldSources {
+		node.fieldSources[i] = fieldSourceNone
+	}
+	node.fieldIDs[1] = nameFieldID
+	node.fieldIDs[2] = valueFieldID
+	node.fieldSources[1] = fieldSourceDirect
+	node.fieldSources[2] = fieldSourceDirect
+	populateParentNode(node, node.children)
+	return true
+}
+
+func normalizeCPreprocessorDirectiveRange(node *Node, source []byte, lang *Language) (uint32, bool) {
+	if node == nil || lang == nil || len(node.children) == 0 {
+		return 0, false
+	}
+	switch node.Type(lang) {
+	case "preproc_def", "preproc_function_def", "preproc_call":
+	default:
+		return 0, false
+	}
+	arg := node.children[len(node.children)-1]
+	if arg == nil || arg.Type(lang) != "preproc_arg" || node.startByte >= uint32(len(source)) {
+		return 0, false
+	}
+	directiveEnd, valueEnd, ok := cScanPreprocessorDirectiveExtent(source, node.startByte)
+	if !ok || directiveEnd <= node.endByte {
+		return 0, false
+	}
+	valueStart := cScanPreprocessorValueStart(source, arg.startByte, valueEnd)
+	if valueStart < arg.startByte || valueStart > valueEnd {
+		valueStart = arg.startByte
+	}
+	arg.startByte = valueStart
+	arg.startPoint = advancePointByBytes(Point{}, source[:valueStart])
+	setNodeEndTo(arg, valueEnd, source)
+	populateParentNode(node, node.children)
+	extendNodeEndTo(node, directiveEnd, source)
+	return directiveEnd, true
+}
+
+func cScanPreprocessorDirectiveExtent(source []byte, start uint32) (directiveEnd uint32, valueEnd uint32, ok bool) {
+	if start >= uint32(len(source)) {
+		return 0, 0, false
+	}
+	lineStart := int(start)
+	lastValueEnd := lineStart
+	for lineStart < len(source) {
+		lineEnd := lineStart
+		for lineEnd < len(source) && source[lineEnd] != '\n' {
+			lineEnd++
+		}
+		lastValueEnd = lineEnd
+		if lineEnd > lineStart && source[lineEnd-1] == '\r' {
+			lastValueEnd--
+		}
+		directiveEnd = uint32(lineEnd)
+		if lineEnd < len(source) && source[lineEnd] == '\n' {
+			directiveEnd++
+		}
+		if !cLineEndsWithContinuation(source[lineStart:lineEnd]) {
+			return directiveEnd, uint32(lastValueEnd), true
+		}
+		lineStart = lineEnd + 1
+	}
+	return uint32(len(source)), uint32(lastValueEnd), true
+}
+
+func cScanPreprocessorValueStart(source []byte, start, end uint32) uint32 {
+	if start > end || end > uint32(len(source)) {
+		return start
+	}
+	i := start
+	for i < end {
+		switch source[i] {
+		case ' ', '\t', '\n', '\r', '\f', '\\':
+			i++
+			continue
+		default:
+			return i
+		}
+	}
+	return end
+}
+
+func cLineEndsWithContinuation(line []byte) bool {
+	end := len(line)
+	for end > 0 && (line[end-1] == ' ' || line[end-1] == '\t' || line[end-1] == '\f' || line[end-1] == '\r') {
+		end--
+	}
+	if end == 0 || line[end-1] != '\\' {
+		return false
+	}
+	backslashes := 0
+	for i := end - 1; i >= 0 && line[i] == '\\'; i-- {
+		backslashes++
+	}
+	return backslashes%2 == 1
+}
+
+func cBytesAreCommentOrTrivia(b []byte) bool {
+	for i := 0; i < len(b); {
+		switch b[i] {
+		case ' ', '\t', '\n', '\r', '\f':
+			i++
+		case '/':
+			if i+1 >= len(b) {
+				return false
+			}
+			switch b[i+1] {
+			case '/':
+				end, ok := cScanLineCommentEnd(b, i)
+				if !ok {
+					return false
+				}
+				i = end
+			case '*':
+				end, ok := cScanBlockCommentEnd(b, i)
+				if !ok {
+					return false
+				}
+				i = end
+			default:
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func cScanLineCommentEnd(b []byte, start int) (int, bool) {
+	if start+1 >= len(b) || b[start] != '/' || b[start+1] != '/' {
+		return 0, false
+	}
+	i := start + 2
+	for i < len(b) {
+		if b[i] == '\n' {
+			lineEnd := i
+			if cLineEndsWithContinuation(b[start:lineEnd]) {
+				i++
+				continue
+			}
+			return i + 1, true
+		}
+		i++
+	}
+	return len(b), true
+}
+
+func cScanBlockCommentEnd(b []byte, start int) (int, bool) {
+	if start+1 >= len(b) || b[start] != '/' || b[start+1] != '*' {
+		return 0, false
+	}
+	for i := start + 2; i+1 < len(b); i++ {
+		if b[i] == '*' && b[i+1] == '/' {
+			return i + 2, true
+		}
+	}
+	return 0, false
+}
+
 func normalizeCSizeofUnknownTypeIdentifiers(root *Node, source []byte, lang *Language) {
 	if root == nil || lang == nil || lang.Name != "c" {
 		return
@@ -1195,7 +1509,7 @@ func normalizeCSizeofUnknownTypeIdentifiers(root *Node, source []byte, lang *Lan
 				typeIdent := typeDescriptor.children[0]
 				if typeIdent != nil && typeIdent.symbol == typeIdentifierSym {
 					name := canonicalCTypeName(typeIdent.Text(source))
-					if _, ok := localTypes[name]; !ok && !looksLikeCTypedefName(name) {
+					if _, ok := localTypes[name]; !ok {
 						ident := newLeafNodeInArena(n.ownerArena, identifierSym, identifierNamed, typeIdent.startByte, typeIdent.endByte, typeIdent.startPoint, typeIdent.endPoint)
 						paren := newParentNodeInArena(n.ownerArena, parenthesizedSym, parenthesizedNamed, []*Node{n.children[1], ident, n.children[3]}, nil, 0)
 						replaceChildRangeWithSingleNode(n, 1, 4, paren)
@@ -1213,6 +1527,147 @@ func normalizeCSizeofUnknownTypeIdentifiers(root *Node, source []byte, lang *Lan
 		}
 	}
 	rewrite(root)
+}
+
+func normalizeCBuiltinPrimitiveTypeIdentifiers(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "c" {
+		return
+	}
+	primitiveTypeSym, ok := lang.SymbolByName("primitive_type")
+	if !ok {
+		return
+	}
+	primitiveTypeNamed := false
+	if int(primitiveTypeSym) < len(lang.SymbolMetadata) {
+		primitiveTypeNamed = lang.SymbolMetadata[primitiveTypeSym].Named
+	}
+	var rewrite func(*Node)
+	rewrite = func(n *Node) {
+		if n == nil {
+			return
+		}
+		if n.Type(lang) == "type_identifier" && isCBuiltinPrimitiveTypeName(canonicalCTypeName(n.Text(source))) {
+			n.symbol = primitiveTypeSym
+			n.isNamed = primitiveTypeNamed
+		}
+		for _, child := range n.children {
+			rewrite(child)
+		}
+	}
+	rewrite(root)
+}
+
+func normalizeCVariadicParameterEllipsis(root *Node, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "c" {
+		return
+	}
+	variadicSym, ok := lang.SymbolByName("variadic_parameter")
+	if !ok {
+		return
+	}
+	ellipsisSym, ok := lang.SymbolByName("...")
+	if !ok {
+		return
+	}
+	ellipsisNamed := false
+	if int(ellipsisSym) < len(lang.SymbolMetadata) {
+		ellipsisNamed = lang.SymbolMetadata[ellipsisSym].Named
+	}
+	var rewrite func(*Node)
+	rewrite = func(n *Node) {
+		if n == nil {
+			return
+		}
+		if n.symbol == variadicSym && len(n.children) == 0 {
+			child := newLeafNodeInArena(n.ownerArena, ellipsisSym, ellipsisNamed, n.startByte, n.endByte, n.startPoint, n.endPoint)
+			n.children = cloneNodeSliceInArena(n.ownerArena, []*Node{child})
+			populateParentNode(n, n.children)
+		}
+		for _, child := range n.children {
+			rewrite(child)
+		}
+	}
+	rewrite(root)
+}
+
+func normalizeCPreprocNewlineSpans(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil || (lang.Name != "c" && lang.Name != "cpp") || len(source) == 0 {
+		return
+	}
+	nlSym, ok := symbolByName(lang, "\n")
+	if !ok {
+		return
+	}
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil {
+			return
+		}
+		for _, child := range n.children {
+			if child != nil && child.symbol == nlSym && child.endByte < uint32(len(source)) {
+				// Extend newline tokens to include consecutive newlines/whitespace
+				end := child.endByte
+				for end < uint32(len(source)) && (source[end] == '\n' || source[end] == '\r') {
+					end++
+				}
+				if end > child.endByte {
+					child.endByte = end
+					child.endPoint = advancePointByBytes(Point{}, source[:end])
+				}
+			}
+			walk(child)
+		}
+	}
+	walk(root)
+}
+
+func normalizeCBareTypeIdentifierExpressionStatements(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "c" {
+		return
+	}
+	compoundSym, ok1 := symbolByName(lang, "compound_statement")
+	typeIdSym, ok2 := symbolByName(lang, "type_identifier")
+	semiSym, ok3 := symbolByName(lang, ";")
+	exprStmtSym, ok4 := symbolByName(lang, "expression_statement")
+	identSym, ok5 := symbolByName(lang, "identifier")
+	if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 {
+		return
+	}
+	exprStmtNamed := int(exprStmtSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[exprStmtSym].Named
+	identNamed := int(identSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[identSym].Named
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil {
+			return
+		}
+		if n.symbol == compoundSym {
+			// Look for bare type_identifier ; pairs that should be expression_statement(identifier ;)
+			newChildren := make([]*Node, 0, len(n.children))
+			for i := 0; i < len(n.children); i++ {
+				child := n.children[i]
+				if child != nil && child.symbol == typeIdSym && i+1 < len(n.children) && n.children[i+1] != nil && n.children[i+1].symbol == semiSym {
+					semi := n.children[i+1]
+					ident := newLeafNodeInArena(n.ownerArena, identSym, identNamed, child.startByte, child.endByte, child.startPoint, child.endPoint)
+					exprStmt := newParentNodeInArena(n.ownerArena, exprStmtSym, exprStmtNamed, []*Node{ident, semi}, nil, 0)
+					exprStmt.startByte = child.startByte
+					exprStmt.startPoint = child.startPoint
+					exprStmt.endByte = semi.endByte
+					exprStmt.endPoint = semi.endPoint
+					newChildren = append(newChildren, exprStmt)
+					i++ // skip the semicolon
+					continue
+				}
+				newChildren = append(newChildren, child)
+			}
+			if len(newChildren) != len(n.children) {
+				n.children = newChildren
+			}
+		}
+		for _, child := range n.children {
+			walk(child)
+		}
+	}
+	walk(root)
 }
 
 func normalizeCCastUnknownTypeIdentifiers(root *Node, source []byte, lang *Language) {
@@ -1369,7 +1824,7 @@ func normalizeCCastUnknownTypeIdentifiers(root *Node, source []byte, lang *Langu
 				}
 				if ident != nil {
 					name := canonicalCTypeName(ident.Text(source))
-					if _, ok := localTypes[name]; ok || looksLikeCTypedefName(name) {
+					if _, ok := localTypes[name]; ok {
 						typeIdent := newLeafNodeInArena(n.ownerArena, typeIdentifierSym, typeIdentifierNamed, ident.startByte, ident.endByte, ident.startPoint, ident.endPoint)
 						typeDescriptor := newParentNodeInArena(n.ownerArena, typeDescriptorSym, typeDescriptorNamed, []*Node{typeIdent}, nil, 0)
 						var valueNode *Node
@@ -1421,8 +1876,88 @@ func normalizeCCastUnknownTypeIdentifiers(root *Node, source []byte, lang *Langu
 	repair(root)
 }
 
-func looksLikeCTypedefName(name string) bool {
-	return strings.HasSuffix(name, "_t") || strings.HasSuffix(name, "_T")
+func normalizeCPointerAssignmentPrecedence(root *Node, lang *Language) {
+	if root == nil || lang == nil {
+		return
+	}
+	if lang.Name != "c" && lang.Name != "cpp" {
+		return
+	}
+
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil {
+			return
+		}
+		for i, child := range n.children {
+			walk(child)
+			for {
+				rewritten := rewriteCPointerAssignmentPrecedence(child, lang)
+				if rewritten == nil {
+					break
+				}
+				n.children[i] = rewritten
+				rewritten.parent = n
+				rewritten.childIndex = i
+				child = rewritten
+			}
+		}
+	}
+	walk(root)
+}
+
+func rewriteCPointerAssignmentPrecedence(node *Node, lang *Language) *Node {
+	if node == nil || lang == nil || node.Type(lang) != "pointer_expression" || len(node.children) != 2 {
+		return nil
+	}
+	operator := node.children[0]
+	assignment := node.children[1]
+	if operator == nil || assignment == nil || operator.Type(lang) != "*" || assignment.Type(lang) != "assignment_expression" || len(assignment.children) != 3 {
+		return nil
+	}
+	left := assignment.children[0]
+	assignOp := assignment.children[1]
+	right := assignment.children[2]
+	if left == nil || assignOp == nil || right == nil || !isCAssignmentOperatorToken(assignOp.Type(lang)) {
+		return nil
+	}
+
+	rewrittenPointer := cloneNodeInArena(node.ownerArena, node)
+	rewrittenPointer.children = cloneNodeSliceInArena(node.ownerArena, []*Node{operator, left})
+	populateParentNode(rewrittenPointer, rewrittenPointer.children)
+
+	rewrittenAssign := cloneNodeInArena(node.ownerArena, assignment)
+	rewrittenAssign.children = cloneNodeSliceInArena(node.ownerArena, []*Node{rewrittenPointer, assignOp, right})
+	populateParentNode(rewrittenAssign, rewrittenAssign.children)
+	return rewrittenAssign
+}
+
+func isCAssignmentOperatorToken(tok string) bool {
+	if tok == "=" {
+		return true
+	}
+	if !strings.HasSuffix(tok, "=") {
+		return false
+	}
+	switch tok {
+	case "==", "!=", "<=", ">=", "=>", "===", "!==":
+		return false
+	default:
+		return true
+	}
+}
+
+func isCBuiltinPrimitiveTypeName(name string) bool {
+	switch name {
+	case "char", "int", "float", "double", "void", "_Bool", "_Complex", "bool", "__int128",
+		"size_t", "ssize_t", "ptrdiff_t", "intptr_t", "uintptr_t",
+		"int8_t", "int16_t", "int32_t", "int64_t",
+		"uint8_t", "uint16_t", "uint32_t", "uint64_t",
+		"wchar_t", "char16_t", "char32_t":
+		return true
+	default:
+		return false
+	}
 }
 
 func canonicalCTypeName(name string) string {
@@ -3818,7 +4353,13 @@ func normalizeCobolLeadingAreaStart(root *Node, source []byte, lang *Language) {
 	}
 	start := firstNonWhitespaceByte(source)
 	if start == 0 {
-		return
+		// COBOL fixed format: columns 1-6 are sequence numbers (non-whitespace).
+		// Detect this pattern and use column 7 (byte 6) as the adjusted start.
+		if len(source) >= 7 && (source[6] == ' ' || source[6] == '*' || source[6] == '-' || source[6] == '/') {
+			start = 6
+		} else {
+			return
+		}
 	}
 	startPoint := advancePointByBytes(Point{}, source[:start])
 	setNodeStartTo := func(n *Node) {
@@ -3829,30 +4370,43 @@ func normalizeCobolLeadingAreaStart(root *Node, source []byte, lang *Language) {
 		n.startPoint = startPoint
 	}
 	setNodeStartTo(root)
-	if len(root.children) != 1 {
+	if len(root.children) == 0 {
 		return
 	}
-	def := root.children[0]
-	if def == nil || def.Type(lang) != "program_definition" {
+	def := (*Node)(nil)
+	for _, child := range root.children {
+		if child != nil && !child.IsExtra() && child.Type(lang) == "program_definition" {
+			def = child
+			break
+		}
+	}
+	if def == nil {
 		return
 	}
 	setNodeStartTo(def)
-	if len(def.children) != 1 {
+	if len(def.children) == 0 {
 		return
 	}
-	div := def.children[0]
-	if div == nil || div.Type(lang) != "identification_division" {
-		return
+	for _, child := range def.children {
+		if child != nil && !child.IsExtra() && child.Type(lang) == "identification_division" {
+			setNodeStartTo(child)
+			break
+		}
 	}
-	setNodeStartTo(div)
 }
 
 func normalizeCobolTopLevelDefinitionEnd(root *Node, source []byte, lang *Language) {
-	if root == nil || lang == nil || (lang.Name != "cobol" && lang.Name != "COBOL") || root.Type(lang) != "start" || len(root.children) != 1 {
+	if root == nil || lang == nil || (lang.Name != "cobol" && lang.Name != "COBOL") || root.Type(lang) != "start" || len(root.children) == 0 {
 		return
 	}
-	def := root.children[0]
-	if def == nil || def.IsExtra() || def.Type(lang) != "program_definition" {
+	def := (*Node)(nil)
+	for _, child := range root.children {
+		if child != nil && !child.IsExtra() && child.Type(lang) == "program_definition" {
+			def = child
+			break
+		}
+	}
+	if def == nil {
 		return
 	}
 	end := lastNonTriviaByteEnd(source)
@@ -3864,11 +4418,17 @@ func normalizeCobolTopLevelDefinitionEnd(root *Node, source []byte, lang *Langua
 }
 
 func normalizeCobolDivisionSiblingEnds(root *Node, source []byte, lang *Language) {
-	if root == nil || lang == nil || (lang.Name != "cobol" && lang.Name != "COBOL") || root.Type(lang) != "start" || len(root.children) != 1 {
+	if root == nil || lang == nil || (lang.Name != "cobol" && lang.Name != "COBOL") || root.Type(lang) != "start" || len(root.children) == 0 {
 		return
 	}
-	def := root.children[0]
-	if def == nil || def.IsExtra() || def.Type(lang) != "program_definition" {
+	def := (*Node)(nil)
+	for _, child := range root.children {
+		if child != nil && !child.IsExtra() && child.Type(lang) == "program_definition" {
+			def = child
+			break
+		}
+	}
+	if def == nil {
 		return
 	}
 	for i := 0; i+1 < len(def.children); i++ {
@@ -3887,6 +4447,49 @@ func normalizeCobolDivisionSiblingEnds(root *Node, source []byte, lang *Language
 		cur.endByte = end
 		cur.endPoint = advancePointByBytes(Point{}, source[:end])
 	}
+}
+
+func normalizeCobolPeriodChildren(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil || (lang.Name != "cobol" && lang.Name != "COBOL") {
+		return
+	}
+	normalizeCollapsedNamedLeafChildren(root, lang, "period", ".")
+}
+
+// normalizeCollapsedNamedLeafChildren restores collapsed single-anonymous-child
+// nodes. When a named node (parentName) wraps a single anonymous token
+// (childName) and the collapse logic strips the child, this function
+// reconstructs the child so the tree matches C tree-sitter output.
+func normalizeCollapsedNamedLeafChildren(root *Node, lang *Language, parentName, childName string) {
+	if root == nil || lang == nil {
+		return
+	}
+	parentSym, ok := symbolByName(lang, parentName)
+	if !ok {
+		return
+	}
+	childSym, childOk := symbolByName(lang, childName)
+	if !childOk {
+		return
+	}
+	childNamed := false
+	if int(childSym) < len(lang.SymbolMetadata) {
+		childNamed = lang.SymbolMetadata[childSym].Named
+	}
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil {
+			return
+		}
+		if n.symbol == parentSym && len(n.children) == 0 {
+			child := newLeafNodeInArena(n.ownerArena, childSym, childNamed, n.startByte, n.endByte, n.startPoint, n.endPoint)
+			n.children = cloneNodeSliceInArena(n.ownerArena, []*Node{child})
+		}
+		for _, child := range n.children {
+			walk(child)
+		}
+	}
+	walk(root)
 }
 
 func normalizeNimTopLevelCallEnd(root *Node, source []byte, lang *Language) {
@@ -4494,6 +5097,18 @@ func normalizeJavaScriptTopLevelObjectLiterals(root *Node, lang *Language) {
 	}
 }
 
+func normalizeJavaScriptProgramStart(root *Node, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "javascript" || root.Type(lang) != "program" {
+		return
+	}
+	first, _ := firstAndLastNonNilChild(root.children)
+	if first == nil {
+		return
+	}
+	root.startByte = first.startByte
+	root.startPoint = first.startPoint
+}
+
 func normalizeRubyTopLevelModuleBounds(root *Node, source []byte, lang *Language) {
 	if root == nil || lang == nil || lang.Name != "ruby" || root.Type(lang) != "program" || len(source) == 0 {
 		return
@@ -4671,35 +5286,402 @@ func insertJavaScriptStatementBlockComment(parent *Node, childIdx int, comment *
 	populateParentNode(parent, parent.children)
 }
 
+func normalizeJavaScriptTypeScriptOptionalChainLeaves(root *Node, lang *Language) {
+	if root == nil || lang == nil {
+		return
+	}
+	switch lang.Name {
+	case "javascript", "typescript", "tsx":
+	default:
+		return
+	}
+
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil {
+			return
+		}
+		if n.Type(lang) == "optional_chain" && len(n.children) == 1 {
+			child := n.children[0]
+			if child != nil && !child.IsNamed() && !child.IsExtra() &&
+				child.startByte == n.startByte && child.endByte == n.endByte &&
+				child.startPoint == n.startPoint && child.endPoint == n.endPoint {
+				n.children = nil
+				n.fieldIDs = nil
+				n.fieldSources = nil
+			}
+		}
+		for _, child := range n.children {
+			walk(child)
+		}
+	}
+	walk(root)
+}
+
+func normalizeJavaScriptTypeScriptCallPrecedence(root *Node, lang *Language) {
+	if root == nil || lang == nil {
+		return
+	}
+	switch lang.Name {
+	case "javascript", "typescript", "tsx":
+	default:
+		return
+	}
+
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil {
+			return
+		}
+		for i, child := range n.children {
+			if rewritten := rewriteJavaScriptTypeScriptCallPrecedence(child, lang); rewritten != nil {
+				n.children[i] = rewritten
+				rewritten.parent = n
+				rewritten.childIndex = i
+				child = rewritten
+			}
+			walk(child)
+		}
+	}
+	walk(root)
+}
+
+func rewriteJavaScriptTypeScriptCallPrecedence(node *Node, lang *Language) *Node {
+	if node == nil || lang == nil || node.Type(lang) != "call_expression" || len(node.children) != 2 {
+		return nil
+	}
+	function := node.children[0]
+	arguments := node.children[1]
+	if function == nil || arguments == nil {
+		return nil
+	}
+	return rewriteJavaScriptTypeScriptCallTarget(function, arguments, node, lang)
+}
+
+func rewriteJavaScriptTypeScriptCallTarget(target, arguments, callNode *Node, lang *Language) *Node {
+	if target == nil || arguments == nil || callNode == nil || lang == nil {
+		return nil
+	}
+	if isJavaScriptTypeScriptCallableShape(target, lang) {
+		rewrittenCall := cloneNodeInArena(callNode.ownerArena, callNode)
+		rewrittenCall.children = cloneNodeSliceInArena(callNode.ownerArena, []*Node{target, arguments})
+		populateParentNode(rewrittenCall, rewrittenCall.children)
+		return rewrittenCall
+	}
+
+	switch target.Type(lang) {
+	case "unary_expression":
+		if len(target.children) < 2 {
+			return nil
+		}
+		operandIdx := len(target.children) - 1
+		rewrittenOperand := rewriteJavaScriptTypeScriptCallTarget(target.children[operandIdx], arguments, callNode, lang)
+		if rewrittenOperand == nil {
+			return nil
+		}
+		rewrittenUnary := cloneNodeInArena(callNode.ownerArena, target)
+		unaryChildren := cloneNodeSliceInArena(callNode.ownerArena, target.children)
+		unaryChildren[operandIdx] = rewrittenOperand
+		rewrittenUnary.children = unaryChildren
+		populateParentNode(rewrittenUnary, rewrittenUnary.children)
+		return rewrittenUnary
+	case "binary_expression":
+		operator, rightIdx, ok := javaScriptTypeScriptBinaryOperatorAndRight(target, lang)
+		if !ok || rightIdx < 0 || rightIdx >= len(target.children) {
+			return nil
+		}
+		if operator == nil {
+			return nil
+		}
+		if _, ok := javaScriptTypeScriptBinaryOperatorPrecedence(operator.Type(lang)); !ok {
+			return nil
+		}
+		rewrittenRight := rewriteJavaScriptTypeScriptCallTarget(target.children[rightIdx], arguments, callNode, lang)
+		if rewrittenRight == nil {
+			return nil
+		}
+		rewrittenBinary := cloneNodeInArena(callNode.ownerArena, target)
+		binaryChildren := cloneNodeSliceInArena(callNode.ownerArena, target.children)
+		binaryChildren[rightIdx] = rewrittenRight
+		rewrittenBinary.children = binaryChildren
+		populateParentNode(rewrittenBinary, rewrittenBinary.children)
+		return rewrittenBinary
+	default:
+		return nil
+	}
+}
+
+func javaScriptTypeScriptBinaryOperatorAndRight(node *Node, lang *Language) (*Node, int, bool) {
+	if node == nil || lang == nil || node.Type(lang) != "binary_expression" || len(node.children) < 3 {
+		return nil, -1, false
+	}
+	operatorIdx := -1
+	rightIdx := -1
+	for i := 0; i < len(node.children); i++ {
+		switch node.FieldNameForChild(i, lang) {
+		case "operator":
+			operatorIdx = i
+		case "right":
+			rightIdx = i
+		}
+	}
+	if operatorIdx < 0 && len(node.children) >= 2 {
+		operatorIdx = 1
+	}
+	if rightIdx < 0 {
+		for i := len(node.children) - 1; i >= 0; i-- {
+			child := node.children[i]
+			if child == nil || child.isExtra {
+				continue
+			}
+			if i != operatorIdx {
+				rightIdx = i
+				break
+			}
+		}
+	}
+	if operatorIdx < 0 || rightIdx < 0 || operatorIdx >= len(node.children) {
+		return nil, -1, false
+	}
+	return node.children[operatorIdx], rightIdx, true
+}
+
+func isJavaScriptTypeScriptCallableShape(node *Node, lang *Language) bool {
+	if node == nil || lang == nil {
+		return false
+	}
+	switch node.Type(lang) {
+	case "identifier", "member_expression", "subscript_expression", "call_expression", "parenthesized_expression":
+		return true
+	default:
+		return false
+	}
+}
+
+func cloneNodeSliceInArena(arena *nodeArena, nodes []*Node) []*Node {
+	if len(nodes) == 0 {
+		return nil
+	}
+	if arena != nil {
+		buf := arena.allocNodeSlice(len(nodes))
+		copy(buf, nodes)
+		return buf
+	}
+	buf := make([]*Node, len(nodes))
+	copy(buf, nodes)
+	return buf
+}
+
+func normalizeJavaScriptTypeScriptUnaryPrecedence(root *Node, lang *Language) {
+	if root == nil || lang == nil {
+		return
+	}
+	switch lang.Name {
+	case "javascript", "typescript", "tsx":
+	default:
+		return
+	}
+
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil {
+			return
+		}
+		for i, child := range n.children {
+			walk(child)
+			for {
+				rewritten := rewriteJavaScriptTypeScriptUnaryPrecedence(child, lang)
+				if rewritten == nil {
+					break
+				}
+				n.children[i] = rewritten
+				rewritten.parent = n
+				rewritten.childIndex = i
+				child = rewritten
+			}
+		}
+	}
+	walk(root)
+}
+
+func rewriteJavaScriptTypeScriptUnaryPrecedence(node *Node, lang *Language) *Node {
+	if node == nil || lang == nil || node.Type(lang) != "unary_expression" || len(node.children) < 2 {
+		return nil
+	}
+	operandIdx := len(node.children) - 1
+	operand := node.children[operandIdx]
+	if operand == nil || operand.Type(lang) != "binary_expression" || len(operand.children) != 3 {
+		return nil
+	}
+	if _, ok := javaScriptTypeScriptBinaryOperatorPrecedence(operand.children[1].Type(lang)); !ok {
+		return nil
+	}
+
+	rewrittenUnary := cloneNodeInArena(node.ownerArena, node)
+	unaryChildren := cloneNodeSliceInArena(node.ownerArena, node.children)
+	unaryChildren[operandIdx] = operand.children[0]
+	rewrittenUnary.children = unaryChildren
+	populateParentNode(rewrittenUnary, rewrittenUnary.children)
+
+	rewrittenBinary := cloneNodeInArena(node.ownerArena, operand)
+	binaryChildren := cloneNodeSliceInArena(node.ownerArena, operand.children)
+	binaryChildren[0] = rewrittenUnary
+	rewrittenBinary.children = binaryChildren
+	populateParentNode(rewrittenBinary, rewrittenBinary.children)
+	return rewrittenBinary
+}
+
+func normalizeJavaScriptTypeScriptBinaryPrecedence(root *Node, lang *Language) {
+	if root == nil || lang == nil {
+		return
+	}
+	switch lang.Name {
+	case "javascript", "typescript", "tsx":
+	default:
+		return
+	}
+
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil {
+			return
+		}
+		for i, child := range n.children {
+			walk(child)
+			for {
+				rewritten := rewriteJavaScriptTypeScriptBinaryPrecedence(child, lang)
+				if rewritten == nil {
+					break
+				}
+				n.children[i] = rewritten
+				rewritten.parent = n
+				rewritten.childIndex = i
+				child = rewritten
+			}
+		}
+	}
+	walk(root)
+}
+
+func rewriteJavaScriptTypeScriptBinaryPrecedence(node *Node, lang *Language) *Node {
+	if node == nil || lang == nil || node.Type(lang) != "binary_expression" || len(node.children) != 3 {
+		return nil
+	}
+	left := node.children[0]
+	op := node.children[1]
+	right := node.children[2]
+	if left == nil || op == nil || right == nil || left.Type(lang) != "binary_expression" || len(left.children) != 3 {
+		return nil
+	}
+	leftOp := left.children[1]
+	if leftOp == nil {
+		return nil
+	}
+
+	parentPrec, ok := javaScriptTypeScriptBinaryOperatorPrecedence(op.Type(lang))
+	if !ok {
+		return nil
+	}
+	leftPrec, ok := javaScriptTypeScriptBinaryOperatorPrecedence(leftOp.Type(lang))
+	if !ok || parentPrec <= leftPrec {
+		return nil
+	}
+
+	rotatedInner := cloneNodeInArena(node.ownerArena, node)
+	rotatedInner.children = cloneNodeSliceInArena(node.ownerArena, []*Node{left.children[2], op, right})
+	populateParentNode(rotatedInner, rotatedInner.children)
+
+	rotatedOuter := cloneNodeInArena(node.ownerArena, left)
+	rotatedOuter.children = cloneNodeSliceInArena(node.ownerArena, []*Node{left.children[0], leftOp, rotatedInner})
+	populateParentNode(rotatedOuter, rotatedOuter.children)
+	return rotatedOuter
+}
+
+func javaScriptTypeScriptBinaryOperatorPrecedence(op string) (int, bool) {
+	switch op {
+	case "??":
+		return 1, true
+	case "||":
+		return 2, true
+	case "&&":
+		return 3, true
+	case "|":
+		return 4, true
+	case "^":
+		return 5, true
+	case "&":
+		return 6, true
+	case "==", "!=", "===", "!==":
+		return 7, true
+	case "<", "<=", ">", ">=", "instanceof", "in":
+		return 8, true
+	case "<<", ">>", ">>>":
+		return 9, true
+	case "+", "-":
+		return 10, true
+	case "*", "/", "%":
+		return 11, true
+	case "**":
+		return 12, true
+	default:
+		return 0, false
+	}
+}
+
 type typeScriptNormalizationContext struct {
 	source []byte
 	lang   *Language
 
-	canRewriteGenericCalls bool
-	canClearEnumBodyFields bool
+	canRewriteGenericCalls      bool
+	canRewriteInstantiatedCalls bool
+	canRewriteAsExpressions     bool
+	canClearEnumBodyFields      bool
 
-	callSym               Symbol
-	callNamed             bool
-	typeArgsSym           Symbol
-	typeArgsNamed         bool
-	argsSym               Symbol
-	argsNamed             bool
-	predefinedTypeSym     Symbol
-	predefinedTypeNamed   bool
-	functionFieldID       FieldID
-	typeArgsFieldID       FieldID
-	argumentsFieldID      FieldID
-	binaryExpressionSym   Symbol
-	greaterThanSym        Symbol
-	parenthesizedExprSym  Symbol
-	lessThanSym           Symbol
-	identifierSym         Symbol
-	memberExpressionSym   Symbol
-	sequenceExpressionSym Symbol
-	typeIdentifierSym     Symbol
-	hasTypeIdentifierSym  bool
-	enumBodySym           Symbol
-	enumAssignmentSym     Symbol
+	callSym                Symbol
+	callNamed              bool
+	instantiationExprSym   Symbol
+	instantiationExprNamed bool
+	typeArgsSym            Symbol
+	typeArgsNamed          bool
+	argsSym                Symbol
+	argsNamed              bool
+	predefinedTypeSym      Symbol
+	predefinedTypeNamed    bool
+	asExpressionSym        Symbol
+	asExpressionNamed      bool
+	functionFieldID        FieldID
+	typeArgsFieldID        FieldID
+	argumentsFieldID       FieldID
+	binaryExpressionSym    Symbol
+	assignmentExprSym      Symbol
+	assignmentExprNamed    bool
+	ternaryExprSym         Symbol
+	ternaryExprNamed       bool
+	unionTypeSym           Symbol
+	unionTypeNamed         bool
+	intersectionTypeSym    Symbol
+	intersectionTypeNamed  bool
+	objectTypeSym          Symbol
+	objectTypeNamed        bool
+	propertySignatureSym   Symbol
+	propertySignatureNamed bool
+	typeAnnotationSym      Symbol
+	typeAnnotationNamed    bool
+	objectSym              Symbol
+	pairSym                Symbol
+	propertyIdentifierSym  Symbol
+	colonSym               Symbol
+	greaterThanSym         Symbol
+	parenthesizedExprSym   Symbol
+	lessThanSym            Symbol
+	identifierSym          Symbol
+	memberExpressionSym    Symbol
+	sequenceExpressionSym  Symbol
+	typeIdentifierSym      Symbol
+	typeIdentifierNamed    bool
+	hasTypeIdentifierSym   bool
+	enumBodySym            Symbol
+	enumAssignmentSym      Symbol
 }
 
 func normalizeTypeScriptCompatibility(root *Node, source []byte, lang *Language) {
@@ -4713,6 +5695,8 @@ func normalizeTypeScriptCompatibility(root *Node, source []byte, lang *Language)
 		if n == nil {
 			return
 		}
+		normalizeTypeScriptIdentifierKeywordAliases(n, &ctx)
+		normalizeTypeScriptImportKeywordNamedness(n, &ctx)
 		if ctx.canClearEnumBodyFields && n.symbol == ctx.enumBodySym && len(n.fieldIDs) > 0 {
 			limit := len(n.children)
 			if len(n.fieldIDs) < limit {
@@ -4730,18 +5714,53 @@ func normalizeTypeScriptCompatibility(root *Node, source []byte, lang *Language)
 			}
 		}
 		for i, child := range n.children {
-			if ctx.canRewriteGenericCalls {
-				if rewritten := rewriteTypeScriptPredefinedGenericCall(child, &ctx); rewritten != nil {
-					n.children[i] = rewritten
-					rewritten.parent = n
-					rewritten.childIndex = i
-					child = rewritten
+			for {
+				var rewritten *Node
+				switch {
+				case ctx.canRewriteGenericCalls:
+					rewritten = rewriteTypeScriptPredefinedGenericCall(child, &ctx)
 				}
+				if rewritten == nil && ctx.canRewriteInstantiatedCalls {
+					rewritten = rewriteTypeScriptInstantiatedCall(child, &ctx)
+				}
+				if rewritten == nil && ctx.canRewriteAsExpressions {
+					rewritten = rewriteTypeScriptAsExpressionCompatibility(child, &ctx)
+				}
+				if rewritten == nil {
+					break
+				}
+				n.children[i] = rewritten
+				rewritten.parent = n
+				rewritten.childIndex = i
+				child = rewritten
 			}
 			walk(child)
 		}
 	}
 	walk(root)
+}
+
+func normalizeTypeScriptIdentifierKeywordAliases(node *Node, ctx *typeScriptNormalizationContext) {
+	if node == nil || ctx == nil || ctx.lang == nil || node.symbol != ctx.identifierSym || len(node.children) != 1 {
+		return
+	}
+	child := node.children[0]
+	if child == nil || child.IsNamed() || child.IsExtra() {
+		return
+	}
+	if child.startByte != node.startByte || child.endByte != node.endByte || child.startPoint != node.startPoint || child.endPoint != node.endPoint {
+		return
+	}
+	node.children = nil
+	node.fieldIDs = nil
+	node.fieldSources = nil
+}
+
+func normalizeTypeScriptImportKeywordNamedness(node *Node, ctx *typeScriptNormalizationContext) {
+	if node == nil || ctx == nil || ctx.lang == nil || node.Type(ctx.lang) != "import" {
+		return
+	}
+	node.isNamed = false
 }
 
 func normalizeTypeScriptRecoveredNamespaceRoot(root *Node, source []byte, lang *Language) {
@@ -4896,6 +5915,10 @@ func newTypeScriptNormalizationContext(source []byte, lang *Language) (typeScrip
 	}
 
 	if callSym, ok := lang.SymbolByName("call_expression"); ok {
+		if instantiationExprSym, ok := lang.SymbolByName("instantiation_expression"); ok {
+			ctx.instantiationExprSym = instantiationExprSym
+			ctx.instantiationExprNamed = int(instantiationExprSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[instantiationExprSym].Named
+		}
 		if typeArgsSym, ok := lang.SymbolByName("type_arguments"); ok {
 			if argsSym, ok := lang.SymbolByName("arguments"); ok {
 				if predefinedTypeSym, ok := lang.SymbolByName("predefined_type"); ok {
@@ -4926,6 +5949,56 @@ func newTypeScriptNormalizationContext(source []byte, lang *Language) (typeScrip
 												ctx.typeArgsFieldID, _ = lang.FieldByName("type_arguments")
 												ctx.argumentsFieldID, _ = lang.FieldByName("arguments")
 												ctx.typeIdentifierSym, ctx.hasTypeIdentifierSym = lang.SymbolByName("type_identifier")
+												if ctx.hasTypeIdentifierSym {
+													ctx.typeIdentifierNamed = int(ctx.typeIdentifierSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[ctx.typeIdentifierSym].Named
+												}
+												ctx.canRewriteInstantiatedCalls = ctx.instantiationExprSym != 0 && ctx.functionFieldID != 0 && ctx.typeArgsFieldID != 0 && ctx.argumentsFieldID != 0
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if asExpressionSym, ok := lang.SymbolByName("as_expression"); ok {
+		if assignmentExprSym, ok := lang.SymbolByName("assignment_expression"); ok {
+			if ternaryExprSym, ok := lang.SymbolByName("ternary_expression"); ok {
+				if unionTypeSym, ok := lang.SymbolByName("union_type"); ok {
+					if intersectionTypeSym, ok := lang.SymbolByName("intersection_type"); ok {
+						ctx.canRewriteAsExpressions = true
+						ctx.asExpressionSym = asExpressionSym
+						ctx.asExpressionNamed = int(asExpressionSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[asExpressionSym].Named
+						ctx.assignmentExprSym = assignmentExprSym
+						ctx.assignmentExprNamed = int(assignmentExprSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[assignmentExprSym].Named
+						ctx.ternaryExprSym = ternaryExprSym
+						ctx.ternaryExprNamed = int(ternaryExprSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[ternaryExprSym].Named
+						ctx.unionTypeSym = unionTypeSym
+						ctx.unionTypeNamed = int(unionTypeSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[unionTypeSym].Named
+						ctx.intersectionTypeSym = intersectionTypeSym
+						ctx.intersectionTypeNamed = int(intersectionTypeSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[intersectionTypeSym].Named
+						if objectTypeSym, ok := lang.SymbolByName("object_type"); ok {
+							if propertySignatureSym, ok := lang.SymbolByName("property_signature"); ok {
+								if typeAnnotationSym, ok := lang.SymbolByName("type_annotation"); ok {
+									if objectSym, ok := lang.SymbolByName("object"); ok {
+										if pairSym, ok := lang.SymbolByName("pair"); ok {
+											if propertyIdentifierSym, ok := lang.SymbolByName("property_identifier"); ok {
+												if colonSym, ok := lang.SymbolByName(":"); ok {
+													ctx.objectTypeSym = objectTypeSym
+													ctx.objectTypeNamed = int(objectTypeSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[objectTypeSym].Named
+													ctx.propertySignatureSym = propertySignatureSym
+													ctx.propertySignatureNamed = int(propertySignatureSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[propertySignatureSym].Named
+													ctx.typeAnnotationSym = typeAnnotationSym
+													ctx.typeAnnotationNamed = int(typeAnnotationSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[typeAnnotationSym].Named
+													ctx.objectSym = objectSym
+													ctx.pairSym = pairSym
+													ctx.propertyIdentifierSym = propertyIdentifierSym
+													ctx.colonSym = colonSym
+												}
 											}
 										}
 									}
@@ -4946,7 +6019,7 @@ func newTypeScriptNormalizationContext(source []byte, lang *Language) (typeScrip
 		}
 	}
 
-	return ctx, ctx.canRewriteGenericCalls || ctx.canClearEnumBodyFields
+	return ctx, ctx.canRewriteGenericCalls || ctx.canRewriteInstantiatedCalls || ctx.canRewriteAsExpressions || ctx.canClearEnumBodyFields
 }
 
 func rewriteTypeScriptPredefinedGenericCall(node *Node, ctx *typeScriptNormalizationContext) *Node {
@@ -4968,8 +6041,8 @@ func rewriteTypeScriptPredefinedGenericCall(node *Node, ctx *typeScriptNormaliza
 	if callee == nil || lt == nil || typeArg == nil || lt.symbol != ctx.lessThanSym {
 		return nil
 	}
-	switch callee.symbol {
-	case ctx.identifierSym, ctx.memberExpressionSym:
+	switch callee.Type(ctx.lang) {
+	case "identifier", "member_expression":
 	default:
 		return nil
 	}
@@ -5010,6 +6083,247 @@ func rewriteTypeScriptPredefinedGenericCall(node *Node, ctx *typeScriptNormaliza
 	return call
 }
 
+func rewriteTypeScriptInstantiatedCall(node *Node, ctx *typeScriptNormalizationContext) *Node {
+	if node == nil || ctx == nil || ctx.lang == nil || node.symbol != ctx.callSym || len(node.children) != 2 {
+		return nil
+	}
+	function := node.children[0]
+	arguments := node.children[1]
+	if function == nil || arguments == nil || function.symbol != ctx.instantiationExprSym || arguments.symbol != ctx.argsSym || len(function.children) != 2 {
+		return nil
+	}
+	callee := function.children[0]
+	typeArgs := function.children[1]
+	if callee == nil || typeArgs == nil || typeArgs.symbol != ctx.typeArgsSym {
+		return nil
+	}
+	children := phpAllocChildren(node.ownerArena, 3)
+	children[0] = callee
+	children[1] = typeArgs
+	children[2] = arguments
+	var fieldIDs []FieldID
+	if ctx.functionFieldID != 0 || ctx.typeArgsFieldID != 0 || ctx.argumentsFieldID != 0 {
+		if node.ownerArena != nil {
+			fieldIDs = node.ownerArena.allocFieldIDSlice(3)
+		} else {
+			fieldIDs = make([]FieldID, 3)
+		}
+		fieldIDs[0] = ctx.functionFieldID
+		fieldIDs[1] = ctx.typeArgsFieldID
+		fieldIDs[2] = ctx.argumentsFieldID
+	}
+	call := newParentNodeInArena(node.ownerArena, ctx.callSym, ctx.callNamed, children, fieldIDs, node.productionID)
+	call.fieldSources = defaultFieldSourcesInArena(node.ownerArena, fieldIDs)
+	return call
+}
+
+func rewriteTypeScriptAsExpressionCompatibility(node *Node, ctx *typeScriptNormalizationContext) *Node {
+	if node == nil || ctx == nil || ctx.lang == nil {
+		return nil
+	}
+	if rewritten := rewriteTypeScriptAsAssignmentOrTernary(node, ctx); rewritten != nil {
+		return rewritten
+	}
+	return rewriteTypeScriptAsTypeChain(node, ctx)
+}
+
+func rewriteTypeScriptAsAssignmentOrTernary(node *Node, ctx *typeScriptNormalizationContext) *Node {
+	if node == nil || ctx == nil || ctx.lang == nil || node.symbol != ctx.asExpressionSym || len(node.children) < 2 {
+		return nil
+	}
+	valueIdx, typeIdx := 0, len(node.children)-1
+	value := node.children[valueIdx]
+	if value == nil {
+		return nil
+	}
+
+	switch value.symbol {
+	case ctx.assignmentExprSym:
+		if len(value.children) < 2 {
+			return nil
+		}
+		rightIdx := len(value.children) - 1
+		rewrittenAs := cloneNodeInArena(node.ownerArena, node)
+		asChildren := cloneNodeSliceInArena(node.ownerArena, node.children)
+		asChildren[valueIdx] = value.children[rightIdx]
+		rewrittenAs.children = asChildren
+		populateParentNode(rewrittenAs, rewrittenAs.children)
+
+		rewrittenAssign := cloneNodeInArena(node.ownerArena, value)
+		assignChildren := cloneNodeSliceInArena(node.ownerArena, value.children)
+		assignChildren[rightIdx] = rewrittenAs
+		rewrittenAssign.children = assignChildren
+		populateParentNode(rewrittenAssign, rewrittenAssign.children)
+		return rewrittenAssign
+	case ctx.ternaryExprSym:
+		if len(value.children) < 3 {
+			return nil
+		}
+		falseIdx := len(value.children) - 1
+		rewrittenAs := cloneNodeInArena(node.ownerArena, node)
+		asChildren := cloneNodeSliceInArena(node.ownerArena, node.children)
+		asChildren[valueIdx] = value.children[falseIdx]
+		rewrittenAs.children = asChildren
+		populateParentNode(rewrittenAs, rewrittenAs.children)
+
+		rewrittenTernary := cloneNodeInArena(node.ownerArena, value)
+		ternaryChildren := cloneNodeSliceInArena(node.ownerArena, value.children)
+		ternaryChildren[falseIdx] = rewrittenAs
+		rewrittenTernary.children = ternaryChildren
+		populateParentNode(rewrittenTernary, rewrittenTernary.children)
+		return rewrittenTernary
+	default:
+		_ = typeIdx
+		return nil
+	}
+}
+
+func rewriteTypeScriptAsTypeChain(node *Node, ctx *typeScriptNormalizationContext) *Node {
+	if node == nil || ctx == nil || ctx.lang == nil || node.symbol != ctx.binaryExpressionSym || len(node.children) != 3 {
+		return nil
+	}
+	baseAs, rewrittenType, ok := collapseTypeScriptAsTypeChain(node, ctx)
+	if !ok || baseAs == nil || rewrittenType == nil || len(baseAs.children) < 2 {
+		return nil
+	}
+	rewrittenAs := cloneNodeInArena(node.ownerArena, baseAs)
+	asChildren := cloneNodeSliceInArena(node.ownerArena, baseAs.children)
+	asChildren[len(asChildren)-1] = rewrittenType
+	rewrittenAs.children = asChildren
+	populateParentNode(rewrittenAs, rewrittenAs.children)
+	return rewrittenAs
+}
+
+func collapseTypeScriptAsTypeChain(node *Node, ctx *typeScriptNormalizationContext) (*Node, *Node, bool) {
+	if node == nil || ctx == nil || ctx.lang == nil || node.symbol != ctx.binaryExpressionSym || len(node.children) != 3 {
+		return nil, nil, false
+	}
+	left := node.children[0]
+	op := node.children[1]
+	right := node.children[2]
+	if left == nil || op == nil || right == nil {
+		return nil, nil, false
+	}
+	var typeSym Symbol
+	var typeNamed bool
+	switch op.Type(ctx.lang) {
+	case "|":
+		typeSym = ctx.unionTypeSym
+		typeNamed = ctx.unionTypeNamed
+	case "&":
+		typeSym = ctx.intersectionTypeSym
+		typeNamed = ctx.intersectionTypeNamed
+	default:
+		return nil, nil, false
+	}
+
+	rightType := normalizeTypeScriptTypeExpression(right, ctx)
+	if rightType == nil {
+		return nil, nil, false
+	}
+
+	if left.symbol == ctx.asExpressionSym && len(left.children) >= 2 {
+		leftType := normalizeTypeScriptTypeExpression(left.children[len(left.children)-1], ctx)
+		if leftType == nil {
+			return nil, nil, false
+		}
+		children := cloneNodeSliceInArena(node.ownerArena, []*Node{leftType, op, rightType})
+		return left, newParentNodeInArena(node.ownerArena, typeSym, typeNamed, children, nil, node.productionID), true
+	}
+
+	leftAs, leftType, ok := collapseTypeScriptAsTypeChain(left, ctx)
+	if !ok || leftAs == nil || leftType == nil {
+		return nil, nil, false
+	}
+	children := cloneNodeSliceInArena(node.ownerArena, []*Node{leftType, op, rightType})
+	return leftAs, newParentNodeInArena(node.ownerArena, typeSym, typeNamed, children, nil, node.productionID), true
+}
+
+func normalizeTypeScriptTypeExpression(node *Node, ctx *typeScriptNormalizationContext) *Node {
+	if node == nil || ctx == nil || ctx.lang == nil {
+		return nil
+	}
+	switch node.Type(ctx.lang) {
+	case "type_identifier", "predefined_type", "union_type", "intersection_type", "object_type", "literal_type", "generic_type", "lookup_type", "template_literal_type", "conditional_type", "tuple_type", "array_type", "function_type", "constructor_type", "readonly_type", "type_query", "infer_type", "index_type_query", "nested_type_identifier":
+		return node
+	case "identifier":
+		if ctx.hasTypeIdentifierSym {
+			return newLeafNodeInArena(node.ownerArena, ctx.typeIdentifierSym, ctx.typeIdentifierNamed, node.startByte, node.endByte, node.startPoint, node.endPoint)
+		}
+		return node
+	case "binary_expression":
+		if len(node.children) != 3 || node.children[1] == nil {
+			return nil
+		}
+		var typeSym Symbol
+		var typeNamed bool
+		switch node.children[1].Type(ctx.lang) {
+		case "|":
+			typeSym = ctx.unionTypeSym
+			typeNamed = ctx.unionTypeNamed
+		case "&":
+			typeSym = ctx.intersectionTypeSym
+			typeNamed = ctx.intersectionTypeNamed
+		default:
+			return nil
+		}
+		leftType := normalizeTypeScriptTypeExpression(node.children[0], ctx)
+		rightType := normalizeTypeScriptTypeExpression(node.children[2], ctx)
+		if leftType == nil || rightType == nil {
+			return nil
+		}
+		children := cloneNodeSliceInArena(node.ownerArena, []*Node{leftType, node.children[1], rightType})
+		return newParentNodeInArena(node.ownerArena, typeSym, typeNamed, children, nil, node.productionID)
+	case "object":
+		return rewriteTypeScriptObjectExpressionAsType(node, ctx)
+	default:
+		return nil
+	}
+}
+
+func rewriteTypeScriptObjectExpressionAsType(node *Node, ctx *typeScriptNormalizationContext) *Node {
+	if node == nil || ctx == nil || ctx.lang == nil || node.Type(ctx.lang) != "object" {
+		return nil
+	}
+	children := cloneNodeSliceInArena(node.ownerArena, node.children)
+	changed := false
+	for i, child := range children {
+		if child == nil || child.Type(ctx.lang) != "pair" {
+			continue
+		}
+		propSig := rewriteTypeScriptObjectPairAsPropertySignature(child, ctx)
+		if propSig == nil {
+			return nil
+		}
+		children[i] = propSig
+		changed = true
+	}
+	if !changed && len(children) != 2 {
+		return nil
+	}
+	return newParentNodeInArena(node.ownerArena, ctx.objectTypeSym, ctx.objectTypeNamed, children, nil, node.productionID)
+}
+
+func rewriteTypeScriptObjectPairAsPropertySignature(node *Node, ctx *typeScriptNormalizationContext) *Node {
+	if node == nil || ctx == nil || ctx.lang == nil || node.Type(ctx.lang) != "pair" || len(node.children) < 3 {
+		return nil
+	}
+	key := node.children[0]
+	colon := node.children[1]
+	value := node.children[len(node.children)-1]
+	if key == nil || colon == nil || value == nil || key.Type(ctx.lang) != "property_identifier" || colon.Type(ctx.lang) != ":" {
+		return nil
+	}
+	valueType := normalizeTypeScriptTypeExpression(value, ctx)
+	if valueType == nil {
+		return nil
+	}
+	typeAnnChildren := cloneNodeSliceInArena(node.ownerArena, []*Node{colon, valueType})
+	typeAnnotation := newParentNodeInArena(node.ownerArena, ctx.typeAnnotationSym, ctx.typeAnnotationNamed, typeAnnChildren, nil, 0)
+	propChildren := cloneNodeSliceInArena(node.ownerArena, []*Node{key, typeAnnotation})
+	return newParentNodeInArena(node.ownerArena, ctx.propertySignatureSym, ctx.propertySignatureNamed, propChildren, nil, node.productionID)
+}
+
 func typeScriptGenericCallArgumentChildren(paren *Node, sequenceExpressionSym Symbol) []*Node {
 	if paren == nil {
 		return nil
@@ -5029,14 +6343,14 @@ func normalizeTypeScriptGenericCallTypeArgument(node *Node, ctx *typeScriptNorma
 	if node == nil || ctx == nil || ctx.lang == nil {
 		return nil
 	}
-	switch node.symbol {
-	case ctx.predefinedTypeSym:
+	switch node.Type(ctx.lang) {
+	case "predefined_type":
 		return node
-	case ctx.typeIdentifierSym:
+	case "type_identifier":
 		if ctx.hasTypeIdentifierSym {
 			return node
 		}
-	case ctx.identifierSym:
+	case "identifier":
 		if typeKeywordSym, ok := typeScriptPredefinedTypeSymbol(ctx.lang, node.Text(ctx.source)); ok {
 			typeKeywordNamed := int(typeKeywordSym) < len(ctx.lang.SymbolMetadata) && ctx.lang.SymbolMetadata[typeKeywordSym].Named
 			typeLeaf := newLeafNodeInArena(node.ownerArena, typeKeywordSym, typeKeywordNamed, node.startByte, node.endByte, node.startPoint, node.endPoint)

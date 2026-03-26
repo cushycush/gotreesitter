@@ -1,6 +1,7 @@
 package grammars
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/odvcencio/gotreesitter"
@@ -28,6 +29,128 @@ func TestParseFileCLocalTypedefCastStaysCastExpression(t *testing.T) {
 
 func TestParseFileCHeaderTypeCastWithoutArgumentListStaysCastExpression(t *testing.T) {
 	assertCCastLocalTypedefStaysCast(t, []byte("void f(int content_size) { x = (off_t)content_size; }\n"), "off_t")
+}
+
+func TestParseFileCCommentFollowedByDeclarationKeepsDeclarationBounds(t *testing.T) {
+	src := []byte("// hello \\\n   this is still a comment\nthis_is_not a_comment;\n")
+	bt, err := ParseFile("parser.c", src)
+	if err != nil {
+		t.Fatalf("ParseFile error: %v", err)
+	}
+	defer bt.Release()
+
+	root := bt.RootNode()
+	if root == nil || root.HasError() {
+		t.Fatalf("expected error-free C parse tree, got %v", root)
+	}
+	if got, want := root.ChildCount(), 2; got != want {
+		t.Fatalf("root child count = %d, want %d", got, want)
+	}
+
+	decl := root.Child(1)
+	if decl == nil {
+		t.Fatal("root child[1] is nil, want declaration")
+	}
+	if got := bt.NodeType(decl); got != "declaration" {
+		t.Fatalf("root child[1] type = %q, want declaration", got)
+	}
+	wantStart := uint32(bytes.Index(src, []byte("this_is_not")))
+	wantEnd := uint32(len(src) - 1)
+	if got := decl.StartByte(); got != wantStart {
+		t.Fatalf("declaration start = %d, want %d", got, wantStart)
+	}
+	if got := decl.EndByte(); got != wantEnd {
+		t.Fatalf("declaration end = %d, want %d", got, wantEnd)
+	}
+}
+
+func TestParseFileCDefineValueParensStaysPreprocDef(t *testing.T) {
+	src := []byte("#define SIZE_ALIGN (4*sizeof(size_t))\n")
+	bt, err := ParseFile("parser.c", src)
+	if err != nil {
+		t.Fatalf("ParseFile error: %v", err)
+	}
+	defer bt.Release()
+
+	root := bt.RootNode()
+	if root == nil || root.HasError() {
+		t.Fatalf("expected error-free C parse tree, got %v", root)
+	}
+	if got, want := root.ChildCount(), 1; got != want {
+		t.Fatalf("root child count = %d, want %d", got, want)
+	}
+
+	macro := root.Child(0)
+	if macro == nil {
+		t.Fatal("root child[0] is nil, want preproc_def")
+	}
+	if got := bt.NodeType(macro); got != "preproc_def" {
+		t.Fatalf("root child[0] type = %q, want preproc_def", got)
+	}
+	if got, want := macro.ChildCount(), 3; got != want {
+		t.Fatalf("preproc_def child count = %d, want %d", got, want)
+	}
+
+	value := macro.Child(2)
+	wantStart := uint32(bytes.Index(src, []byte("(4*sizeof(size_t))")))
+	wantEnd := uint32(len(src) - 1)
+	if value == nil {
+		t.Fatal("preproc value child is nil, want preproc_arg")
+	}
+	if got := bt.NodeType(value); got != "preproc_arg" {
+		t.Fatalf("preproc value child type = %q, want preproc_arg", got)
+	}
+	if got := value.StartByte(); got != wantStart {
+		t.Fatalf("preproc_arg start = %d, want %d", got, wantStart)
+	}
+	if got := value.EndByte(); got != wantEnd {
+		t.Fatalf("preproc_arg end = %d, want %d", got, wantEnd)
+	}
+}
+
+func TestParseFileCMultilineDefineKeepsBodyInsidePreprocArg(t *testing.T) {
+	src := []byte("#define LOG(...) \\\n  if (flag) { \\\n    work(); \\\n  }\n\nint z;\n")
+	bt, err := ParseFile("parser.c", src)
+	if err != nil {
+		t.Fatalf("ParseFile error: %v", err)
+	}
+	defer bt.Release()
+
+	root := bt.RootNode()
+	if root == nil || root.HasError() {
+		t.Fatalf("expected error-free C parse tree, got %v", root)
+	}
+	if got, want := root.ChildCount(), 2; got != want {
+		t.Fatalf("root child count = %d, want %d", got, want)
+	}
+	for i := 0; i < root.ChildCount(); i++ {
+		if got := bt.NodeType(root.Child(i)); got == "if_statement" {
+			t.Fatalf("root leaked macro body as top-level if_statement: %s", root.SExpr(CLanguage()))
+		}
+	}
+
+	macro := root.Child(0)
+	if macro == nil {
+		t.Fatal("root child[0] is nil, want preproc_function_def")
+	}
+	if got := bt.NodeType(macro); got != "preproc_function_def" {
+		t.Fatalf("root child[0] type = %q, want preproc_function_def", got)
+	}
+	arg := macro.Child(macro.ChildCount() - 1)
+	if arg == nil {
+		t.Fatal("macro value child is nil, want preproc_arg")
+	}
+	if got := bt.NodeType(arg); got != "preproc_arg" {
+		t.Fatalf("macro value child type = %q, want preproc_arg", got)
+	}
+	wantStart := uint32(bytes.Index(src, []byte("if (flag)")))
+	wantEnd := uint32(bytes.Index(src, []byte("\n\nint z;")))
+	if got := arg.StartByte(); got != wantStart {
+		t.Fatalf("preproc_arg start = %d, want %d", got, wantStart)
+	}
+	if got := arg.EndByte(); got != wantEnd {
+		t.Fatalf("preproc_arg end = %d, want %d", got, wantEnd)
+	}
 }
 
 func assertCSizeofIdentifierExpression(t *testing.T, src []byte, wantIdent string) {

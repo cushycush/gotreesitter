@@ -17,6 +17,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 IMAGE_TAG="gotreesitter/cgo-harness:go1.24-local"
 MEMORY_LIMIT="8g"
+CPUS_LIMIT="4"
+PIDS_LIMIT="4096"
 TIMEOUT_PER_GRAMMAR="15m"
 MAX_CASES="25"
 PROFILE="aggressive"
@@ -25,6 +27,8 @@ BUILD_IMAGE=1
 SEED_DIR=""
 OFFLINE=0
 LR_SPLIT=0
+GOMAXPROCS_VALUE=""
+GOFLAGS_VALUE=""
 
 # All grammars in the test set (alphabetical order matching importParityGrammars).
 ALL_GRAMMARS=(
@@ -66,6 +70,8 @@ Arguments:
 
 Options:
   --memory <limit>     Container memory limit (default: 8g)
+  --cpus <count>       Container CPU limit (default: 4)
+  --pids <count>       Container PID limit (default: 4096)
   --timeout <duration> Go test timeout per grammar (default: 15m)
   --max-cases <n>      Max samples per grammar (default: 25)
   --profile <name>     smoke|balanced|aggressive (default: aggressive)
@@ -73,6 +79,8 @@ Options:
   --seed-dir <path>    Host grammar repos directory (under repo root)
   --offline            Skip network cloning, require --seed-dir
   --lr-split           Enable LR(1) splitting (GTS_GRAMMARGEN_LR_SPLIT=1)
+  --gomaxprocs <n>     Export GOMAXPROCS inside the container
+  --goflags <value>    Export GOFLAGS inside the container (for example: -p=1)
   --no-build           Skip Docker image build
   -h, --help           Show this help
 
@@ -103,6 +111,14 @@ while [[ $# -gt 0 ]]; do
       MEMORY_LIMIT="$2"
       shift 2
       ;;
+    --cpus)
+      CPUS_LIMIT="$2"
+      shift 2
+      ;;
+    --pids)
+      PIDS_LIMIT="$2"
+      shift 2
+      ;;
     --timeout)
       TIMEOUT_PER_GRAMMAR="$2"
       shift 2
@@ -130,6 +146,14 @@ while [[ $# -gt 0 ]]; do
     --lr-split)
       LR_SPLIT=1
       shift
+      ;;
+    --gomaxprocs)
+      GOMAXPROCS_VALUE="$2"
+      shift 2
+      ;;
+    --goflags)
+      GOFLAGS_VALUE="$2"
+      shift 2
       ;;
     --no-build)
       BUILD_IMAGE=0
@@ -313,7 +337,7 @@ run_grammar() {
   local grammar="$1"
   local log_file="$REPORT_DIR/diag_${grammar}.log"
 
-  echo "=== Testing: $grammar (memory=$MEMORY_LIMIT, timeout=$TIMEOUT_PER_GRAMMAR) ==="
+  echo "=== Testing: $grammar (memory=$MEMORY_LIMIT cpus=$CPUS_LIMIT pids=$PIDS_LIMIT timeout=$TIMEOUT_PER_GRAMMAR gomaxprocs=${GOMAXPROCS_VALUE:-inherit} goflags=${GOFLAGS_VALUE:-inherit}) ==="
 
   # Build inner command for Docker.
   local lr_split_env=""
@@ -344,6 +368,12 @@ fi"
 set -eo pipefail
 export PATH=/usr/local/go/bin:\$PATH
 export GOMEMLIMIT=6GiB
+if [[ -n "$GOMAXPROCS_VALUE" ]]; then
+  export GOMAXPROCS="$GOMAXPROCS_VALUE"
+fi
+if [[ -n "$GOFLAGS_VALUE" ]]; then
+  export GOFLAGS="$GOFLAGS_VALUE"
+fi
 mkdir -p /tmp/grammar_parity
 $seed_block
 $clone_block
@@ -367,6 +397,8 @@ INNER_EOF
     --image "$IMAGE_TAG" \
     --repo-root "$REPO_ROOT" \
     --memory "$MEMORY_LIMIT" \
+    --cpus "$CPUS_LIMIT" \
+    --pids "$PIDS_LIMIT" \
     --label "diag-${grammar}" \
     --no-build \
     -- "$inner_cmd" 2>&1 | tee "$log_file" || exit_code=$?
@@ -375,16 +407,25 @@ INNER_EOF
   local summary
   summary=$(grep -E 'real-corpus\[' "$log_file" 2>/dev/null | tail -1 || echo "NO SUMMARY")
   local is_oom="false"
+  local parity_status="fail"
   if grep -q '^oom_killed: true$' "$log_file" 2>/dev/null; then
     is_oom="true"
+  elif [[ "$summary" =~ no-error[[:space:]]+([0-9]+)/([0-9]+),[[:space:]]+sexpr[[:space:]]+parity[[:space:]]+([0-9]+)/([0-9]+),[[:space:]]+deep[[:space:]]+parity[[:space:]]+([0-9]+)/([0-9]+) ]]; then
+    if [[ "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" &&
+          "${BASH_REMATCH[3]}" == "${BASH_REMATCH[4]}" &&
+          "${BASH_REMATCH[5]}" == "${BASH_REMATCH[6]}" ]]; then
+      parity_status="ok"
+    fi
   fi
 
   if [[ "$is_oom" == "true" ]]; then
     echo "RESULT: $grammar — OOM KILLED"
   elif [[ "$exit_code" != "0" ]]; then
     echo "RESULT: $grammar — FAILED (exit=$exit_code) | $summary"
+  elif [[ "$parity_status" == "ok" ]]; then
+    echo "RESULT: $grammar — PARITY | $summary"
   else
-    echo "RESULT: $grammar — OK | $summary"
+    echo "RESULT: $grammar — MISMATCH | $summary"
   fi
   echo ""
 
@@ -407,7 +448,8 @@ for grammar in "${GRAMMARS[@]}"; do
   log="$REPORT_DIR/diag_${grammar}.log"
   if grep -q '^oom_killed: true$' "$log" 2>/dev/null; then
     ((oom++)) || true
-  elif grep -q '^exit_code: 0$' "$log" 2>/dev/null; then
+  elif grep -q '^exit_code: 0$' "$log" 2>/dev/null &&
+       grep -Eq 'real-corpus\[.*no-error[[:space:]]+([0-9]+)/\1,[[:space:]]+sexpr[[:space:]]+parity[[:space:]]+([0-9]+)/\2,[[:space:]]+deep[[:space:]]+parity[[:space:]]+([0-9]+)/\3' "$log" 2>/dev/null; then
     ((passed++)) || true
   else
     ((failed++)) || true

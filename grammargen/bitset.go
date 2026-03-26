@@ -34,6 +34,14 @@ func (b *bitset) add(idx int) {
 	b.words[w] |= 1 << uint(idx%64)
 }
 
+func (b *bitset) clear(idx int) {
+	w := idx / 64
+	if w >= len(b.words) {
+		return
+	}
+	b.words[w] &^= 1 << uint(idx%64)
+}
+
 func (b *bitset) contains(idx int) bool {
 	w := idx / 64
 	if w >= len(b.words) {

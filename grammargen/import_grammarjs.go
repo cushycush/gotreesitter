@@ -115,6 +115,7 @@ func (imp *jsImporter) extract(root *gotreesitter.Node) (*Grammar, error) {
 		}
 	}
 
+	applyImportGrammarShapeHints(g)
 	return g, nil
 }
 

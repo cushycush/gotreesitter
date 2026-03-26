@@ -96,7 +96,7 @@ var grammargenCGOGrammars = []grammargenCGOGrammar{
 	{name: "nix", jsonPath: "/tmp/grammar_parity/nix/src/grammar.json", blobFunc: grammars.NixLanguage},
 	{name: "sql", jsonPath: "/tmp/grammar_parity/sql/src/grammar.json", blobFunc: grammars.SqlLanguage, genTimeout: 90 * time.Second},
 	{name: "make", jsonPath: "/tmp/grammar_parity/make/src/grammar.json", blobFunc: grammars.MakeLanguage, genTimeout: 60 * time.Second},
-	{name: "scala", jsPath: "/tmp/grammar_parity/scala/grammar.js", blobFunc: grammars.ScalaLanguage, genTimeout: 45 * time.Second},
+	{name: "scala", jsPath: "/tmp/grammar_parity/scala/grammar.js", blobFunc: grammars.ScalaLanguage, genTimeout: 180 * time.Second},
 	{name: "gomod", jsonPath: "/tmp/grammar_parity/gomod/src/grammar.json", blobFunc: grammars.GomodLanguage},
 	{name: "go", jsonPath: "/tmp/grammar_parity/go/src/grammar.json", blobFunc: grammars.GoLanguage, genTimeout: 45 * time.Second},
 	{name: "javascript", jsonPath: "/tmp/grammar_parity/javascript/src/grammar.json", blobFunc: grammars.JavascriptLanguage, genTimeout: 90 * time.Second},
@@ -106,7 +106,7 @@ var grammargenCGOGrammars = []grammargenCGOGrammar{
 	// Keep cpp opt-in for direct grammargen-vs-C runs until generation fits the
 	// bounded high-value container budget; default ratchets skip seeding it.
 	{name: "cpp", jsonPath: "/tmp/grammar_parity/cpp/src/grammar.json", blobFunc: grammars.CppLanguage, genTimeout: 300 * time.Second},
-	{name: "c_sharp", jsonPath: "/tmp/grammar_parity/c_sharp/src/grammar.json", blobFunc: grammars.CSharpLanguage, genTimeout: 90 * time.Second},
+	{name: "c_sharp", jsonPath: "/tmp/grammar_parity/c_sharp/src/grammar.json", blobFunc: grammars.CSharpLanguage, genTimeout: 300 * time.Second},
 	{name: "cobol", jsonPath: "/tmp/grammar_parity/cobol/src/grammar.json", blobFunc: grammars.CobolLanguage, genTimeout: 60 * time.Second},
 	// ── Languages without prior C oracle ──
 	{name: "csv", jsonPath: "/tmp/grammar_parity/csv/csv/src/grammar.json", blobFunc: grammars.CsvLanguage},
@@ -561,7 +561,7 @@ func extractCorpusBlocks(data []byte) []string {
 			i++
 		}
 		start := i
-		for i < len(lines) && strings.TrimSpace(lines[i]) != "---" {
+		for i < len(lines) && !isDashFence(lines[i]) {
 			i++
 		}
 		if i > start {
@@ -575,6 +575,19 @@ func extractCorpusBlocks(data []byte) []string {
 		}
 	}
 	return out
+}
+
+func isDashFence(line string) bool {
+	s := strings.TrimSpace(line)
+	if len(s) < 3 {
+		return false
+	}
+	for _, r := range s {
+		if r != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func isEqualsFence(line string) bool {

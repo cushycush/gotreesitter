@@ -10,12 +10,15 @@
 # Options:
 #   --memory MEM       Container memory limit (default: 8g)
 #   --cpus N           CPU limit (default: 4)
+#   --pids N           PID limit (default: 4096)
 #   --max-cases N      Max corpus samples per grammar (default: 20)
 #   --max-bytes N      Max sample size in bytes (default: 262144)
 #   --langs LANGS      Comma-separated language filter (default: all)
 #   --ratchet-update   Write ratchet floor file after run
 #   --label LABEL      Label for output directory
 #   --timeout MINS     Test timeout in minutes (default: 45)
+#   --gomaxprocs N     Export GOMAXPROCS inside the container
+#   --goflags VALUE    Export GOFLAGS inside the container (for example: -p=1)
 #   --src-dir DIR      Source directory (default: repo root)
 #   --seed-dir DIR     Optional host seed dir copied into /grammar_parity
 #   --offline          Do not clone missing grammar repos inside the container
@@ -29,6 +32,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Defaults.
 MEMORY="8g"
 CPUS="4"
+PIDS="4096"
 MAX_CASES="20"
 MAX_BYTES="262144"
 LANGS=""
@@ -39,17 +43,22 @@ SRC_DIR="$REPO_ROOT"
 SEED_DIR=""
 OFFLINE=0
 BUILD_IMAGE=1
+GOMAXPROCS_VALUE=""
+GOFLAGS_VALUE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --memory)      MEMORY="$2"; shift 2 ;;
         --cpus)        CPUS="$2"; shift 2 ;;
+        --pids)        PIDS="$2"; shift 2 ;;
         --max-cases)   MAX_CASES="$2"; shift 2 ;;
         --max-bytes)   MAX_BYTES="$2"; shift 2 ;;
         --langs)       LANGS="$2"; shift 2 ;;
         --ratchet-update) RATCHET_UPDATE="1"; shift ;;
         --label)       LABEL="$2"; shift 2 ;;
         --timeout)     TIMEOUT_MINS="$2"; shift 2 ;;
+        --gomaxprocs)  GOMAXPROCS_VALUE="$2"; shift 2 ;;
+        --goflags)     GOFLAGS_VALUE="$2"; shift 2 ;;
         --src-dir)     SRC_DIR="$2"; shift 2 ;;
         --seed-dir)    SEED_DIR="$2"; shift 2 ;;
         --offline)     OFFLINE=1; shift ;;
@@ -69,11 +78,14 @@ mkdir -p "$OUT_DIR"
 echo "=== grammargen C parity test ==="
 echo "  memory:     $MEMORY"
 echo "  cpus:       $CPUS"
+echo "  pids:       $PIDS"
 echo "  max_cases:  $MAX_CASES"
 echo "  max_bytes:  $MAX_BYTES"
 echo "  langs:      ${LANGS:-all}"
 echo "  ratchet:    ${RATCHET_UPDATE:-no}"
 echo "  timeout:    ${TIMEOUT_MINS}m"
+echo "  gomaxprocs: ${GOMAXPROCS_VALUE:-inherit}"
+echo "  goflags:    ${GOFLAGS_VALUE:-inherit}"
 echo "  offline:    $OFFLINE"
 echo "  seed dir:   ${SEED_DIR:-none}"
 echo "  output:     $OUT_DIR"
@@ -124,6 +136,12 @@ if [[ -n "$LANGS" ]]; then
 fi
 if [[ -n "$RATCHET_UPDATE" ]]; then
     ENV_ARGS+=(-e "GTS_GRAMMARGEN_CGO_RATCHET_UPDATE=1")
+fi
+if [[ -n "$GOMAXPROCS_VALUE" ]]; then
+    ENV_ARGS+=(-e "GOMAXPROCS=$GOMAXPROCS_VALUE")
+fi
+if [[ -n "$GOFLAGS_VALUE" ]]; then
+    ENV_ARGS+=(-e "GOFLAGS=$GOFLAGS_VALUE")
 fi
 
 read -r -d '' CONTAINER_CMD <<EOF || true
@@ -289,6 +307,7 @@ docker run \
     --rm \
     --memory="$MEMORY" \
     --cpus="$CPUS" \
+    --pids-limit="$PIDS" \
     --memory-swap="$MEMORY" \
     --oom-kill-disable=false \
     -v "$SRC_DIR:/src:ro" \
@@ -307,11 +326,14 @@ cat > "$OUT_DIR/metadata.txt" <<EOF
 timestamp: $TIMESTAMP
 memory: $MEMORY
 cpus: $CPUS
+pids: $PIDS
 max_cases: $MAX_CASES
 max_bytes: $MAX_BYTES
 langs: ${LANGS:-all}
 ratchet_update: ${RATCHET_UPDATE:-no}
 timeout_mins: $TIMEOUT_MINS
+gomaxprocs: ${GOMAXPROCS_VALUE:-inherit}
+goflags: ${GOFLAGS_VALUE:-inherit}
 offline: $OFFLINE
 seed_dir: ${SEED_DIR:-none}
 exit_code: $CONTAINER_EXIT

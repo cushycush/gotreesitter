@@ -763,15 +763,18 @@ func namedTypesMatch(gen []*gotreesitter.Node, genLang *gotreesitter.Language, r
 func isBinaryExprValueMismatch(a, b string) bool {
 	// All CSS _value alternatives plus structural differences caused
 	// by IMMEDIATE_TOKEN unit attachment (binary_expression from `16px/1`,
-	// parenthesized_value vs call_expression from `0 rgba(...)` where
-	// unit greedily consumed the function name).
+	// or parenthesized_value from `0 calc(...)` where unit greedily
+	// consumed the following value-like construct).
+	//
+	// Do not treat call_expression as interchangeable here. That masks
+	// real JS/TS generic-call regressions like `f<T>(x)`, where
+	// binary_expression vs call_expression is a semantic parse error.
 	valueTypes := map[string]bool{
 		"integer_value":       true,
 		"float_value":         true,
 		"plain_value":         true,
 		"binary_expression":   true,
 		"parenthesized_value": true,
-		"call_expression":     true,
 	}
 	return valueTypes[a] && valueTypes[b]
 }

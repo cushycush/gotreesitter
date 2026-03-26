@@ -1,125 +1,91 @@
 package gotreesitter
 
-import (
-	"testing"
-)
+import "testing"
 
-// TestExtendParentSpanToWindow_ContiguityGap verifies that
-// extendParentSpanToWindow handles visible entries in the reduce window
-// without incorrect span extension. The actual span for visible entries
-// is set by populateParentNode (from children), not by
-// extendParentSpanToWindow (which only handles invisible entries).
-func TestExtendParentSpanToWindow_ContiguityGap(t *testing.T) {
-	meta := []SymbolMetadata{
-		{Visible: false, Named: false}, // sym 0: end
-		{Visible: true, Named: true},   // sym 1: expression (visible, named)
-		{Visible: false, Named: true},  // sym 2: _expr_term (invisible, named)
-		{Visible: true, Named: true},   // sym 3: variable_expr (visible, named)
-		{Visible: true, Named: true},   // sym 4: get_attr (visible, named)
-		{Visible: true, Named: false},  // sym 5: "." (visible, anonymous)
-		{Visible: true, Named: true},   // sym 6: identifier (visible, named)
-	}
-	names := []string{"end", "expression", "_expr_term", "variable_expr", "get_attr", ".", "identifier"}
-
-	// Simulated stack entries where all are visible — extendParentSpanToWindow
-	// should not modify the parent span since it only handles invisible entries.
-	entries := []stackEntry{
-		{node: &Node{symbol: 3, startByte: 212, endByte: 230}},
-		{node: &Node{symbol: 5, startByte: 230, endByte: 231}},
-		{node: &Node{symbol: 4, startByte: 231, endByte: 250}},
-		{node: &Node{symbol: 5, startByte: 250, endByte: 251}},
-		{node: &Node{symbol: 4, startByte: 251, endByte: 253}},
-	}
-
-	parent := &Node{
-		symbol:    1,
-		startByte: 212,
-		endByte:   230,
-	}
-
-	extendParentSpanToWindow(parent, entries, 0, len(entries), meta, names)
-
-	// Visible entries are not processed by extendParentSpanToWindow.
-	// The parent span is unchanged because all entries are visible.
-	if parent.endByte != 230 {
-		t.Errorf("expected parent endByte=230 (unchanged for visible entries), got %d", parent.endByte)
-	}
-}
-
-// TestExtendParentSpan_InvisibleEntryWithVisibleChildren tests that an
-// invisible entry node with a span wider than its inlined children correctly
-// extends the parent's span.
-func TestExtendParentSpan_InvisibleEntryWithVisibleChildren(t *testing.T) {
-	meta := []SymbolMetadata{
-		{Visible: false, Named: false}, // sym 0
-		{Visible: true, Named: true},   // sym 1: parent
-		{Visible: false, Named: true},  // sym 2: _expr_term (invisible)
-	}
-	names := []string{"end", "expression", "_expr_term"}
-
-	invisNode := &Node{
-		symbol:    2,
-		startByte: 212,
-		endByte:   253,
-		children: []*Node{
-			{symbol: 3, startByte: 212, endByte: 230},
-			{symbol: 4, startByte: 231, endByte: 253},
+func TestBuildSingleTokenWrapperSymbols(t *testing.T) {
+	lang := &Language{
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF"},
+			{Name: "single_wrapper", Visible: true, Named: true},
+			{Name: "multi_wrapper", Visible: true, Named: true},
+			{Name: "statement", Visible: true, Named: true},
+		},
+		ParseActions: []ParseActionEntry{
+			{Actions: []ParseAction{{Type: ParseActionReduce, Symbol: 1, ChildCount: 1, ProductionID: 10}}},
+			{Actions: []ParseAction{{Type: ParseActionReduce, Symbol: 2, ChildCount: 1, ProductionID: 11}}},
+			{Actions: []ParseAction{{Type: ParseActionReduce, Symbol: 2, ChildCount: 1, ProductionID: 12}}},
+			{Actions: []ParseAction{{Type: ParseActionReduce, Symbol: 3, ChildCount: 2, ProductionID: 13}}},
+			{Actions: []ParseAction{{Type: ParseActionShift, State: 1}}},
 		},
 	}
 
-	entries := []stackEntry{
-		{node: invisNode},
+	got := buildSingleTokenWrapperSymbols(lang)
+	if !got[1] {
+		t.Fatal("expected single_wrapper to be marked as a single-token wrapper")
 	}
-
-	parent := &Node{
-		symbol:    1,
-		startByte: 212,
-		endByte:   230,
+	if got[2] {
+		t.Fatal("did not expect multi_wrapper to be marked as a single-token wrapper")
 	}
-
-	extendParentSpanToWindow(parent, entries, 0, len(entries), meta, names)
-
-	if parent.endByte != 253 {
-		t.Errorf("expected parent endByte=253 after extending from invisible entry, got %d", parent.endByte)
+	if got[3] {
+		t.Fatal("did not expect statement to be marked as a single-token wrapper")
 	}
 }
 
-// TestComputeReduceRawSpan_BasicSpan verifies that computeReduceRawSpan
-// computes the correct span from stack entries, using the first and last
-// non-extra entries.
-func TestComputeReduceRawSpan_BasicSpan(t *testing.T) {
-	entries := []stackEntry{
-		{node: &Node{startByte: 10, endByte: 20}},
-		{node: &Node{startByte: 20, endByte: 30}},
-		{node: &Node{startByte: 30, endByte: 50}},
+func TestCanCollapseNamedLeafWrapperSingleAnonymousToken(t *testing.T) {
+	p := &Parser{
+		language: &Language{
+			SymbolMetadata: []SymbolMetadata{
+				{Name: "EOF"},
+				{Name: "optional_chain", Visible: true, Named: true},
+				{Name: "?.", Visible: true, Named: false},
+				{Name: "identifier", Visible: true, Named: true},
+				{Name: "_hidden", Visible: false, Named: false},
+			},
+		},
 	}
 
-	span := computeReduceRawSpan(entries, 0, len(entries))
-
-	if span.startByte != 10 {
-		t.Errorf("expected startByte=10, got %d", span.startByte)
+	if !p.canCollapseNamedLeafWrapper(1, 2) {
+		t.Fatal("expected visible named wrapper over visible anonymous token to collapse")
 	}
-	if span.endByte != 50 {
-		t.Errorf("expected endByte=50, got %d", span.endByte)
+	if p.canCollapseNamedLeafWrapper(1, 3) {
+		t.Fatal("did not expect visible named wrapper over visible named child to collapse")
+	}
+	if p.canCollapseNamedLeafWrapper(1, 4) {
+		t.Fatal("did not expect visible named wrapper over invisible child to collapse")
 	}
 }
 
-// TestComputeReduceRawSpan_SkipsExtras verifies that computeReduceRawSpan
-// skips extra nodes when computing the span.
-func TestComputeReduceRawSpan_SkipsExtras(t *testing.T) {
-	entries := []stackEntry{
-		{node: &Node{startByte: 5, endByte: 10, isExtra: true}},
-		{node: &Node{startByte: 10, endByte: 20}},
-		{node: &Node{startByte: 20, endByte: 30}},
-		{node: &Node{startByte: 30, endByte: 40, isExtra: true}},
+func TestCollapsibleUnarySelfReductionAliasesSingleAnonymousLeaf(t *testing.T) {
+	lang := &Language{
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF"},
+			{Name: "optional_chain", Visible: true, Named: true},
+			{Name: "?.", Visible: true, Named: false},
+		},
 	}
-
-	span := computeReduceRawSpan(entries, 0, len(entries))
-
-	if span.startByte != 10 {
-		t.Errorf("expected startByte=10, got %d", span.startByte)
+	p := &Parser{
+		language:                 lang,
+		singleTokenWrapperSymbol: []bool{false, true, false},
 	}
-	if span.endByte != 30 {
-		t.Errorf("expected endByte=30, got %d", span.endByte)
+	arena := newNodeArena(arenaClassFull)
+	child := newLeafNodeInArena(arena, 2, false, 1, 3, Point{Column: 1}, Point{Column: 3})
+	entries := []stackEntry{{node: child}}
+	act := ParseAction{Symbol: 1, ChildCount: 1}
+
+	got := p.collapsibleUnarySelfReduction(act, Token{}, arena, entries, 0, 1, []*Node{child}, nil)
+	if got == nil {
+		t.Fatal("expected unary single-token reduction to collapse to named leaf")
+	}
+	if got.Symbol() != 1 {
+		t.Fatalf("collapsed symbol = %d, want %d", got.Symbol(), 1)
+	}
+	if !got.IsNamed() {
+		t.Fatal("collapsed node should be named")
+	}
+	if got.ChildCount() != 0 {
+		t.Fatalf("collapsed child count = %d, want 0", got.ChildCount())
+	}
+	if got.StartByte() != 1 || got.EndByte() != 3 {
+		t.Fatalf("collapsed span = [%d,%d), want [1,3)", got.StartByte(), got.EndByte())
 	}
 }

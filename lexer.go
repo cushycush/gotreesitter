@@ -1,6 +1,7 @@
 package gotreesitter
 
 import (
+	"unicode"
 	"unicode/utf8"
 	"unsafe"
 )
@@ -128,7 +129,7 @@ func (l *Lexer) scan(startState uint16, startPos int, startRow, startCol uint32)
 			// Reject immediate tokens that matched after whitespace was
 			// consumed. Immediate tokens must match at the original position.
 			isImmediate := st.AcceptToken > 0 && int(st.AcceptToken) < len(l.immediateTokens) && l.immediateTokens[st.AcceptToken]
-			skippedWhitespace := tokenStartPos > startPos
+			skippedWhitespace := tokenStartPos > startPos || l.hasImmediateTokenLeadingWhitespace(tokenStartPos)
 			if !(isImmediate && skippedWhitespace) {
 				newPrio := st.AcceptPriority
 				if acceptPos < 0 || newPrio < acceptPriorityBest || (newPrio == acceptPriorityBest && scanPos > acceptPos) {
@@ -224,6 +225,14 @@ func (l *Lexer) scan(startState uint16, startPos int, startRow, startCol uint32)
 		StartPoint: Point{Row: acceptStartRow, Column: acceptStartCol},
 		EndPoint:   Point{Row: acceptRow, Column: acceptCol},
 	}, true
+}
+
+func (l *Lexer) hasImmediateTokenLeadingWhitespace(tokenStartPos int) bool {
+	if tokenStartPos <= 0 || tokenStartPos > len(l.source) {
+		return false
+	}
+	r, _ := utf8.DecodeLastRune(l.source[:tokenStartPos])
+	return unicode.IsSpace(r)
 }
 
 // skipOneRune advances the lexer position by one rune, updating row/column.

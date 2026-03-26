@@ -49,6 +49,7 @@ type Parser struct {
 	smallTokenLookup                    [][]uint16
 	reduceAliasSeq                      [][]Symbol
 	aliasTargetSymbol                   []bool
+	singleTokenWrapperSymbol            []bool
 	reduceHasFields                     []bool
 	fieldInheritedScratch               []bool
 	fieldConflictedScratch              []bool
@@ -222,7 +223,9 @@ func NewParser(lang *Language) *Parser {
 				if !strings.HasSuffix(name, "_division") &&
 					!strings.Contains(name, "_statement") &&
 					!strings.HasSuffix(name, "_option") &&
-					!strings.HasSuffix(name, "_clause") {
+					!strings.HasSuffix(name, "_clause") &&
+					!strings.HasSuffix(name, "_section") &&
+					!strings.HasSuffix(name, "_paragraph") {
 					continue
 				}
 				if p.forceRawSpanTable == nil {
@@ -243,6 +246,7 @@ func NewParser(lang *Language) *Parser {
 		}
 		p.reduceAliasSeq = buildReduceAliasSequences(lang)
 		p.aliasTargetSymbol = buildAliasTargetSymbols(lang)
+		p.singleTokenWrapperSymbol = buildSingleTokenWrapperSymbols(lang)
 		p.reduceHasFields = buildReduceFieldPresence(lang)
 		p.recoverByState, p.hasRecoverState, p.hasRecoverSymbol = buildRecoverActionsByState(lang)
 		p.hasKeywordState = buildKeywordStates(lang)
@@ -458,6 +462,47 @@ func (p *Parser) tryRelexBroadDFA(tok Token, parserState StateID, ts TokenSource
 	// Restore lexer state
 	dts.lexer.pos, dts.lexer.row, dts.lexer.col = savedPos, savedRow, savedCol
 	return Token{}, false
+}
+
+// tryRelexCurrentStateDFA re-lexes from the current token start using the
+// current parser state's DFA lex mode. This helps when a lookahead token was
+// originally lexed under a pre-reduce state, but a reduce chain changes the
+// parser state before the token is consumed.
+func (p *Parser) tryRelexCurrentStateDFA(tok Token, parserState StateID, ts TokenSource) (Token, bool) {
+	if p == nil || p.language == nil || ts == nil || tok.NoLookahead {
+		return Token{}, false
+	}
+	dts, ok := ts.(*dfaTokenSource)
+	if !ok || dts == nil || dts.lexer == nil || dts.language == nil || dts.language.ExternalScanner != nil {
+		return Token{}, false
+	}
+	if tok.Symbol == 0 && tok.StartByte >= uint32(len(dts.lexer.source)) {
+		return Token{}, false
+	}
+	if int(parserState) >= len(p.language.LexModes) {
+		return Token{}, false
+	}
+	lexState := p.language.LexModes[parserState].LexState
+	savedPos, savedRow, savedCol := dts.lexer.pos, dts.lexer.row, dts.lexer.col
+	dts.lexer.pos = int(tok.StartByte)
+	tok2 := dts.nextTokenForLexState(lexState)
+	tok2 = dts.promoteKeyword(tok2)
+	tok2, endPos, endRow, endCol := dts.normalizeDFAToken(tok2, dts.lexer.pos, dts.lexer.row, dts.lexer.col)
+	if tok2.Symbol == 0 {
+		dts.lexer.pos, dts.lexer.row, dts.lexer.col = savedPos, savedRow, savedCol
+		return Token{}, false
+	}
+	if tok2.Symbol == tok.Symbol && tok2.StartByte == tok.StartByte && tok2.EndByte == tok.EndByte {
+		dts.lexer.pos, dts.lexer.row, dts.lexer.col = savedPos, savedRow, savedCol
+		return Token{}, false
+	}
+	actionIdx := p.lookupActionIndex(parserState, tok2.Symbol)
+	if actionIdx == 0 || int(actionIdx) >= len(p.language.ParseActions) || len(p.language.ParseActions[actionIdx].Actions) == 0 {
+		dts.lexer.pos, dts.lexer.row, dts.lexer.col = savedPos, savedRow, savedCol
+		return Token{}, false
+	}
+	dts.lexer.pos, dts.lexer.row, dts.lexer.col = endPos, endRow, endCol
+	return tok2, true
 }
 
 func (p *Parser) canFinalizeNoActionEOF(s *glrStack) bool {
@@ -1683,7 +1728,6 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 					si, stacks[si].top().state, stacks[si].dead, stacks[si].shifted, stacks[si].depth(), stacks[si].byteOffset)
 			}
 		}
-
 		parseActions := p.language.ParseActions
 		for si := 0; si < numStacks; si++ {
 			s := &stacks[si]
@@ -1705,7 +1749,6 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 						ai, a.Type, a.State, a.Symbol, a.ChildCount, a.DynamicPrecedence)
 				}
 			}
-
 			// --- Extra token handling (comments, whitespace) ---
 			if len(actions) > 0 &&
 				actions[0].Type == ParseActionShift && actions[0].Extra {
@@ -1728,7 +1771,30 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 
 			// --- No action: error handling ---
 			if len(actions) == 0 {
+				sameState := len(stacks) == 1
+				if !sameState {
+					sameState = true
+					for sj := range stacks {
+						if stacks[sj].dead {
+							continue
+						}
+						if stacks[sj].top().state != currentState {
+							sameState = false
+							break
+						}
+					}
+				}
 				if tok.Symbol == 0 {
+					// A stale DFA lookahead can surface as a zero-width EOF token
+					// after a reduce chain changes the current state. Re-lex once
+					// before accepting EOF so multiline constructs can continue.
+					if sameState {
+						if reTok, ok := p.tryRelexCurrentStateDFA(tok, currentState, ts); ok {
+							tok = reTok
+							needToken = false
+							goto retryAction
+						}
+					}
 					if tok.StartByte == tok.EndByte {
 						// True EOF. If this is the only stack, return result when
 						// the stack is in a state that can represent a complete root.
@@ -1759,6 +1825,16 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 					// later corrupt reduce-child counting.
 					needToken = true
 					continue
+				}
+				// A token can be lexed under a pre-reduce DFA mode and become
+				// invalid after all live stacks converge on the same reduced state.
+				// Re-lex once under that current state before broader recovery.
+				if sameState {
+					if reTok, ok := p.tryRelexCurrentStateDFA(tok, currentState, ts); ok {
+						tok = reTok
+						needToken = false
+						goto retryAction
+					}
 				}
 
 				// Before killing a stack, try re-lexing with the broad

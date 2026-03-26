@@ -39,6 +39,37 @@ func TestNormalizeJavaScriptTopLevelExpressionStatementBoundsAlsoSnapsTypeScript
 	}
 }
 
+func TestNormalizeJavaScriptProgramStart(t *testing.T) {
+	lang := &Language{
+		Name:        "javascript",
+		SymbolNames: []string{"EOF", "program", "function_declaration", "return_statement"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF", Visible: false, Named: false},
+			{Name: "program", Visible: true, Named: true},
+			{Name: "function_declaration", Visible: true, Named: true},
+			{Name: "return_statement", Visible: true, Named: true},
+		},
+	}
+
+	arena := newNodeArena(arenaClassFull)
+	fn := newLeafNodeInArena(arena, 2, true, 2, 17, Point{Column: 2}, Point{Column: 17})
+	ret := newLeafNodeInArena(arena, 3, true, 20, 29, Point{Row: 1, Column: 2}, Point{Row: 1, Column: 11})
+	root := newParentNodeInArena(arena, 1, true, []*Node{fn, ret}, nil, 0)
+	root.startByte = 0
+	root.startPoint = Point{}
+	root.endByte = 29
+	root.endPoint = Point{Row: 1, Column: 11}
+
+	normalizeJavaScriptProgramStart(root, lang)
+
+	if got, want := root.StartByte(), uint32(2); got != want {
+		t.Fatalf("program.StartByte = %d, want %d", got, want)
+	}
+	if got, want := root.StartPoint(), (Point{Column: 2}); got != want {
+		t.Fatalf("program.StartPoint = %+v, want %+v", got, want)
+	}
+}
+
 func TestNormalizeJavaScriptTrailingContinueCommentSiblings(t *testing.T) {
 	lang := &Language{
 		Name:        "javascript",
@@ -137,5 +168,47 @@ func TestNormalizeJavaScriptTrailingContinueCommentSiblingsDirectContinue(t *tes
 	}
 	if got, want := cont.EndByte(), uint32(21); got != want {
 		t.Fatalf("continue_statement endByte = %d, want %d", got, want)
+	}
+}
+
+func TestNormalizeJavaScriptTypeScriptOptionalChainLeaves(t *testing.T) {
+	lang := &Language{
+		Name:        "javascript",
+		SymbolNames: []string{"EOF", "program", "expression_statement", "call_expression", "identifier", "optional_chain", "?.", "arguments"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF", Visible: false, Named: false},
+			{Name: "program", Visible: true, Named: true},
+			{Name: "expression_statement", Visible: true, Named: true},
+			{Name: "call_expression", Visible: true, Named: true},
+			{Name: "identifier", Visible: true, Named: true},
+			{Name: "optional_chain", Visible: true, Named: true},
+			{Name: "?.", Visible: true, Named: false},
+			{Name: "arguments", Visible: true, Named: true},
+		},
+	}
+
+	arena := newNodeArena(arenaClassFull)
+	ident := newLeafNodeInArena(arena, 4, true, 0, 1, Point{}, Point{Column: 1})
+	chainTok := newLeafNodeInArena(arena, 6, false, 1, 3, Point{Column: 1}, Point{Column: 3})
+	chain := newParentNodeInArena(arena, 5, true, []*Node{chainTok}, nil, 0)
+	chain.startByte = 1
+	chain.startPoint = Point{Column: 1}
+	chain.endByte = 3
+	chain.endPoint = Point{Column: 3}
+	args := newLeafNodeInArena(arena, 7, true, 3, 6, Point{Column: 3}, Point{Column: 6})
+	call := newParentNodeInArena(arena, 3, true, []*Node{ident, chain, args}, nil, 0)
+	stmt := newParentNodeInArena(arena, 2, true, []*Node{call}, nil, 0)
+	root := newParentNodeInArena(arena, 1, true, []*Node{stmt}, nil, 0)
+
+	normalizeJavaScriptTypeScriptOptionalChainLeaves(root, lang)
+
+	if got, want := chain.ChildCount(), 0; got != want {
+		t.Fatalf("optional_chain child count = %d, want %d", got, want)
+	}
+	if got, want := chain.StartByte(), uint32(1); got != want {
+		t.Fatalf("optional_chain start = %d, want %d", got, want)
+	}
+	if got, want := chain.EndByte(), uint32(3); got != want {
+		t.Fatalf("optional_chain end = %d, want %d", got, want)
 	}
 }

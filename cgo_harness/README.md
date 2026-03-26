@@ -4,7 +4,19 @@ This module contains CGo-only parity and baseline benchmark harnesses used to co
 
 ## Unified Harness Gate
 
-From repo root, run the unified gate runner:
+Do not start local OOM diagnosis with the unified gate runner. It aggregates
+broad correctness, parity, and perf work and makes it harder to identify which
+language is responsible for a memory spike.
+
+For local work, start with one language per container:
+
+```sh
+bash cgo_harness/docker/run_single_grammar_parity.sh typescript
+bash cgo_harness/docker/run_grammargen_focus_targets.sh --mode real-corpus --langs typescript
+bash cgo_harness/docker/run_grammargen_focus_targets.sh --mode cgo --langs typescript
+```
+
+Use the unified gate runner only in CI or deliberate lab-style sweeps:
 
 ```sh
 go run ./cmd/harnessgate -mode all
@@ -36,7 +48,9 @@ Framework details (oracles, corpus tiers, gate policy):
 ## Run Parity Tests
 
 Default parity runs use `smoke` mode: a small representative subset that is
-fast enough for normal development and required CI.
+fast enough for CI. For local OOM diagnosis, prefer the single-language Docker
+commands above instead of broad host-side sweeps. The direct `go test` examples
+below are best treated as CI/lab references, not the default local workflow.
 
 ```sh
 go test . -tags treesitter_c_parity \
@@ -292,6 +306,23 @@ Notes:
   max large-file bytes when `--l4-limit` is set.
 - `cmd/harnessgate` can generate the same board directly when passed
   `-real-corpus-manifest` and optional `-real-corpus-l4-limit`.
+
+## Focused Grammargen Targets
+
+For the current high-value grammargen lane, use the focused Docker runner:
+
+```sh
+bash cgo_harness/docker/run_grammargen_focus_targets.sh --mode real-corpus --langs typescript
+bash cgo_harness/docker/run_grammargen_focus_targets.sh --mode cgo --langs typescript
+```
+
+It limits work to `javascript`, `typescript`, `tsx`, `c`, `cpp`, `c_sharp`,
+`cobol`, and `fortran`; keep local diagnosis to one `--langs` value at a time.
+Each real-corpus grammar runs in its own container, and the direct
+grammargen-vs-C oracle also runs one language at a time. That keeps OOMs
+contained to a single target instead of killing the host. `fortran` is
+currently real-corpus-only because the direct C-oracle harness does not expose
+it yet.
 
 ## Run C Baseline Benchmarks
 

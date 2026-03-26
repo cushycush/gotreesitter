@@ -443,6 +443,275 @@ func TestNextGLRUnionDFATokenPrefersHigherActionSpecificityOnSameLexeme(t *testi
 	}
 }
 
+func TestNextDFATokenSplitsCompactCloseAnglesWhenOnlySingleCloseAngleHasAction(t *testing.T) {
+	lang := &Language{
+		Name:        "typescript",
+		SymbolNames: []string{"end", ">", ">>"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "end", Visible: false, Named: false},
+			{Name: ">", Visible: true, Named: false},
+			{Name: ">>", Visible: true, Named: false},
+		},
+		SymbolCount:     3,
+		TokenCount:      3,
+		StateCount:      2,
+		LargeStateCount: 2,
+		InitialState:    1,
+		LexStates: []LexState{
+			{Default: -1, EOF: -1},
+			{AcceptToken: 0, Default: -1, EOF: -1, Transitions: []LexTransition{{Lo: '>', Hi: '>', NextState: 2}}},
+			{AcceptToken: 1, Default: -1, EOF: -1, Transitions: []LexTransition{{Lo: '>', Hi: '>', NextState: 3}}},
+			{AcceptToken: 2, Default: -1, EOF: -1},
+		},
+		LexModes: []LexMode{
+			{LexState: 0},
+			{LexState: 1},
+		},
+		ParseTable: [][]uint16{
+			{0, 0, 0},
+			{0, 1, 0},
+		},
+		ParseActions: []ParseActionEntry{
+			{Actions: nil},
+			{Actions: []ParseAction{{Type: ParseActionShift, State: 1}}},
+		},
+	}
+	parser := NewParser(lang)
+	d := &dfaTokenSource{
+		lexer:             NewLexer(lang.LexStates, []byte(">>x")),
+		language:          lang,
+		state:             1,
+		lookupActionIndex: parser.lookupActionIndex,
+	}
+
+	tok := d.nextDFAToken()
+	if got, want := tok.Symbol, Symbol(1); got != want {
+		t.Fatalf("token symbol = %d (%q), want %d (%q)", got, lang.SymbolNames[got], want, lang.SymbolNames[want])
+	}
+	if got, want := tok.Text, ">"; got != want {
+		t.Fatalf("token text = %q, want %q", got, want)
+	}
+	if got, want := d.lexer.pos, 1; got != want {
+		t.Fatalf("lexer.pos = %d, want %d", got, want)
+	}
+}
+
+func TestNextDFATokenKeepsRightShiftWhenRightShiftHasAction(t *testing.T) {
+	lang := &Language{
+		Name:        "typescript",
+		SymbolNames: []string{"end", ">", ">>"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "end", Visible: false, Named: false},
+			{Name: ">", Visible: true, Named: false},
+			{Name: ">>", Visible: true, Named: false},
+		},
+		SymbolCount:     3,
+		TokenCount:      3,
+		StateCount:      2,
+		LargeStateCount: 2,
+		InitialState:    1,
+		LexStates: []LexState{
+			{Default: -1, EOF: -1},
+			{AcceptToken: 0, Default: -1, EOF: -1, Transitions: []LexTransition{{Lo: '>', Hi: '>', NextState: 2}}},
+			{AcceptToken: 1, Default: -1, EOF: -1, Transitions: []LexTransition{{Lo: '>', Hi: '>', NextState: 3}}},
+			{AcceptToken: 2, Default: -1, EOF: -1},
+		},
+		LexModes: []LexMode{
+			{LexState: 0},
+			{LexState: 1},
+		},
+		ParseTable: [][]uint16{
+			{0, 0, 0},
+			{0, 1, 2},
+		},
+		ParseActions: []ParseActionEntry{
+			{Actions: nil},
+			{Actions: []ParseAction{{Type: ParseActionShift, State: 1}}},
+			{Actions: []ParseAction{{Type: ParseActionShift, State: 1}}},
+		},
+	}
+	parser := NewParser(lang)
+	d := &dfaTokenSource{
+		lexer:             NewLexer(lang.LexStates, []byte(">>x")),
+		language:          lang,
+		state:             1,
+		lookupActionIndex: parser.lookupActionIndex,
+	}
+
+	tok := d.nextDFAToken()
+	if got, want := tok.Symbol, Symbol(2); got != want {
+		t.Fatalf("token symbol = %d (%q), want %d (%q)", got, lang.SymbolNames[got], want, lang.SymbolNames[want])
+	}
+	if got, want := tok.Text, ">>"; got != want {
+		t.Fatalf("token text = %q, want %q", got, want)
+	}
+	if got, want := d.lexer.pos, 2; got != want {
+		t.Fatalf("lexer.pos = %d, want %d", got, want)
+	}
+}
+
+func TestNextDFATokenSplitsCompactCloseAnglesForInternalRightShiftVariant(t *testing.T) {
+	lang := &Language{
+		Name:        "typescript",
+		SymbolNames: []string{"end", ">", "gt_gt_internal"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "end", Visible: false, Named: false},
+			{Name: ">", Visible: true, Named: false},
+			{Name: ">>", Visible: true, Named: false},
+		},
+		SymbolCount:     3,
+		TokenCount:      3,
+		StateCount:      2,
+		LargeStateCount: 2,
+		InitialState:    1,
+		LexStates: []LexState{
+			{Default: -1, EOF: -1},
+			{AcceptToken: 0, Default: -1, EOF: -1, Transitions: []LexTransition{{Lo: '>', Hi: '>', NextState: 2}}},
+			{AcceptToken: 1, Default: -1, EOF: -1, Transitions: []LexTransition{{Lo: '>', Hi: '>', NextState: 3}}},
+			{AcceptToken: 2, Default: -1, EOF: -1},
+		},
+		LexModes: []LexMode{
+			{LexState: 0},
+			{LexState: 1},
+		},
+		ParseTable: [][]uint16{
+			{0, 0, 0},
+			{0, 1, 0},
+		},
+		ParseActions: []ParseActionEntry{
+			{Actions: nil},
+			{Actions: []ParseAction{{Type: ParseActionShift, State: 1}}},
+		},
+	}
+	parser := NewParser(lang)
+	d := &dfaTokenSource{
+		lexer:             NewLexer(lang.LexStates, []byte(">>")),
+		language:          lang,
+		state:             1,
+		lookupActionIndex: parser.lookupActionIndex,
+	}
+
+	tok := d.nextDFAToken()
+	if got, want := tok.Symbol, Symbol(1); got != want {
+		t.Fatalf("token symbol = %d (%q), want %d (%q)", got, lang.SymbolNames[got], want, lang.SymbolNames[want])
+	}
+	if got, want := tok.Text, ">"; got != want {
+		t.Fatalf("token text = %q, want %q", got, want)
+	}
+	if got, want := d.lexer.pos, 1; got != want {
+		t.Fatalf("lexer.pos = %d, want %d", got, want)
+	}
+}
+
+func TestNextDFATokenSplitsCompactCloseAnglesWhenDelimiterFollowsAndRightShiftHasAction(t *testing.T) {
+	lang := &Language{
+		Name:        "typescript",
+		SymbolNames: []string{"end", ">", ">>"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "end", Visible: false, Named: false},
+			{Name: ">", Visible: true, Named: false},
+			{Name: ">>", Visible: true, Named: false},
+		},
+		SymbolCount:     3,
+		TokenCount:      3,
+		StateCount:      2,
+		LargeStateCount: 2,
+		InitialState:    1,
+		LexStates: []LexState{
+			{Default: -1, EOF: -1},
+			{AcceptToken: 0, Default: -1, EOF: -1, Transitions: []LexTransition{{Lo: '>', Hi: '>', NextState: 2}}},
+			{AcceptToken: 1, Default: -1, EOF: -1, Transitions: []LexTransition{{Lo: '>', Hi: '>', NextState: 3}}},
+			{AcceptToken: 2, Default: -1, EOF: -1},
+		},
+		LexModes: []LexMode{
+			{LexState: 0},
+			{LexState: 1},
+		},
+		ParseTable: [][]uint16{
+			{0, 0, 0},
+			{0, 1, 2},
+		},
+		ParseActions: []ParseActionEntry{
+			{Actions: nil},
+			{Actions: []ParseAction{{Type: ParseActionShift, State: 1}}},
+			{Actions: []ParseAction{{Type: ParseActionShift, State: 1}}},
+		},
+	}
+	parser := NewParser(lang)
+	d := &dfaTokenSource{
+		lexer:             NewLexer(lang.LexStates, []byte(">>(x)")),
+		language:          lang,
+		state:             1,
+		lookupActionIndex: parser.lookupActionIndex,
+	}
+
+	tok := d.nextDFAToken()
+	if got, want := tok.Symbol, Symbol(1); got != want {
+		t.Fatalf("token symbol = %d (%q), want %d (%q)", got, lang.SymbolNames[got], want, lang.SymbolNames[want])
+	}
+	if got, want := tok.Text, ">"; got != want {
+		t.Fatalf("token text = %q, want %q", got, want)
+	}
+	if got, want := d.lexer.pos, 1; got != want {
+		t.Fatalf("lexer.pos = %d, want %d", got, want)
+	}
+}
+
+func TestNextDFATokenSplitsCompactCloseAnglesWhenIdentifierFollowsAndRightShiftHasAction(t *testing.T) {
+	lang := &Language{
+		Name:        "typescript",
+		SymbolNames: []string{"end", ">", ">>"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "end", Visible: false, Named: false},
+			{Name: ">", Visible: true, Named: false},
+			{Name: ">>", Visible: true, Named: false},
+		},
+		SymbolCount:     3,
+		TokenCount:      3,
+		StateCount:      3,
+		LargeStateCount: 3,
+		InitialState:    1,
+		LexStates: []LexState{
+			{Default: -1, EOF: -1},
+			{AcceptToken: 0, Default: -1, EOF: -1, Transitions: []LexTransition{{Lo: '>', Hi: '>', NextState: 2}}},
+			{AcceptToken: 1, Default: -1, EOF: -1, Transitions: []LexTransition{{Lo: '>', Hi: '>', NextState: 3}}},
+			{AcceptToken: 2, Default: -1, EOF: -1},
+		},
+		LexModes: []LexMode{
+			{LexState: 0},
+			{LexState: 1},
+		},
+		ParseTable: [][]uint16{
+			{0, 0, 0},
+			{0, 1, 1},
+		},
+		ParseActions: []ParseActionEntry{
+			{Actions: nil},
+			{Actions: []ParseAction{{Type: ParseActionReduce, Symbol: 1, ChildCount: 1, ProductionID: 7}}},
+		},
+	}
+	parser := NewParser(lang)
+	d := &dfaTokenSource{
+		lexer:             NewLexer(lang.LexStates, []byte("<T>>parse")),
+		language:          lang,
+		state:             1,
+		lookupActionIndex: parser.lookupActionIndex,
+	}
+	d.lexer.pos = 2
+	d.lexer.col = 2
+
+	tok := d.nextDFAToken()
+	if got, want := tok.Symbol, Symbol(1); got != want {
+		t.Fatalf("token symbol = %d (%q), want %d (%q)", got, lang.SymbolNames[got], want, lang.SymbolNames[want])
+	}
+	if got, want := tok.Text, ">"; got != want {
+		t.Fatalf("token text = %q, want %q", got, want)
+	}
+	if got, want := d.lexer.pos, 3; got != want {
+		t.Fatalf("lexer.pos = %d, want %d", got, want)
+	}
+}
+
 func TestNextGLRUnionDFATokenPrefersLongerVisibleTokenOverShorterMorePopularPrefix(t *testing.T) {
 	lang := &Language{
 		SymbolNames: []string{"end", "??", "?"},

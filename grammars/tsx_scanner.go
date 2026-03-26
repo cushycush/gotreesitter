@@ -121,12 +121,33 @@ func tsxScanAutoSemicolon(lexer *gotreesitter.ExternalLexer, validSymbols []bool
 			return true
 		}
 		if ch == '}' {
-			if tsxValid(validSymbols, tsxTokJsxText) {
-				return false
+			lexer.Advance(true)
+			for unicode.IsSpace(lexer.Lookahead()) {
+				lexer.Advance(true)
 			}
-			// Do not consume `}` while producing ASI; swallowing it truncates
-			// surrounding blocks and can force premature error-accept paths.
-			return true
+			switch lexer.Lookahead() {
+			case ':':
+				return tsxValid(validSymbols, tsxTokLogicalOr)
+			default:
+				if tsxValid(validSymbols, tsxTokJsxText) {
+					return false
+				}
+				if tsxLooksLikeJSXAttributeContinuation(lexer) {
+					return false
+				}
+			}
+			switch lexer.Lookahead() {
+			case '>':
+				return false
+			case '/':
+				lexer.Advance(true)
+				return lexer.Lookahead() != '>'
+			case '<':
+				lexer.Advance(true)
+				return lexer.Lookahead() != '/'
+			default:
+				return true
+			}
 		}
 		if !unicode.IsSpace(ch) {
 			return false
@@ -351,6 +372,27 @@ func tsxScanJsxText(lexer *gotreesitter.ExternalLexer) bool {
 }
 
 func tsxValid(vs []bool, i int) bool { return i < len(vs) && vs[i] }
+
+func tsxLooksLikeJSXAttributeContinuation(lexer *gotreesitter.ExternalLexer) bool {
+	ch := lexer.Lookahead()
+	if ch != '_' && !unicode.IsLetter(ch) {
+		return false
+	}
+	for {
+		lexer.Advance(true)
+		ch = lexer.Lookahead()
+		if ch == '_' || ch == '-' || ch == ':' || ch == '.' ||
+			unicode.IsLetter(ch) || unicode.IsDigit(ch) {
+			continue
+		}
+		break
+	}
+	for unicode.IsSpace(ch) {
+		lexer.Advance(true)
+		ch = lexer.Lookahead()
+	}
+	return ch == '=' || ch == '/' || ch == '>'
+}
 
 func tsxPreferAutoSemicolonOverJsxText(lexer *gotreesitter.ExternalLexer, validSymbols []bool) bool {
 	if !tsxValid(validSymbols, tsxTokAutoSemicolon) || !tsxValid(validSymbols, tsxTokJsxText) {
