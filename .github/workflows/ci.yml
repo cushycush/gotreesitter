@@ -88,8 +88,14 @@ jobs:
           blob_names=$(ls grammars/grammar_blobs/*.bin 2>/dev/null | xargs -I{} basename {} .bin | sort)
           blob_count=$(echo "$blob_names" | wc -l)
 
-          # Extract grammar names from embedded_grammars_gen.go (blob references).
-          gen_names=$(grep -oP 'loadEmbeddedLanguage\("\K[^"]+(?=\.bin"\))' grammars/embedded_grammars_gen.go | sort)
+          # Extract grammar names from embedded_grammars_gen.go. Most wrappers
+          # call loadEmbeddedLanguage("name.bin"), but a small number use the
+          # preferred-language entrypoint (for override-aware blobs) and pass
+          # the raw grammar name instead.
+          gen_names=$(
+            grep -oP '(?:loadEmbeddedLanguage\("\K[^"]+(?=\.bin"\))|(?:loadPreferredLanguage\("\K[^"]+(?="\))))' \
+              grammars/embedded_grammars_gen.go | sort
+          )
           gen_count=$(echo "$gen_names" | wc -l)
 
           echo "lock: $lock_count | blobs: $blob_count | gen functions: $gen_count"
