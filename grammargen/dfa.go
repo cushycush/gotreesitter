@@ -320,6 +320,12 @@ type dfaStateHashEntry struct {
 	next     *dfaStateHashEntry
 }
 
+type closureCacheEntry struct {
+	targets []int
+	closure []int
+	next    *closureCacheEntry
+}
+
 type nfaRangeMove struct {
 	lo, hi  rune
 	targets []int
@@ -422,6 +428,7 @@ func subsetConstruction(ctx context.Context, n *nfa, _ ...map[int]bool) ([]dfaSt
 	startClosure := scratch.epsilonClosure(n, []int{n.start})
 
 	stateMap := make(map[uint64]*dfaStateHashEntry) // closure hash → DFA state index chain
+	closureCache := make(map[uint64]*closureCacheEntry)
 	var stateSets [][]int
 	var dfaStates []dfaState
 	var worklist []dfaStateWorkItem
@@ -460,6 +467,22 @@ func subsetConstruction(ctx context.Context, n *nfa, _ ...map[int]bool) ([]dfaSt
 		return id
 	}
 
+	closureForTargets := func(targets []int) []int {
+		hash := hashIntSlice(targets)
+		for entry := closureCache[hash]; entry != nil; entry = entry.next {
+			if sameIntSlice(entry.targets, targets) {
+				return entry.closure
+			}
+		}
+		closure := append([]int(nil), scratch.epsilonClosure(n, targets)...)
+		closureCache[hash] = &closureCacheEntry{
+			targets: append([]int(nil), targets...),
+			closure: closure,
+			next:    closureCache[hash],
+		}
+		return closure
+	}
+
 	addState(startClosure)
 
 	worklistIter := 0
@@ -487,7 +510,7 @@ func subsetConstruction(ctx context.Context, n *nfa, _ ...map[int]bool) ([]dfaSt
 
 		// For each character range, epsilon-close the direct target set.
 		for _, move := range moves {
-			targetStates := scratch.epsilonClosure(n, move.targets)
+			targetStates := closureForTargets(move.targets)
 			if len(targetStates) == 0 {
 				continue
 			}
