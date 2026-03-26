@@ -80,6 +80,19 @@ func TestYAMLFlowMappingParity(t *testing.T) {
 	assertGeneratedAndReferenceDeepParity(t, genLang, refLang, src)
 }
 
+func TestYAMLFlowSequenceParity(t *testing.T) {
+	genLang, refLang := loadGeneratedYAMLLanguagesForParity(t)
+	src := "vals: [ true, false ]\n"
+	assertGeneratedAndReferenceDeepParity(t, genLang, refLang, src)
+}
+
+func TestYAMLQuotedScalarParity(t *testing.T) {
+	genLang, refLang := loadGeneratedYAMLLanguagesForParity(t)
+	src := "double: \"Quoted\\t\"\n" +
+		"single: 'Howdy'\n"
+	assertGeneratedAndReferenceDeepParity(t, genLang, refLang, src)
+}
+
 func TestYAMLExplicitDocumentCommentRangeParity(t *testing.T) {
 	genLang, refLang := loadGeneratedYAMLLanguagesForParity(t)
 	src := "# Ordered maps are represented as\n" +
@@ -89,6 +102,41 @@ func TestYAMLExplicitDocumentCommentRangeParity(t *testing.T) {
 		"- Mark McGwire: 65\n" +
 		"- Sammy Sosa: 63\n" +
 		"- Ken Griffy: 58\n"
+	assertGeneratedAndReferenceDeepParity(t, genLang, refLang, src)
+}
+
+func TestYAMLLeadingCommentSequenceParity(t *testing.T) {
+	genLang, refLang := loadGeneratedYAMLLanguagesForParity(t)
+	src := "# Outside flow collection:\n" +
+		"- ::vector\n" +
+		"- \": - ()\"\n" +
+		"- Up, up, and away!\n" +
+		"- -123\n" +
+		"- http://example.com/foo#bar\n" +
+		"# Inside flow collection:\n" +
+		"- [ ::vector,\n" +
+		"  \": - ()\",\n" +
+		"  \"Up, up and away!\",\n" +
+		"  -123,\n" +
+		"  http://example.com/foo#bar ]\n"
+	assertGeneratedAndReferenceDeepParity(t, genLang, refLang, src)
+}
+
+func TestYAMLBlockScalarSequenceParity(t *testing.T) {
+	genLang, refLang := loadGeneratedYAMLLanguagesForParity(t)
+	src := "- | # Empty header\n" +
+		"\n" +
+		" literal\n" +
+		"- >1 # Indentation indicator\n" +
+		"\n" +
+		"  folded\n" +
+		"- |+ # Chomping indicator\n" +
+		"\n" +
+		" keep\n" +
+		"\n" +
+		"- >1- # Both indicators\n" +
+		"\n" +
+		"  strip\n"
 	assertGeneratedAndReferenceDeepParity(t, genLang, refLang, src)
 }
 

@@ -860,8 +860,9 @@ func normalizeYAMLRecoveredRoot(root *Node, source []byte, lang *Language) {
 			}
 		}
 	}
-	yamlNormalizeRecoveredSubtrees(root, lang)
+	yamlNormalizeRecoveredSubtrees(root, source, lang)
 	yamlExtendExplicitDocumentRangesToLeadingComments(root, lang)
+	yamlUnwrapCommentLedSequenceDocuments(root, lang)
 	root.startByte = 0
 	root.startPoint = Point{}
 	root.endByte = uint32(len(source))
@@ -999,7 +1000,7 @@ decoratorsDone:
 	return yamlWrapYAMLBlockNode(blockChildren, endByte, endPoint, arena, lang)
 }
 
-func yamlWrapYAMLCollection(name string, children []*Node, endByte uint32, endPoint Point, arena *nodeArena, lang *Language) *Node {
+func yamlWrapYAMLNode(name string, children []*Node, endByte uint32, endPoint Point, arena *nodeArena, lang *Language) *Node {
 	sym, ok := symbolByName(lang, name)
 	if !ok {
 		return nil
@@ -1011,16 +1012,12 @@ func yamlWrapYAMLCollection(name string, children []*Node, endByte uint32, endPo
 	return node
 }
 
+func yamlWrapYAMLCollection(name string, children []*Node, endByte uint32, endPoint Point, arena *nodeArena, lang *Language) *Node {
+	return yamlWrapYAMLNode(name, children, endByte, endPoint, arena, lang)
+}
+
 func yamlWrapYAMLBlockNode(children []*Node, endByte uint32, endPoint Point, arena *nodeArena, lang *Language) *Node {
-	sym, ok := symbolByName(lang, "block_node")
-	if !ok {
-		return nil
-	}
-	node := newParentNodeInArena(arena, sym, lang.SymbolMetadata[sym].Named, children, nil, 0)
-	node.endByte = endByte
-	node.endPoint = endPoint
-	node.hasError = false
-	return node
+	return yamlWrapYAMLNode("block_node", children, endByte, endPoint, arena, lang)
 }
 
 func yamlWrapPlainScalarFlowNodes(node *Node, lang *Language) {
@@ -1054,12 +1051,12 @@ func yamlWrapPlainScalarFlowNodes(node *Node, lang *Language) {
 	populateParentNode(node, node.children)
 }
 
-func yamlNormalizeRecoveredSubtrees(node *Node, lang *Language) {
+func yamlNormalizeRecoveredSubtrees(node *Node, source []byte, lang *Language) {
 	if node == nil || lang == nil {
 		return
 	}
 	for _, child := range node.children {
-		yamlNormalizeRecoveredSubtrees(child, lang)
+		yamlNormalizeRecoveredSubtrees(child, source, lang)
 	}
 	switch node.Type(lang) {
 	case "block_mapping":
@@ -1069,7 +1066,9 @@ func yamlNormalizeRecoveredSubtrees(node *Node, lang *Language) {
 	case "block_node":
 		yamlNormalizeYAMLBlockNode(node, lang)
 	case "flow_node":
-		yamlNormalizeYAMLFlowNode(node, lang)
+		yamlNormalizeYAMLFlowNode(node, source, lang)
+	case "flow_mapping", "flow_sequence", "double_quote_scalar", "single_quote_scalar":
+		yamlCollapseNestedYAMLWrapper(node, lang)
 	}
 }
 
@@ -1145,7 +1144,7 @@ func yamlNormalizeYAMLBlockNode(node *Node, lang *Language) {
 	}
 }
 
-func yamlNormalizeYAMLFlowNode(node *Node, lang *Language) {
+func yamlNormalizeYAMLFlowNode(node *Node, source []byte, lang *Language) {
 	if node == nil || lang == nil {
 		return
 	}
@@ -1154,7 +1153,16 @@ func yamlNormalizeYAMLFlowNode(node *Node, lang *Language) {
 	if len(flat) == 0 {
 		return
 	}
+	trimmed := yamlTrimNodeSource(node, source)
 	needsRecovery := yamlChildrenNeedRecovery(node.children, lang)
+	if !needsRecovery {
+		if len(trimmed) >= 2 {
+			switch trimmed[0] {
+			case '"', '\'', '[', '{':
+				needsRecovery = true
+			}
+		}
+	}
 	if !needsRecovery {
 		for _, child := range flat {
 			if child != nil && child.Type(lang) == "flow_pair" {
@@ -1181,9 +1189,34 @@ decoratorsDone:
 		return
 	}
 	var core *Node
-	if yamlSliceContainsType(bodyNodes, "flow_pair", lang) {
+	switch {
+	case len(trimmed) >= 2 && trimmed[0] == '"' && trimmed[len(trimmed)-1] == '"':
+		if existing := yamlFirstNodeOfType(bodyNodes, "double_quote_scalar", lang); existing != nil {
+			core = existing
+		} else {
+			core = yamlWrapYAMLNode("double_quote_scalar", bodyNodes, node.endByte, node.endPoint, node.ownerArena, lang)
+		}
+	case len(trimmed) >= 2 && trimmed[0] == '\'' && trimmed[len(trimmed)-1] == '\'':
+		if existing := yamlFirstNodeOfType(bodyNodes, "single_quote_scalar", lang); existing != nil {
+			core = existing
+		} else {
+			core = yamlWrapYAMLNode("single_quote_scalar", bodyNodes, node.endByte, node.endPoint, node.ownerArena, lang)
+		}
+	case len(trimmed) >= 2 && trimmed[0] == '[' && trimmed[len(trimmed)-1] == ']':
+		if existing := yamlFirstNodeOfType(bodyNodes, "flow_sequence", lang); existing != nil {
+			core = existing
+		} else {
+			core = yamlWrapYAMLCollection("flow_sequence", bodyNodes, node.endByte, node.endPoint, node.ownerArena, lang)
+		}
+	case len(trimmed) >= 2 && trimmed[0] == '{' && trimmed[len(trimmed)-1] == '}':
+		if existing := yamlFirstNodeOfType(bodyNodes, "flow_mapping", lang); existing != nil {
+			core = existing
+		} else {
+			core = yamlWrapYAMLCollection("flow_mapping", bodyNodes, node.endByte, node.endPoint, node.ownerArena, lang)
+		}
+	case yamlSliceContainsType(bodyNodes, "flow_pair", lang):
 		core = yamlWrapYAMLCollection("flow_mapping", bodyNodes, node.endByte, node.endPoint, node.ownerArena, lang)
-	} else {
+	default:
 		first := yamlFirstNonComment(bodyNodes, lang)
 		if first == nil {
 			return
@@ -1263,7 +1296,7 @@ func yamlExtendExplicitDocumentRangesToLeadingComments(root *Node, lang *Languag
 			}
 			continue
 		}
-		if child.Type(lang) == "document" && firstLeadingComment != nil && yamlDocumentHasExplicitStart(child, lang) {
+		if child.Type(lang) == "document" && firstLeadingComment != nil {
 			child.startByte = firstLeadingComment.startByte
 			child.startPoint = firstLeadingComment.startPoint
 		}
@@ -1294,6 +1327,121 @@ func yamlSliceContainsType(nodes []*Node, want string, lang *Language) bool {
 		}
 	}
 	return false
+}
+
+func yamlFirstNodeOfType(nodes []*Node, want string, lang *Language) *Node {
+	for _, node := range nodes {
+		if node != nil && node.Type(lang) == want {
+			return node
+		}
+	}
+	return nil
+}
+
+func yamlTrimNodeSource(node *Node, source []byte) []byte {
+	if node == nil || len(source) == 0 || int(node.startByte) >= len(source) || node.endByte > uint32(len(source)) || node.startByte >= node.endByte {
+		return nil
+	}
+	return bytes.TrimSpace(source[node.startByte:node.endByte])
+}
+
+func yamlCollapseNestedYAMLWrapper(node *Node, lang *Language) {
+	if node == nil || lang == nil {
+		return
+	}
+	nodeType := node.Type(lang)
+	for node.NamedChildCount() == 1 {
+		child := node.NamedChild(0)
+		if child == nil || child.Type(lang) != nodeType {
+			return
+		}
+		startByte, startPoint := node.startByte, node.startPoint
+		endByte, endPoint := node.endByte, node.endPoint
+		node.children = cloneNodeSliceInArena(node.ownerArena, child.children)
+		node.fieldIDs = nil
+		node.fieldSources = nil
+		node.hasError = false
+		populateParentNode(node, node.children)
+		node.startByte = startByte
+		node.startPoint = startPoint
+		node.endByte = endByte
+		node.endPoint = endPoint
+	}
+}
+
+func yamlUnwrapCommentLedSequenceDocuments(root *Node, lang *Language) {
+	if root == nil || lang == nil || root.Type(lang) != "stream" {
+		return
+	}
+	seenLeadingComment := false
+	for _, child := range root.children {
+		if child == nil {
+			continue
+		}
+		if child.Type(lang) == "comment" {
+			seenLeadingComment = true
+			continue
+		}
+		if child.Type(lang) == "document" && (seenLeadingComment || yamlDocumentSequenceBlockNodeShouldUnwrap(child, lang)) {
+			yamlUnwrapDocumentSequenceBlockNode(child, lang)
+		}
+		seenLeadingComment = false
+	}
+}
+
+func yamlUnwrapDocumentSequenceBlockNode(node *Node, lang *Language) {
+	if node == nil || lang == nil || node.Type(lang) != "document" || node.NamedChildCount() != 1 {
+		return
+	}
+	blockNode := node.NamedChild(0)
+	if blockNode == nil || blockNode.Type(lang) != "block_node" || blockNode.NamedChildCount() != 1 {
+		return
+	}
+	seq := blockNode.NamedChild(0)
+	if seq == nil || seq.Type(lang) != "block_sequence" {
+		return
+	}
+	startByte, startPoint := node.startByte, node.startPoint
+	endByte, endPoint := node.endByte, node.endPoint
+	node.children = cloneNodeSliceInArena(node.ownerArena, []*Node{seq})
+	node.fieldIDs = nil
+	node.fieldSources = nil
+	node.hasError = false
+	populateParentNode(node, node.children)
+	node.startByte = startByte
+	node.startPoint = startPoint
+	node.endByte = endByte
+	node.endPoint = endPoint
+}
+
+func yamlDocumentSequenceBlockNodeShouldUnwrap(node *Node, lang *Language) bool {
+	if node == nil || lang == nil || node.Type(lang) != "document" || node.NamedChildCount() != 1 {
+		return false
+	}
+	blockNode := node.NamedChild(0)
+	if blockNode == nil || blockNode.Type(lang) != "block_node" || blockNode.NamedChildCount() != 1 {
+		return false
+	}
+	seq := blockNode.NamedChild(0)
+	if seq == nil || seq.Type(lang) != "block_sequence" {
+		return false
+	}
+	itemCount := 0
+	for i := 0; i < seq.NamedChildCount(); i++ {
+		item := seq.NamedChild(i)
+		if item == nil || item.Type(lang) != "block_sequence_item" || item.NamedChildCount() != 1 {
+			return false
+		}
+		itemBody := item.NamedChild(0)
+		if itemBody == nil || itemBody.Type(lang) != "block_node" || itemBody.NamedChildCount() != 1 {
+			return false
+		}
+		if scalar := itemBody.NamedChild(0); scalar == nil || scalar.Type(lang) != "block_scalar" {
+			return false
+		}
+		itemCount++
+	}
+	return itemCount > 0
 }
 
 func yamlFirstNonComment(nodes []*Node, lang *Language) *Node {
