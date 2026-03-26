@@ -2156,7 +2156,94 @@ func identifyKeywords(g *Grammar, st *symbolTable, stringLits []string, namedTok
 		}
 	}
 
+	// Named token rules that expand to a finite set of identifier-like string
+	// literals can also ride the keyword DFA path. This captures visible tokens
+	// like C#'s predefined_type = token(choice("int", "string", ...)).
+	for _, name := range namedTokens {
+		if name == g.Word {
+			continue
+		}
+		rule := g.Rules[name]
+		if rule == nil {
+			continue
+		}
+		id, ok := st.lookupNamedToken(name)
+		if !ok {
+			if id2, ok2 := st.lookup(name); ok2 {
+				id = id2
+			} else {
+				continue
+			}
+		}
+		if keywordSet[id] {
+			continue
+		}
+		expanded, _, _, err := expandTokenRule(rule)
+		if err != nil || !isStringOnlyRule(expanded) {
+			continue
+		}
+		lits, ok := collectStringOnlyRuleLiterals(expanded)
+		if !ok || len(lits) == 0 {
+			continue
+		}
+		allKeyword := true
+		for _, lit := range lits {
+			if !matchesDFA(wordDFA, lit) || !isIdentifierLikeKeywordLiteral(lit) {
+				allKeyword = false
+				break
+			}
+		}
+		if !allKeyword {
+			continue
+		}
+		keywordSet[id] = true
+		keywordSyms = append(keywordSyms, id)
+		keywordEntries = append(keywordEntries, TerminalPattern{
+			SymbolID: id,
+			Rule:     expanded,
+			Priority: 0,
+		})
+	}
+
 	return keywordSet, keywordSyms, keywordEntries
+}
+
+func collectStringOnlyRuleLiterals(r *Rule) ([]string, bool) {
+	if r == nil {
+		return nil, false
+	}
+	switch r.Kind {
+	case RuleString:
+		return []string{r.Value}, true
+	case RuleSeq:
+		out := []string{""}
+		for _, child := range r.Children {
+			childLits, ok := collectStringOnlyRuleLiterals(child)
+			if !ok {
+				return nil, false
+			}
+			next := make([]string, 0, len(out)*len(childLits))
+			for _, prefix := range out {
+				for _, lit := range childLits {
+					next = append(next, prefix+lit)
+				}
+			}
+			out = next
+		}
+		return out, len(out) > 0
+	case RuleChoice:
+		out := make([]string, 0, len(r.Children))
+		for _, child := range r.Children {
+			childLits, ok := collectStringOnlyRuleLiterals(child)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, childLits...)
+		}
+		return out, len(out) > 0
+	default:
+		return nil, false
+	}
 }
 
 // dfaAcceptsSubsetOf checks whether every string accepted by DFA 'candidate'
