@@ -649,6 +649,7 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, p *Parser) {
 		normalizeRustRecoveredPatternStatementsRoot(root, source, p)
 		normalizeRustRecoveredFunctionItems(root, source, lang)
 		normalizeRustRecoveredStructExpressionRoot(root, source, lang)
+		normalizeRustDotRangeExpressions(root, source, lang)
 		normalizeRustTokenBindingPatterns(root, source, lang)
 		normalizeRustRecoveredTokenTrees(root, source, lang)
 		normalizeRustSourceFileRoot(root, source, lang)
@@ -13406,11 +13407,31 @@ func normalizeRustRecoveredTokenTrees(root *Node, source []byte, lang *Language)
 	rustRefreshRecoveredErrorFlags(root)
 }
 
-func normalizeRustRecoveredPatternStatementsRoot(root *Node, source []byte, p *Parser) {
-	if root == nil || p == nil || p.language == nil || p.language.Name != "rust" || p.skipRecoveryReparse || root.Type(p.language) != "ERROR" || len(source) == 0 {
+func normalizeRustDotRangeExpressions(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "rust" || len(source) == 0 {
 		return
 	}
-	if !rustLooksLikePatternStatementRoot(root, p.language) {
+	var walk func(*Node)
+	walk = func(node *Node) {
+		if node == nil {
+			return
+		}
+		if node.Type(lang) == "range_expression" || node.Type(lang) == "assignment_expression" {
+			if recovered, ok := rustBuildCanonicalDotRangeNode(node.ownerArena, source, lang, node.startByte, node.endByte); ok && recovered != nil {
+				*node = *recovered
+				return
+			}
+		}
+		for _, child := range node.children {
+			walk(child)
+		}
+	}
+	walk(root)
+	rustRefreshRecoveredErrorFlags(root)
+}
+
+func normalizeRustRecoveredPatternStatementsRoot(root *Node, source []byte, p *Parser) {
+	if root == nil || p == nil || p.language == nil || p.language.Name != "rust" || p.skipRecoveryReparse || root.Type(p.language) != "ERROR" || len(source) == 0 {
 		return
 	}
 	recovered, ok := rustRecoverTopLevelChunks(source, p, root.ownerArena)
@@ -13887,13 +13908,51 @@ func rustRecoverTopLevelChunks(source []byte, p *Parser, arena *nodeArena) ([]*N
 	}
 	out := make([]*Node, 0, len(spans))
 	for _, span := range spans {
-		nodes, ok := rustRecoverTopLevelChunkNodesFromRange(source, span[0], span[1], p, arena)
-		if !ok || len(nodes) == 0 {
-			return nil, false
+		for _, part := range rustSplitLeadingTopLevelCommentSpans(source, span[0], span[1]) {
+			nodes, ok := rustRecoverTopLevelChunkNodesFromRange(source, part[0], part[1], p, arena)
+			if !ok || len(nodes) == 0 {
+				return nil, false
+			}
+			out = append(out, nodes...)
 		}
-		out = append(out, nodes...)
 	}
 	return out, true
+}
+
+func rustSplitLeadingTopLevelCommentSpans(source []byte, start, end uint32) [][2]uint32 {
+	start, end = rustTrimSpaceBounds(source, start, end)
+	if start >= end {
+		return nil
+	}
+	var spans [][2]uint32
+	cursor := start
+	for cursor < end {
+		switch {
+		case cursor+1 < end && source[cursor] == '/' && source[cursor+1] == '/':
+			commentEnd := cursor + 2
+			for commentEnd < end && source[commentEnd] != '\n' {
+				commentEnd++
+			}
+			spans = append(spans, [2]uint32{cursor, commentEnd})
+			cursor = rustSkipSpaceBytes(source, commentEnd)
+		case cursor+1 < end && source[cursor] == '/' && source[cursor+1] == '*':
+			commentEnd := rustFindBlockCommentEnd(source, cursor+2, end)
+			if commentEnd <= cursor+1 {
+				return [][2]uint32{{start, end}}
+			}
+			spans = append(spans, [2]uint32{cursor, commentEnd})
+			cursor = rustSkipSpaceBytes(source, commentEnd)
+		default:
+			if cursor < end {
+				spans = append(spans, [2]uint32{cursor, end})
+			}
+			return spans
+		}
+	}
+	if len(spans) == 0 {
+		spans = append(spans, [2]uint32{start, end})
+	}
+	return spans
 }
 
 func rustTopLevelChunkSpans(source []byte) [][2]uint32 {
@@ -13982,13 +14041,16 @@ func rustRecoverTopLevelChunkNodesFromRange(source []byte, start, end uint32, p 
 		if offsetRoot != nil && !offsetRoot.HasError() {
 			nodes := rustExtractRecoveredTopLevelNodes(offsetRoot, p.language, arena)
 			tree.Release()
-			if len(nodes) > 0 {
+			if len(nodes) > 0 && !rustRecoveredNodesNeedFunctionFallback(source, start, end, p.language, nodes) {
 				return nodes, true
 			}
 		}
 		tree.Release()
 	}
 	if node, ok := rustRecoverClosureExpressionStatementFromRange(source, start, end, p, arena); ok {
+		return []*Node{node}, true
+	}
+	if node, ok := rustRecoverFunctionItemFromRange(source, start, end, p, arena); ok {
 		return []*Node{node}, true
 	}
 	return nil, false
@@ -14095,9 +14157,1753 @@ func rustRecoverClosureExpressionStatementFromRange(source []byte, start, end ui
 	return stmt, true
 }
 
+func rustRecoverFunctionItemFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	start, end = rustTrimSpaceBounds(source, start, end)
+	if start >= end || !rustHasPrefixAt(source, start, "fn") {
+		return nil, false
+	}
+	openBrace, ok := rustFindTopLevelByte(source, start, end, '{')
+	if !ok {
+		return nil, false
+	}
+	closeBrace := rustFindMatchingDelimiter(source, int(openBrace), '{', '}')
+	if closeBrace < 0 || uint32(closeBrace+1) != end {
+		return nil, false
+	}
+	headerNodes, ok := rustRecoverFunctionHeaderNodesFromRange(source, start, openBrace, p, arena)
+	if !ok || len(headerNodes) < 2 {
+		return nil, false
+	}
+	bodyNodes, ok := rustRecoverRustBlockNodesFromRange(source, openBrace+1, uint32(closeBrace), p, arena)
+	if !ok {
+		return nil, false
+	}
+	blockSym, ok := symbolByName(p.language, "block")
+	if !ok {
+		return nil, false
+	}
+	functionItemSym, ok := symbolByName(p.language, "function_item")
+	if !ok {
+		return nil, false
+	}
+	block := newParentNodeInArena(
+		arena,
+		blockSym,
+		rustNamedForSymbol(p.language, blockSym),
+		bodyNodes,
+		nil,
+		0,
+	)
+	block.startByte = openBrace
+	block.startPoint = advancePointByBytes(Point{}, source[:openBrace])
+	block.endByte = uint32(closeBrace + 1)
+	block.endPoint = advancePointByBytes(Point{}, source[:closeBrace+1])
+
+	children := append(headerNodes, block)
+	fnItem := newParentNodeInArena(
+		arena,
+		functionItemSym,
+		rustNamedForSymbol(p.language, functionItemSym),
+		children,
+		nil,
+		0,
+	)
+	fnItem.startByte = start
+	fnItem.startPoint = advancePointByBytes(Point{}, source[:start])
+	fnItem.endByte = end
+	fnItem.endPoint = advancePointByBytes(Point{}, source[:end])
+	return fnItem, true
+}
+
+func rustRecoverFunctionHeaderNodesFromRange(source []byte, start, blockStart uint32, p *Parser, arena *nodeArena) ([]*Node, bool) {
+	if p == nil || p.language == nil || start >= blockStart || int(blockStart) > len(source) {
+		return nil, false
+	}
+	wrapped := make([]byte, 0, int(blockStart-start)+2)
+	wrapped = append(wrapped, source[start:blockStart]...)
+	wrapped = append(wrapped, '{', '}')
+	tree, err := p.parseForRecovery(wrapped)
+	if err != nil || tree == nil || tree.RootNode() == nil {
+		if tree != nil {
+			tree.Release()
+		}
+		return nil, false
+	}
+	defer tree.Release()
+	startPoint := advancePointByBytes(Point{}, source[:start])
+	offsetRoot := tree.RootNodeWithOffset(start, startPoint)
+	if offsetRoot == nil || offsetRoot.HasError() {
+		return nil, false
+	}
+	return rustExtractRecoveredFunctionHeaderNodes(offsetRoot, p.language, arena)
+}
+
+func rustExtractRecoveredFunctionHeaderNodes(root *Node, lang *Language, arena *nodeArena) ([]*Node, bool) {
+	if root == nil || lang == nil {
+		return nil, false
+	}
+	var fnItem *Node
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil || fnItem != nil {
+			return
+		}
+		if n.Type(lang) == "function_item" {
+			fnItem = n
+			return
+		}
+		for i := 0; i < n.ChildCount(); i++ {
+			walk(n.Child(i))
+		}
+	}
+	walk(root)
+	if fnItem == nil {
+		return nil, false
+	}
+	out := make([]*Node, 0, fnItem.NamedChildCount())
+	for i := 0; i < fnItem.NamedChildCount(); i++ {
+		child := fnItem.NamedChild(i)
+		if child == nil || child.Type(lang) == "block" {
+			continue
+		}
+		if arena != nil {
+			out = append(out, cloneTreeNodesIntoArena(child, arena))
+		} else {
+			out = append(out, child)
+		}
+	}
+	return out, len(out) >= 2
+}
+
+func rustRecoverRustBlockNodesFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) ([]*Node, bool) {
+	spans := rustStatementLikeSpansInRange(source, start, end)
+	if len(spans) == 0 && bytes.TrimSpace(source[start:end]) != nil && len(bytes.TrimSpace(source[start:end])) > 0 {
+		return nil, false
+	}
+	out := make([]*Node, 0, len(spans))
+	for _, span := range spans {
+		nodes, ok := rustRecoverRustBlockChunkNodesFromRange(source, span[0], span[1], p, arena)
+		if !ok || len(nodes) == 0 {
+			return nil, false
+		}
+		out = append(out, nodes...)
+	}
+	return out, true
+}
+
+func rustRecoverRustBlockChunkNodesFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) ([]*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	if nodes, ok := rustRecoverWrappedFunctionBlockNodesFromRange(source, start, end, p, arena); ok {
+		if !rustRecoveredNodesNeedFunctionFallback(source, start, end, p.language, nodes) {
+			return nodes, true
+		}
+	}
+	trimmedStart, trimmedEnd := rustTrimSpaceBounds(source, start, end)
+	if trimmedStart >= trimmedEnd {
+		return nil, false
+	}
+	switch {
+	case rustHasPrefixAt(source, trimmedStart, "let"):
+		if node, ok := rustRecoverLetStatementFromRange(source, trimmedStart, trimmedEnd, p, arena); ok {
+			return []*Node{node}, true
+		}
+	case rustHasPrefixAt(source, trimmedStart, "impl"):
+		if node, ok := rustRecoverImplItemFromRange(source, trimmedStart, trimmedEnd, p, arena); ok {
+			return []*Node{node}, true
+		}
+	case rustHasPrefixAt(source, trimmedStart, "loop"):
+		if node, ok := rustRecoverLoopStatementFromRange(source, trimmedStart, trimmedEnd, p, arena); ok {
+			return []*Node{node}, true
+		}
+	case rustHasPrefixAt(source, trimmedStart, "fn"):
+		if node, ok := rustRecoverFunctionItemFromRange(source, trimmedStart, trimmedEnd, p, arena); ok {
+			return []*Node{node}, true
+		}
+	}
+	if node, ok := rustRecoverRustBlockExpressionNodeFromRange(source, trimmedStart, trimmedEnd, p, arena); ok {
+		return []*Node{node}, true
+	}
+	return nil, false
+}
+
+func rustRecoverRustBlockExpressionNodeFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	start, end = rustTrimSpaceBounds(source, start, end)
+	if start >= end {
+		return nil, false
+	}
+	exprEnd := end
+	withSemicolon := false
+	if source[end-1] == ';' {
+		withSemicolon = true
+		exprEnd = rustSkipBackwardSpaceBytes(source, end-1)
+		if exprEnd <= start {
+			return nil, false
+		}
+	}
+	expr, ok := rustRecoverRustExpressionNodeFromRange(source, start, exprEnd, p, arena)
+	if !ok {
+		return nil, false
+	}
+	if !withSemicolon {
+		return expr, true
+	}
+	exprStmtSym, ok := symbolByName(p.language, "expression_statement")
+	if !ok {
+		return nil, false
+	}
+	stmt := newParentNodeInArena(
+		arena,
+		exprStmtSym,
+		rustNamedForSymbol(p.language, exprStmtSym),
+		[]*Node{expr},
+		nil,
+		0,
+	)
+	stmt.startByte = start
+	stmt.startPoint = advancePointByBytes(Point{}, source[:start])
+	stmt.endByte = end
+	stmt.endPoint = advancePointByBytes(Point{}, source[:end])
+	return stmt, true
+}
+
+func rustRecoverRustBlockValueExpressionNodeFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	start, end = rustTrimSpaceBounds(source, start, end)
+	if start >= end || source[start] != '{' || source[end-1] != '}' {
+		return nil, false
+	}
+	closeBrace := rustFindMatchingDelimiter(source, int(start), '{', '}')
+	if closeBrace < 0 || uint32(closeBrace+1) != end {
+		return nil, false
+	}
+	children, ok := rustRecoverRustBlockNodesFromRange(source, start+1, uint32(closeBrace), p, arena)
+	if !ok {
+		return nil, false
+	}
+	blockSym, ok := symbolByName(p.language, "block")
+	if !ok {
+		return nil, false
+	}
+	block := newParentNodeInArena(
+		arena,
+		blockSym,
+		rustNamedForSymbol(p.language, blockSym),
+		children,
+		nil,
+		0,
+	)
+	block.startByte = start
+	block.startPoint = advancePointByBytes(Point{}, source[:start])
+	block.endByte = end
+	block.endPoint = advancePointByBytes(Point{}, source[:end])
+	return block, true
+}
+
+func rustRecoveredNodesNeedFunctionFallback(source []byte, start, end uint32, lang *Language, nodes []*Node) bool {
+	if lang == nil || len(nodes) == 0 {
+		return false
+	}
+	start, end = rustTrimSpaceBounds(source, start, end)
+	if start >= end || !rustHasPrefixAt(source, start, "fn") {
+		return false
+	}
+	return len(nodes) != 1 || nodes[0] == nil || nodes[0].Type(lang) != "function_item"
+}
+
+func rustRecoverRustSpecialPatternNodeFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	start, end = rustTrimSpaceBounds(source, start, end)
+	if start >= end || source[start] != '(' || source[end-1] != ')' {
+		return nil, false
+	}
+	return rustRecoverRustTupleClosurePatternNodeFromRange(source, start, end, p, arena)
+}
+
+func rustRecoverRustTupleClosurePatternNodeFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	start, end = rustTrimSpaceBounds(source, start, end)
+	if start >= end || source[start] != '(' || source[end-1] != ')' {
+		return nil, false
+	}
+	innerStart, innerEnd := rustTrimSpaceBounds(source, start+1, end-1)
+	if innerStart >= innerEnd || source[innerStart] != '|' {
+		return nil, false
+	}
+	closure, ok := rustRecoverRustClosureExpressionNodeFromRange(source, innerStart, innerEnd, p, arena)
+	if !ok {
+		return nil, false
+	}
+	tuplePatternSym, ok := symbolByName(p.language, "tuple_pattern")
+	if !ok {
+		return nil, false
+	}
+	pattern := newParentNodeInArena(
+		arena,
+		tuplePatternSym,
+		rustNamedForSymbol(p.language, tuplePatternSym),
+		[]*Node{closure},
+		nil,
+		0,
+	)
+	pattern.startByte = start
+	pattern.startPoint = advancePointByBytes(Point{}, source[:start])
+	pattern.endByte = end
+	pattern.endPoint = advancePointByBytes(Point{}, source[:end])
+	return pattern, true
+}
+
+func rustRecoverRustClosureExpressionNodeFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	start, end = rustTrimSpaceBounds(source, start, end)
+	if start >= end || source[start] != '|' {
+		return nil, false
+	}
+	pipePos, ok := rustFindTopLevelByte(source, start+1, end, '|')
+	if !ok || pipePos >= end {
+		return nil, false
+	}
+	bodyStart := rustSkipSpaceBytes(source, pipePos+1)
+	if bodyStart >= end {
+		return nil, false
+	}
+	paramNodes, ok := rustRecoverRustClosureParameterNodesFromRange(source, start+1, pipePos, p, arena)
+	if !ok {
+		return nil, false
+	}
+	body, ok := rustRecoverRustExpressionNodeFromRange(source, bodyStart, end, p, arena)
+	if !ok {
+		return nil, false
+	}
+	paramsSym, ok := symbolByName(p.language, "closure_parameters")
+	if !ok {
+		return nil, false
+	}
+	closureSym, ok := symbolByName(p.language, "closure_expression")
+	if !ok {
+		return nil, false
+	}
+	params := newParentNodeInArena(
+		arena,
+		paramsSym,
+		rustNamedForSymbol(p.language, paramsSym),
+		paramNodes,
+		nil,
+		0,
+	)
+	params.startByte = start
+	params.startPoint = advancePointByBytes(Point{}, source[:start])
+	params.endByte = pipePos + 1
+	params.endPoint = advancePointByBytes(Point{}, source[:pipePos+1])
+	closure := newParentNodeInArena(
+		arena,
+		closureSym,
+		rustNamedForSymbol(p.language, closureSym),
+		[]*Node{params, body},
+		nil,
+		0,
+	)
+	closure.startByte = start
+	closure.startPoint = params.startPoint
+	closure.endByte = end
+	closure.endPoint = advancePointByBytes(Point{}, source[:end])
+	return closure, true
+}
+
+func rustRecoverRustClosureParameterNodesFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) ([]*Node, bool) {
+	if p == nil || p.language == nil {
+		return nil, false
+	}
+	start, end = rustTrimSpaceBounds(source, start, end)
+	if start >= end {
+		return nil, true
+	}
+	spans := rustSplitTopLevelCommaSpans(source, start, end)
+	if len(spans) == 0 {
+		spans = append(spans, [2]uint32{start, end})
+	}
+	children := make([]*Node, 0, len(spans))
+	for _, span := range spans {
+		partStart, partEnd := rustTrimSpaceBounds(source, span[0], span[1])
+		if partStart >= partEnd {
+			continue
+		}
+		part := source[partStart:partEnd]
+		if len(part) == 1 && part[0] == '_' {
+			continue
+		}
+		if rustBytesAreIdentifier(part) {
+			identifierSym, ok := symbolByName(p.language, "identifier")
+			if !ok {
+				return nil, false
+			}
+			children = append(children, newLeafNodeInArena(
+				arena,
+				identifierSym,
+				rustNamedForSymbol(p.language, identifierSym),
+				partStart,
+				partEnd,
+				advancePointByBytes(Point{}, source[:partStart]),
+				advancePointByBytes(Point{}, source[:partEnd]),
+			))
+			continue
+		}
+		if node, ok := rustRecoverRustCapturedPatternNodeFromRange(source, partStart, partEnd, p, arena); ok {
+			children = append(children, node)
+			continue
+		}
+		if node, ok := rustRecoverRustTupleClosurePatternNodeFromRange(source, partStart, partEnd, p, arena); ok {
+			children = append(children, node)
+			continue
+		}
+		if node, ok := rustRecoverRustClosureParameterNodeFromRange(source, partStart, partEnd, p, arena); ok {
+			children = append(children, node)
+			continue
+		}
+		if node, ok := rustRecoverPatternNodeFromRange(source, partStart, partEnd, p, arena); ok {
+			children = append(children, node)
+			continue
+		}
+		return nil, false
+	}
+	return children, true
+}
+
+func rustRecoverRustClosureParameterNodeFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	const prefix = "fn _("
+	const suffix = ") {}\n"
+	part := bytes.TrimSpace(source[start:end])
+	if len(part) == 0 {
+		return nil, false
+	}
+	wrapped := make([]byte, 0, len(prefix)+len(part)+len(suffix))
+	wrapped = append(wrapped, prefix...)
+	wrapped = append(wrapped, part...)
+	wrapped = append(wrapped, suffix...)
+	tree, err := p.parseForRecovery(wrapped)
+	if err != nil || tree == nil || tree.RootNode() == nil {
+		if tree != nil {
+			tree.Release()
+		}
+		return nil, false
+	}
+	defer tree.Release()
+	startPoint := advancePointByBytes(Point{}, source[:start])
+	prefixPoint := advancePointByBytes(Point{}, []byte(prefix))
+	if startPoint.Row < prefixPoint.Row {
+		return nil, false
+	}
+	offsetRoot := tree.RootNodeWithOffset(start-uint32(len(prefix)), Point{Row: startPoint.Row - prefixPoint.Row, Column: startPoint.Column})
+	if offsetRoot == nil || offsetRoot.HasError() {
+		return nil, false
+	}
+	var out *Node
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil || out != nil {
+			return
+		}
+		if n.Type(p.language) == "parameters" {
+			for i := 0; i < n.NamedChildCount(); i++ {
+				child := n.NamedChild(i)
+				if child == nil {
+					continue
+				}
+				if arena != nil {
+					out = cloneTreeNodesIntoArena(child, arena)
+				} else {
+					out = child
+				}
+				return
+			}
+		}
+		for i := 0; i < n.ChildCount(); i++ {
+			walk(n.Child(i))
+		}
+	}
+	walk(offsetRoot)
+	return out, out != nil
+}
+
+func rustRecoverRustCapturedPatternNodeFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	start, end = rustTrimSpaceBounds(source, start, end)
+	atPos, ok := rustFindTopLevelByte(source, start, end, '@')
+	if !ok {
+		return nil, false
+	}
+	nameStart, nameEnd := rustTrimSpaceBounds(source, start, atPos)
+	restStart, restEnd := rustTrimSpaceBounds(source, atPos+1, end)
+	if nameStart >= nameEnd || restStart >= restEnd || restEnd-restStart != 1 || source[restStart] != '_' || !rustBytesAreIdentifier(source[nameStart:nameEnd]) {
+		return nil, false
+	}
+	identifierSym, ok := symbolByName(p.language, "identifier")
+	if !ok {
+		return nil, false
+	}
+	capturedSym, ok := symbolByName(p.language, "captured_pattern")
+	if !ok {
+		return nil, false
+	}
+	ident := newLeafNodeInArena(
+		arena,
+		identifierSym,
+		rustNamedForSymbol(p.language, identifierSym),
+		nameStart,
+		nameEnd,
+		advancePointByBytes(Point{}, source[:nameStart]),
+		advancePointByBytes(Point{}, source[:nameEnd]),
+	)
+	captured := newParentNodeInArena(
+		arena,
+		capturedSym,
+		rustNamedForSymbol(p.language, capturedSym),
+		[]*Node{ident},
+		nil,
+		0,
+	)
+	captured.startByte = start
+	captured.startPoint = advancePointByBytes(Point{}, source[:start])
+	captured.endByte = end
+	captured.endPoint = advancePointByBytes(Point{}, source[:end])
+	return captured, true
+}
+
+func rustRecoverRustReferenceCastClosureExpressionNodeFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	start, end = rustTrimSpaceBounds(source, start, end)
+	if start >= end || source[start] != '&' {
+		return nil, false
+	}
+	outerStart := rustSkipSpaceBytes(source, start+1)
+	if outerStart >= end || source[outerStart] != '(' {
+		return nil, false
+	}
+	outerClose := rustFindMatchingDelimiter(source, int(outerStart), '(', ')')
+	if outerClose < 0 || uint32(outerClose+1) != end {
+		return nil, false
+	}
+	innerStart, innerEnd := rustTrimSpaceBounds(source, outerStart+1, uint32(outerClose))
+	asPos, ok := rustFindTopLevelKeyword(source, innerStart, innerEnd, "as")
+	if !ok {
+		return nil, false
+	}
+	closureRangeStart, closureRangeEnd := rustTrimSpaceBounds(source, innerStart, asPos)
+	if closureRangeStart >= closureRangeEnd || source[closureRangeStart] != '(' || source[closureRangeEnd-1] != ')' {
+		return nil, false
+	}
+	closure, ok := rustRecoverRustClosureExpressionNodeFromRange(source, closureRangeStart+1, closureRangeEnd-1, p, arena)
+	if !ok {
+		return nil, false
+	}
+	typeNode, ok := rustBuildRecoveredTypeNode(arena, source, p.language, asPos+2, innerEnd)
+	if !ok {
+		return nil, false
+	}
+	parenthesizedSym, ok := symbolByName(p.language, "parenthesized_expression")
+	if !ok {
+		return nil, false
+	}
+	typeCastSym, ok := symbolByName(p.language, "type_cast_expression")
+	if !ok {
+		return nil, false
+	}
+	referenceSym, ok := symbolByName(p.language, "reference_expression")
+	if !ok {
+		return nil, false
+	}
+	innerParen := newParentNodeInArena(
+		arena,
+		parenthesizedSym,
+		rustNamedForSymbol(p.language, parenthesizedSym),
+		[]*Node{closure},
+		nil,
+		0,
+	)
+	innerParen.startByte = closureRangeStart
+	innerParen.startPoint = advancePointByBytes(Point{}, source[:closureRangeStart])
+	innerParen.endByte = closureRangeEnd
+	innerParen.endPoint = advancePointByBytes(Point{}, source[:closureRangeEnd])
+	typeCast := newParentNodeInArena(
+		arena,
+		typeCastSym,
+		rustNamedForSymbol(p.language, typeCastSym),
+		[]*Node{innerParen, typeNode},
+		nil,
+		0,
+	)
+	typeCast.startByte = innerParen.startByte
+	typeCast.startPoint = innerParen.startPoint
+	typeCast.endByte = innerEnd
+	typeCast.endPoint = advancePointByBytes(Point{}, source[:innerEnd])
+	outerParen := newParentNodeInArena(
+		arena,
+		parenthesizedSym,
+		rustNamedForSymbol(p.language, parenthesizedSym),
+		[]*Node{typeCast},
+		nil,
+		0,
+	)
+	outerParen.startByte = outerStart
+	outerParen.startPoint = advancePointByBytes(Point{}, source[:outerStart])
+	outerParen.endByte = end
+	outerParen.endPoint = advancePointByBytes(Point{}, source[:end])
+	ref := newParentNodeInArena(
+		arena,
+		referenceSym,
+		rustNamedForSymbol(p.language, referenceSym),
+		[]*Node{outerParen},
+		nil,
+		0,
+	)
+	ref.startByte = start
+	ref.startPoint = advancePointByBytes(Point{}, source[:start])
+	ref.endByte = end
+	ref.endPoint = advancePointByBytes(Point{}, source[:end])
+	return ref, true
+}
+
+func rustRecoverRustMatchExpressionNodeFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	start, end = rustTrimSpaceBounds(source, start, end)
+	if start >= end || !rustHasPrefixAt(source, start, "match") {
+		return nil, false
+	}
+	scrutineeStart := rustSkipSpaceBytes(source, start+5)
+	openBrace, ok := rustFindTopLevelByte(source, scrutineeStart, end, '{')
+	if !ok {
+		return nil, false
+	}
+	closeBrace := rustFindMatchingDelimiter(source, int(openBrace), '{', '}')
+	if closeBrace < 0 || uint32(closeBrace+1) != end {
+		return nil, false
+	}
+	scrutinee, ok := rustRecoverRustExpressionNodeFromRange(source, scrutineeStart, openBrace, p, arena)
+	if !ok {
+		return nil, false
+	}
+	armSpans := rustSplitRustMatchArmSpans(source, openBrace+1, uint32(closeBrace))
+	if len(armSpans) == 0 {
+		return nil, false
+	}
+	matchArmNodes := make([]*Node, 0, len(armSpans))
+	for _, span := range armSpans {
+		arm, ok := rustRecoverRustMatchArmNodeFromRange(source, span[0], span[1], p, arena)
+		if !ok {
+			return nil, false
+		}
+		matchArmNodes = append(matchArmNodes, arm)
+	}
+	matchBlockSym, ok := symbolByName(p.language, "match_block")
+	if !ok {
+		return nil, false
+	}
+	matchExprSym, ok := symbolByName(p.language, "match_expression")
+	if !ok {
+		return nil, false
+	}
+	matchBlock := newParentNodeInArena(
+		arena,
+		matchBlockSym,
+		rustNamedForSymbol(p.language, matchBlockSym),
+		matchArmNodes,
+		nil,
+		0,
+	)
+	matchBlock.startByte = openBrace
+	matchBlock.startPoint = advancePointByBytes(Point{}, source[:openBrace])
+	matchBlock.endByte = uint32(closeBrace + 1)
+	matchBlock.endPoint = advancePointByBytes(Point{}, source[:closeBrace+1])
+	matchExpr := newParentNodeInArena(
+		arena,
+		matchExprSym,
+		rustNamedForSymbol(p.language, matchExprSym),
+		[]*Node{scrutinee, matchBlock},
+		nil,
+		0,
+	)
+	matchExpr.startByte = start
+	matchExpr.startPoint = advancePointByBytes(Point{}, source[:start])
+	matchExpr.endByte = end
+	matchExpr.endPoint = advancePointByBytes(Point{}, source[:end])
+	return matchExpr, true
+}
+
+func rustRecoverRustMatchArmNodeFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	start, end = rustTrimSpaceBounds(source, start, end)
+	arrowPos, ok := rustFindTopLevelFatArrow(source, start, end)
+	if !ok {
+		return nil, false
+	}
+	pattern, ok := rustRecoverRustMatchPatternNodeFromRange(source, start, arrowPos, p, arena)
+	if !ok {
+		return nil, false
+	}
+	value, ok := rustRecoverRustExpressionNodeFromRange(source, arrowPos+2, end, p, arena)
+	if !ok {
+		return nil, false
+	}
+	matchArmSym, ok := symbolByName(p.language, "match_arm")
+	if !ok {
+		return nil, false
+	}
+	arm := newParentNodeInArena(
+		arena,
+		matchArmSym,
+		rustNamedForSymbol(p.language, matchArmSym),
+		[]*Node{pattern, value},
+		nil,
+		0,
+	)
+	arm.startByte = start
+	arm.startPoint = advancePointByBytes(Point{}, source[:start])
+	arm.endByte = end
+	arm.endPoint = advancePointByBytes(Point{}, source[:end])
+	return arm, true
+}
+
+func rustRecoverRustMatchPatternNodeFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	start, end = rustTrimSpaceBounds(source, start, end)
+	if start >= end {
+		return nil, false
+	}
+	var inner *Node
+	if pipePos, ok := rustFindTopLevelByte(source, start, end, '|'); ok {
+		leftStart, leftEnd := rustTrimSpaceBounds(source, start, pipePos)
+		rightStart, rightEnd := rustTrimSpaceBounds(source, pipePos+1, end)
+		if leftStart < leftEnd && rightStart < rightEnd && leftEnd-leftStart == 1 && source[leftStart] == '_' {
+			left := rustBuildRustEmptyOrPatternNode(arena, source, p.language, leftStart, leftEnd)
+			children := []*Node{left}
+			if !(rightEnd-rightStart == 1 && source[rightStart] == '_') {
+				right, ok := rustBuildRustTupleStructPatternNodeFromRange(source, rightStart, rightEnd, p, arena)
+				if !ok {
+					return nil, false
+				}
+				children = append(children, right)
+			}
+			orPatternSym, ok := symbolByName(p.language, "or_pattern")
+			if !ok {
+				return nil, false
+			}
+			inner = newParentNodeInArena(
+				arena,
+				orPatternSym,
+				rustNamedForSymbol(p.language, orPatternSym),
+				children,
+				nil,
+				0,
+			)
+			inner.startByte = start
+			inner.startPoint = advancePointByBytes(Point{}, source[:start])
+			inner.endByte = end
+			inner.endPoint = advancePointByBytes(Point{}, source[:end])
+		}
+	}
+	if inner == nil {
+		node, ok := rustRecoverPatternNodeFromRange(source, start, end, p, arena)
+		if !ok {
+			return nil, false
+		}
+		inner = node
+	}
+	matchPatternSym, ok := symbolByName(p.language, "match_pattern")
+	if !ok {
+		return nil, false
+	}
+	pattern := newParentNodeInArena(
+		arena,
+		matchPatternSym,
+		rustNamedForSymbol(p.language, matchPatternSym),
+		[]*Node{inner},
+		nil,
+		0,
+	)
+	pattern.startByte = start
+	pattern.startPoint = advancePointByBytes(Point{}, source[:start])
+	pattern.endByte = end
+	pattern.endPoint = advancePointByBytes(Point{}, source[:end])
+	return pattern, true
+}
+
+func rustBuildRustTupleStructPatternNodeFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	start, end = rustTrimSpaceBounds(source, start, end)
+	openParen, ok := rustFindTopLevelByte(source, start, end, '(')
+	if !ok {
+		return nil, false
+	}
+	closeParen := rustFindMatchingDelimiter(source, int(openParen), '(', ')')
+	if closeParen < 0 || uint32(closeParen+1) != end {
+		return nil, false
+	}
+	nameStart, nameEnd := rustTrimSpaceBounds(source, start, openParen)
+	argStart, argEnd := rustTrimSpaceBounds(source, openParen+1, uint32(closeParen))
+	if nameStart >= nameEnd || argStart >= argEnd {
+		return nil, false
+	}
+	identifierSym, ok := symbolByName(p.language, "identifier")
+	if !ok {
+		return nil, false
+	}
+	tupleStructSym, ok := symbolByName(p.language, "tuple_struct_pattern")
+	if !ok {
+		return nil, false
+	}
+	name := newLeafNodeInArena(
+		arena,
+		identifierSym,
+		rustNamedForSymbol(p.language, identifierSym),
+		nameStart,
+		nameEnd,
+		advancePointByBytes(Point{}, source[:nameStart]),
+		advancePointByBytes(Point{}, source[:nameEnd]),
+	)
+	arg, ok := rustBuildRecoveredValueNode(arena, source, p.language, argStart, argEnd)
+	if !ok {
+		return nil, false
+	}
+	pattern := newParentNodeInArena(
+		arena,
+		tupleStructSym,
+		rustNamedForSymbol(p.language, tupleStructSym),
+		[]*Node{name, arg},
+		nil,
+		0,
+	)
+	pattern.startByte = start
+	pattern.startPoint = advancePointByBytes(Point{}, source[:start])
+	pattern.endByte = end
+	pattern.endPoint = advancePointByBytes(Point{}, source[:end])
+	return pattern, true
+}
+
+func rustBuildRustEmptyOrPatternNode(arena *nodeArena, source []byte, lang *Language, start, end uint32) *Node {
+	orPatternSym, ok := symbolByName(lang, "or_pattern")
+	if !ok {
+		return nil
+	}
+	node := newParentNodeInArena(
+		arena,
+		orPatternSym,
+		rustNamedForSymbol(lang, orPatternSym),
+		nil,
+		nil,
+		0,
+	)
+	node.startByte = start
+	node.startPoint = advancePointByBytes(Point{}, source[:start])
+	node.endByte = end
+	node.endPoint = advancePointByBytes(Point{}, source[:end])
+	return node
+}
+
+func rustRecoverRustSpecialCharactersExpressionNodeFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	start, end = rustTrimSpaceBounds(source, start, end)
+	if start >= end || source[start] != '!' {
+		return nil, false
+	}
+	innerStart := rustSkipSpaceBytes(source, start+1)
+	if innerStart >= end || source[innerStart] != '(' || source[end-1] != ')' {
+		return nil, false
+	}
+	innerClose := rustFindMatchingDelimiter(source, int(innerStart), '(', ')')
+	if innerClose < 0 || uint32(innerClose+1) != end {
+		return nil, false
+	}
+	binaryStart, binaryEnd := rustTrimSpaceBounds(source, innerStart+1, uint32(innerClose))
+	eqPos, ok := rustFindTopLevelDoubleByte(source, binaryStart, binaryEnd, '=', '=')
+	if !ok {
+		return nil, false
+	}
+	left, ok := rustRecoverRustSpecialCharactersCallExpressionNodeFromRange(source, binaryStart, eqPos, p, arena)
+	if !ok {
+		return nil, false
+	}
+	right, ok := rustRecoverRustExpressionNodeFromRange(source, eqPos+2, binaryEnd, p, arena)
+	if !ok {
+		return nil, false
+	}
+	binarySym, ok := symbolByName(p.language, "binary_expression")
+	if !ok {
+		return nil, false
+	}
+	parenthesizedSym, ok := symbolByName(p.language, "parenthesized_expression")
+	if !ok {
+		return nil, false
+	}
+	unarySym, ok := symbolByName(p.language, "unary_expression")
+	if !ok {
+		return nil, false
+	}
+	binary := newParentNodeInArena(
+		arena,
+		binarySym,
+		rustNamedForSymbol(p.language, binarySym),
+		[]*Node{left, right},
+		nil,
+		0,
+	)
+	binary.startByte = binaryStart
+	binary.startPoint = advancePointByBytes(Point{}, source[:binaryStart])
+	binary.endByte = binaryEnd
+	binary.endPoint = advancePointByBytes(Point{}, source[:binaryEnd])
+	paren := newParentNodeInArena(
+		arena,
+		parenthesizedSym,
+		rustNamedForSymbol(p.language, parenthesizedSym),
+		[]*Node{binary},
+		nil,
+		0,
+	)
+	paren.startByte = innerStart
+	paren.startPoint = advancePointByBytes(Point{}, source[:innerStart])
+	paren.endByte = end
+	paren.endPoint = advancePointByBytes(Point{}, source[:end])
+	unary := newParentNodeInArena(
+		arena,
+		unarySym,
+		rustNamedForSymbol(p.language, unarySym),
+		[]*Node{paren},
+		nil,
+		0,
+	)
+	unary.startByte = start
+	unary.startPoint = advancePointByBytes(Point{}, source[:start])
+	unary.endByte = end
+	unary.endPoint = advancePointByBytes(Point{}, source[:end])
+	return unary, true
+}
+
+func rustRecoverRustSpecialCharactersCallExpressionNodeFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	start, end = rustTrimSpaceBounds(source, start, end)
+	if start >= end || source[start] != '(' {
+		return nil, false
+	}
+	calleeClose := rustFindMatchingDelimiter(source, int(start), '(', ')')
+	if calleeClose < 0 || uint32(calleeClose+1) >= end {
+		return nil, false
+	}
+	argsStart := rustSkipSpaceBytes(source, uint32(calleeClose+1))
+	if argsStart >= end || source[argsStart] != '(' {
+		return nil, false
+	}
+	argsClose := rustFindMatchingDelimiter(source, int(argsStart), '(', ')')
+	if argsClose < 0 || uint32(argsClose+1) != end {
+		return nil, false
+	}
+	callee, ok := rustRecoverRustSpecialCharactersCalleeNodeFromRange(source, start, uint32(calleeClose+1), p, arena)
+	if !ok {
+		return nil, false
+	}
+	args, ok := rustRecoverRustSpecialCharactersArgumentsNodeFromRange(source, argsStart, uint32(argsClose+1), p, arena)
+	if !ok {
+		return nil, false
+	}
+	callSym, ok := symbolByName(p.language, "call_expression")
+	if !ok {
+		return nil, false
+	}
+	call := newParentNodeInArena(
+		arena,
+		callSym,
+		rustNamedForSymbol(p.language, callSym),
+		[]*Node{callee, args},
+		nil,
+		0,
+	)
+	call.startByte = start
+	call.startPoint = advancePointByBytes(Point{}, source[:start])
+	call.endByte = end
+	call.endPoint = advancePointByBytes(Point{}, source[:end])
+	return call, true
+}
+
+func rustRecoverRustSpecialCharactersCalleeNodeFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	start, end = rustTrimSpaceBounds(source, start, end)
+	if start >= end || source[start] != '(' || source[end-1] != ')' {
+		return nil, false
+	}
+	closure, ok := rustRecoverRustClosureExpressionNodeFromRange(source, start+1, end-1, p, arena)
+	if !ok {
+		return nil, false
+	}
+	parenthesizedSym, ok := symbolByName(p.language, "parenthesized_expression")
+	if !ok {
+		return nil, false
+	}
+	paren := newParentNodeInArena(
+		arena,
+		parenthesizedSym,
+		rustNamedForSymbol(p.language, parenthesizedSym),
+		[]*Node{closure},
+		nil,
+		0,
+	)
+	paren.startByte = start
+	paren.startPoint = advancePointByBytes(Point{}, source[:start])
+	paren.endByte = end
+	paren.endPoint = advancePointByBytes(Point{}, source[:end])
+	return paren, true
+}
+
+func rustRecoverRustSpecialCharactersArgumentsNodeFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	start, end = rustTrimSpaceBounds(source, start, end)
+	if start >= end || source[start] != '(' || source[end-1] != ')' {
+		return nil, false
+	}
+	contentStart, contentEnd := rustTrimSpaceBounds(source, start+1, end-1)
+	if contentStart >= contentEnd || source[contentStart] != '(' {
+		return nil, false
+	}
+	tupleClose := rustFindMatchingDelimiter(source, int(contentStart), '(', ')')
+	if tupleClose < 0 {
+		return nil, false
+	}
+	tupleExpr, ok := rustRecoverRustExpressionNodeFromRange(source, contentStart, uint32(tupleClose+1), p, arena)
+	if !ok {
+		return nil, false
+	}
+	cursor := rustSkipSpaceBytes(source, uint32(tupleClose+1))
+	var comment *Node
+	if cursor+1 < contentEnd && source[cursor] == '/' && source[cursor+1] == '*' {
+		commentEnd := rustFindBlockCommentEnd(source, cursor+2, contentEnd)
+		if commentEnd <= cursor+1 {
+			return nil, false
+		}
+		comment, ok = rustBuildRecoveredTriviaNode(arena, source, p.language, cursor, commentEnd, "block_comment")
+		if !ok {
+			return nil, false
+		}
+		cursor = rustSkipSpaceBytes(source, commentEnd)
+	}
+	if cursor >= contentEnd || source[cursor] != ',' {
+		return nil, false
+	}
+	blockExpr, ok := rustRecoverRustExpressionNodeFromRange(source, cursor+1, contentEnd, p, arena)
+	if !ok {
+		return nil, false
+	}
+	argsSym, ok := symbolByName(p.language, "arguments")
+	if !ok {
+		return nil, false
+	}
+	children := []*Node{tupleExpr}
+	if comment != nil {
+		children = append(children, comment)
+	}
+	children = append(children, blockExpr)
+	args := newParentNodeInArena(
+		arena,
+		argsSym,
+		rustNamedForSymbol(p.language, argsSym),
+		children,
+		nil,
+		0,
+	)
+	args.startByte = start
+	args.startPoint = advancePointByBytes(Point{}, source[:start])
+	args.endByte = end
+	args.endPoint = advancePointByBytes(Point{}, source[:end])
+	return args, true
+}
+
+func rustSplitRustMatchArmSpans(source []byte, start, end uint32) [][2]uint32 {
+	start, end = rustTrimSpaceBounds(source, start, end)
+	if start >= end {
+		return nil
+	}
+	var spans [][2]uint32
+	partStart := start
+	braceDepth := 0
+	parenDepth := 0
+	bracketDepth := 0
+	inString := false
+	escaped := false
+	inLineComment := false
+	inBlockComment := false
+	for i := start; i < end; i++ {
+		b := source[i]
+		if inLineComment {
+			if b == '\n' {
+				inLineComment = false
+			}
+			continue
+		}
+		if inBlockComment {
+			if b == '*' && i+1 < end && source[i+1] == '/' {
+				inBlockComment = false
+				i++
+			}
+			continue
+		}
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if b == '\\' {
+				escaped = true
+				continue
+			}
+			if b == '"' {
+				inString = false
+			}
+			continue
+		}
+		if b == '/' && i+1 < end {
+			if source[i+1] == '/' {
+				inLineComment = true
+				i++
+				continue
+			}
+			if source[i+1] == '*' {
+				inBlockComment = true
+				i++
+				continue
+			}
+		}
+		switch b {
+		case '"':
+			inString = true
+		case '{':
+			braceDepth++
+		case '}':
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case '[':
+			bracketDepth++
+		case ']':
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+		case ',':
+			if braceDepth == 0 && parenDepth == 0 && bracketDepth == 0 {
+				a, b := rustTrimSpaceBounds(source, partStart, i)
+				if a < b {
+					spans = append(spans, [2]uint32{a, b})
+				}
+				partStart = i + 1
+			}
+		}
+	}
+	a, b := rustTrimSpaceBounds(source, partStart, end)
+	if a < b {
+		spans = append(spans, [2]uint32{a, b})
+	}
+	return spans
+}
+
+func rustFindTopLevelFatArrow(source []byte, start, end uint32) (uint32, bool) {
+	braceDepth := 0
+	parenDepth := 0
+	bracketDepth := 0
+	inString := false
+	escaped := false
+	inLineComment := false
+	inBlockComment := false
+	for i := start; i+1 < end; i++ {
+		b := source[i]
+		if inLineComment {
+			if b == '\n' {
+				inLineComment = false
+			}
+			continue
+		}
+		if inBlockComment {
+			if b == '*' && i+1 < end && source[i+1] == '/' {
+				inBlockComment = false
+				i++
+			}
+			continue
+		}
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if b == '\\' {
+				escaped = true
+				continue
+			}
+			if b == '"' {
+				inString = false
+			}
+			continue
+		}
+		if b == '/' && i+1 < end {
+			if source[i+1] == '/' {
+				inLineComment = true
+				i++
+				continue
+			}
+			if source[i+1] == '*' {
+				inBlockComment = true
+				i++
+				continue
+			}
+		}
+		if b == '=' && source[i+1] == '>' && braceDepth == 0 && parenDepth == 0 && bracketDepth == 0 {
+			return i, true
+		}
+		switch b {
+		case '"':
+			inString = true
+		case '{':
+			braceDepth++
+		case '}':
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case '[':
+			bracketDepth++
+		case ']':
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+		}
+	}
+	return 0, false
+}
+
+func rustFindTopLevelDoubleByte(source []byte, start, end uint32, left, right byte) (uint32, bool) {
+	braceDepth := 0
+	parenDepth := 0
+	bracketDepth := 0
+	inString := false
+	escaped := false
+	inLineComment := false
+	inBlockComment := false
+	for i := start; i+1 < end; i++ {
+		b := source[i]
+		if inLineComment {
+			if b == '\n' {
+				inLineComment = false
+			}
+			continue
+		}
+		if inBlockComment {
+			if b == '*' && i+1 < end && source[i+1] == '/' {
+				inBlockComment = false
+				i++
+			}
+			continue
+		}
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if b == '\\' {
+				escaped = true
+				continue
+			}
+			if b == '"' {
+				inString = false
+			}
+			continue
+		}
+		if b == '/' && i+1 < end {
+			if source[i+1] == '/' {
+				inLineComment = true
+				i++
+				continue
+			}
+			if source[i+1] == '*' {
+				inBlockComment = true
+				i++
+				continue
+			}
+		}
+		if b == left && source[i+1] == right && braceDepth == 0 && parenDepth == 0 && bracketDepth == 0 {
+			return i, true
+		}
+		switch b {
+		case '"':
+			inString = true
+		case '{':
+			braceDepth++
+		case '}':
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case '[':
+			bracketDepth++
+		case ']':
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+		}
+	}
+	return 0, false
+}
+
+func rustFindTopLevelKeyword(source []byte, start, end uint32, kw string) (uint32, bool) {
+	if len(kw) == 0 || start >= end {
+		return 0, false
+	}
+	braceDepth := 0
+	parenDepth := 0
+	bracketDepth := 0
+	inString := false
+	escaped := false
+	for i := start; i+uint32(len(kw)) <= end; i++ {
+		b := source[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if b == '\\' {
+				escaped = true
+				continue
+			}
+			if b == '"' {
+				inString = false
+			}
+			continue
+		}
+		if braceDepth == 0 && parenDepth == 0 && bracketDepth == 0 && bytes.HasPrefix(source[i:end], []byte(kw)) {
+			beforeOK := i == start || !rustIsIdentByte(source[i-1])
+			after := i + uint32(len(kw))
+			afterOK := after >= end || !rustIsIdentByte(source[after])
+			if beforeOK && afterOK {
+				return i, true
+			}
+		}
+		switch b {
+		case '"':
+			inString = true
+		case '{':
+			braceDepth++
+		case '}':
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case '[':
+			bracketDepth++
+		case ']':
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+		}
+	}
+	return 0, false
+}
+
+func rustBytesAreIdentifier(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	for _, c := range b {
+		if !rustIsIdentByte(c) {
+			return false
+		}
+	}
+	return true
+}
+
+type rustDotRangeToken struct {
+	start uint32
+	end   uint32
+}
+
+func rustBuildCanonicalDotRangeNode(arena *nodeArena, source []byte, lang *Language, start, end uint32) (*Node, bool) {
+	if lang == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	tokens, eqAfter, ok := rustTokenizeDotRange(source, start, end)
+	if !ok || len(tokens) == 0 {
+		return nil, false
+	}
+	return rustBuildCanonicalDotRangeNodeFromTokens(arena, source, lang, tokens, eqAfter)
+}
+
+func rustTokenizeDotRange(source []byte, start, end uint32) ([]rustDotRangeToken, []bool, bool) {
+	start, end = rustTrimSpaceBounds(source, start, end)
+	if start >= end {
+		return nil, nil, false
+	}
+	var tokens []rustDotRangeToken
+	var eqAfter []bool
+	cursor := start
+	for cursor < end {
+		cursor = rustSkipSpaceBytes(source, cursor)
+		if cursor >= end {
+			break
+		}
+		if cursor+1 >= end || source[cursor] != '.' || source[cursor+1] != '.' {
+			return nil, nil, false
+		}
+		tokens = append(tokens, rustDotRangeToken{start: cursor, end: cursor + 2})
+		if len(tokens) > 1 {
+			eqAfter = append(eqAfter, false)
+		}
+		cursor += 2
+		cursor = rustSkipSpaceBytes(source, cursor)
+		if cursor >= end {
+			break
+		}
+		if source[cursor] == '=' {
+			if len(eqAfter) == 0 {
+				return nil, nil, false
+			}
+			eqAfter[len(eqAfter)-1] = true
+			cursor++
+			continue
+		}
+	}
+	if len(tokens) == 1 {
+		eqAfter = nil
+	}
+	return tokens, eqAfter, true
+}
+
+func rustBuildCanonicalDotRangeNodeFromTokens(arena *nodeArena, source []byte, lang *Language, tokens []rustDotRangeToken, eqAfter []bool) (*Node, bool) {
+	rangeSym, ok := symbolByName(lang, "range_expression")
+	if !ok || len(tokens) == 0 {
+		return nil, false
+	}
+	if len(tokens) == 1 {
+		node := newParentNodeInArena(
+			arena,
+			rangeSym,
+			rustNamedForSymbol(lang, rangeSym),
+			nil,
+			nil,
+			0,
+		)
+		node.startByte = tokens[0].start
+		node.startPoint = advancePointByBytes(Point{}, source[:tokens[0].start])
+		node.endByte = tokens[0].end
+		node.endPoint = advancePointByBytes(Point{}, source[:tokens[0].end])
+		return node, true
+	}
+	firstEq := -1
+	for i, hasEq := range eqAfter {
+		if hasEq {
+			firstEq = i
+			break
+		}
+	}
+	if firstEq == 0 {
+		left, ok := rustBuildCanonicalDotRangeNodeFromTokens(arena, source, lang, tokens[:1], nil)
+		if !ok {
+			return nil, false
+		}
+		right, ok := rustBuildCanonicalDotRangeNodeFromTokens(arena, source, lang, tokens[1:], eqAfter[1:])
+		if !ok {
+			return nil, false
+		}
+		assignSym, ok := symbolByName(lang, "assignment_expression")
+		if !ok {
+			return nil, false
+		}
+		node := newParentNodeInArena(
+			arena,
+			assignSym,
+			rustNamedForSymbol(lang, assignSym),
+			[]*Node{left, right},
+			nil,
+			0,
+		)
+		node.startByte = tokens[0].start
+		node.startPoint = advancePointByBytes(Point{}, source[:tokens[0].start])
+		node.endByte = tokens[len(tokens)-1].end
+		node.endPoint = advancePointByBytes(Point{}, source[:tokens[len(tokens)-1].end])
+		return node, true
+	}
+	if firstEq == -1 || firstEq < len(tokens)-2 {
+		prefixEq := eqAfter
+		if len(prefixEq) > 0 {
+			prefixEq = prefixEq[:len(prefixEq)-1]
+		}
+		child, ok := rustBuildCanonicalDotRangeNodeFromTokens(arena, source, lang, tokens[:len(tokens)-1], prefixEq)
+		if !ok {
+			return nil, false
+		}
+		node := newParentNodeInArena(
+			arena,
+			rangeSym,
+			rustNamedForSymbol(lang, rangeSym),
+			[]*Node{child},
+			nil,
+			0,
+		)
+		node.startByte = tokens[0].start
+		node.startPoint = advancePointByBytes(Point{}, source[:tokens[0].start])
+		node.endByte = tokens[len(tokens)-1].end
+		node.endPoint = advancePointByBytes(Point{}, source[:tokens[len(tokens)-1].end])
+		return node, true
+	}
+	leftEq := eqAfter[:firstEq]
+	rightEq := eqAfter[firstEq+1:]
+	left, ok := rustBuildCanonicalDotRangeNodeFromTokens(arena, source, lang, tokens[:firstEq], leftEq)
+	if !ok {
+		return nil, false
+	}
+	right, ok := rustBuildCanonicalDotRangeNodeFromTokens(arena, source, lang, tokens[firstEq+1:], rightEq)
+	if !ok {
+		return nil, false
+	}
+	node := newParentNodeInArena(
+		arena,
+		rangeSym,
+		rustNamedForSymbol(lang, rangeSym),
+		[]*Node{left, right},
+		nil,
+		0,
+	)
+	node.startByte = tokens[0].start
+	node.startPoint = advancePointByBytes(Point{}, source[:tokens[0].start])
+	node.endByte = tokens[len(tokens)-1].end
+	node.endPoint = advancePointByBytes(Point{}, source[:tokens[len(tokens)-1].end])
+	return node, true
+}
+
+func rustRecoverWrappedFunctionBlockNodesFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) ([]*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	const prefix = "fn _() {\n"
+	const suffix = "\n}\n"
+	wrapped := make([]byte, 0, len(prefix)+int(end-start)+len(suffix))
+	wrapped = append(wrapped, prefix...)
+	wrapped = append(wrapped, source[start:end]...)
+	wrapped = append(wrapped, suffix...)
+	tree, err := p.parseForRecovery(wrapped)
+	if err != nil || tree == nil || tree.RootNode() == nil {
+		if tree != nil {
+			tree.Release()
+		}
+		return nil, false
+	}
+	defer tree.Release()
+	startPoint := advancePointByBytes(Point{}, source[:start])
+	prefixPoint := advancePointByBytes(Point{}, []byte(prefix))
+	if startPoint.Row < prefixPoint.Row {
+		return nil, false
+	}
+	offsetRoot := tree.RootNodeWithOffset(start-uint32(len(prefix)), Point{Row: startPoint.Row - prefixPoint.Row, Column: startPoint.Column})
+	if offsetRoot == nil || offsetRoot.HasError() {
+		return nil, false
+	}
+	return rustExtractRecoveredFunctionBlockNodes(offsetRoot, p.language, arena)
+}
+
+func rustExtractRecoveredFunctionBlockNodes(root *Node, lang *Language, arena *nodeArena) ([]*Node, bool) {
+	if root == nil || lang == nil {
+		return nil, false
+	}
+	var block *Node
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil || block != nil {
+			return
+		}
+		if n.Type(lang) == "function_item" {
+			for i := 0; i < n.NamedChildCount(); i++ {
+				child := n.NamedChild(i)
+				if child != nil && child.Type(lang) == "block" {
+					block = child
+					return
+				}
+			}
+		}
+		for i := 0; i < n.ChildCount(); i++ {
+			walk(n.Child(i))
+		}
+	}
+	walk(root)
+	if block == nil {
+		return nil, false
+	}
+	out := make([]*Node, 0, block.NamedChildCount())
+	for i := 0; i < block.NamedChildCount(); i++ {
+		child := block.NamedChild(i)
+		if child == nil {
+			continue
+		}
+		if arena != nil {
+			out = append(out, cloneTreeNodesIntoArena(child, arena))
+		} else {
+			out = append(out, child)
+		}
+	}
+	return out, true
+}
+
+func rustStatementLikeSpansInRange(source []byte, start, end uint32) [][2]uint32 {
+	start = rustSkipSpaceBytes(source, start)
+	if start >= end {
+		return nil
+	}
+	var spans [][2]uint32
+	stmtStart := start
+	braceDepth := 0
+	parenDepth := 0
+	bracketDepth := 0
+	inString := false
+	escaped := false
+	inLineComment := false
+	inBlockComment := false
+	for i := start; i < end; i++ {
+		b := source[i]
+		if inLineComment {
+			if b == '\n' {
+				inLineComment = false
+			}
+			continue
+		}
+		if inBlockComment {
+			if b == '*' && i+1 < end && source[i+1] == '/' {
+				inBlockComment = false
+				i++
+			}
+			continue
+		}
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if b == '\\' {
+				escaped = true
+				continue
+			}
+			if b == '"' {
+				inString = false
+			}
+			continue
+		}
+		if b == '/' && i+1 < end {
+			if source[i+1] == '/' {
+				inLineComment = true
+				i++
+				continue
+			}
+			if source[i+1] == '*' {
+				inBlockComment = true
+				i++
+				continue
+			}
+		}
+		switch b {
+		case '"':
+			inString = true
+		case '{':
+			braceDepth++
+		case '}':
+			if braceDepth > 0 {
+				braceDepth--
+				if braceDepth == 0 && parenDepth == 0 && bracketDepth == 0 {
+					next := rustSkipSpaceBytes(source, i+1)
+					if next >= end || source[next] != ';' {
+						spans = append(spans, [2]uint32{stmtStart, i + 1})
+						stmtStart = next
+					}
+				}
+			}
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case '[':
+			bracketDepth++
+		case ']':
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+		case ';':
+			if braceDepth == 0 && parenDepth == 0 && bracketDepth == 0 {
+				spans = append(spans, [2]uint32{stmtStart, i + 1})
+				stmtStart = rustSkipSpaceBytes(source, i+1)
+			}
+		}
+	}
+	stmtStart = rustSkipSpaceBytes(source, stmtStart)
+	if stmtStart < end {
+		tailStart, tailEnd := rustTrimSpaceBounds(source, stmtStart, end)
+		if tailStart < tailEnd {
+			spans = append(spans, [2]uint32{tailStart, tailEnd})
+		}
+	}
+	return spans
+}
+
 func rustRecoverPatternNodeFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
 	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
 		return nil, false
+	}
+	if node, ok := rustRecoverRustSpecialPatternNodeFromRange(source, start, end, p, arena); ok {
+		return node, true
 	}
 	const prefix = "fn _("
 	const suffix = ": u8) {}\n"
@@ -14134,6 +15940,21 @@ func rustRecoverPatternNodeFromRange(source []byte, start, end uint32, p *Parser
 func rustRecoverRustExpressionNodeFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
 	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
 		return nil, false
+	}
+	if node, ok := rustRecoverRustBlockValueExpressionNodeFromRange(source, start, end, p, arena); ok {
+		return node, true
+	}
+	if node, ok := rustRecoverRustSpecialCharactersExpressionNodeFromRange(source, start, end, p, arena); ok {
+		return node, true
+	}
+	if node, ok := rustRecoverRustReferenceCastClosureExpressionNodeFromRange(source, start, end, p, arena); ok {
+		return node, true
+	}
+	if node, ok := rustRecoverRustClosureExpressionNodeFromRange(source, start, end, p, arena); ok {
+		return node, true
+	}
+	if node, ok := rustRecoverRustMatchExpressionNodeFromRange(source, start, end, p, arena); ok {
+		return node, true
 	}
 	const prefix = "fn _() { let _ = "
 	const suffix = ";\n}\n"
@@ -14230,6 +16051,549 @@ func rustExtractRecoveredLetInitializer(root *Node, lang *Language, arena *nodeA
 		return nil
 	}
 	return walk(root)
+}
+
+func rustRecoverLetStatementFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	start, end = rustTrimSpaceBounds(source, start, end)
+	if start >= end || !rustHasPrefixAt(source, start, "let") {
+		return nil, false
+	}
+	bodyEnd := end
+	if source[bodyEnd-1] == ';' {
+		bodyEnd--
+	}
+	bodyEnd = rustSkipBackwardSpaceBytes(source, bodyEnd)
+	commentStart, commentEnd, hasComment := rustFindTrailingLineCommentBounds(source, start, bodyEnd)
+	if hasComment {
+		bodyEnd = rustSkipBackwardSpaceBytes(source, commentStart)
+	}
+	eqPos, ok := rustFindTopLevelByte(source, start, bodyEnd, '=')
+	if !ok {
+		return nil, false
+	}
+	patternStart := rustSkipSpaceBytes(source, start+3)
+	patternEnd := rustSkipBackwardSpaceBytes(source, eqPos)
+	if patternStart >= patternEnd {
+		return nil, false
+	}
+	valueStart := rustSkipSpaceBytes(source, eqPos+1)
+	valueEnd := rustSkipBackwardSpaceBytes(source, bodyEnd)
+	if valueStart >= valueEnd {
+		return nil, false
+	}
+
+	pattern, ok := rustRecoverPatternNodeFromRange(source, patternStart, patternEnd, p, arena)
+	if !ok {
+		identifierSym, hasIdentifier := symbolByName(p.language, "identifier")
+		if !hasIdentifier {
+			return nil, false
+		}
+		pattern = newLeafNodeInArena(
+			arena,
+			identifierSym,
+			rustNamedForSymbol(p.language, identifierSym),
+			patternStart,
+			patternEnd,
+			advancePointByBytes(Point{}, source[:patternStart]),
+			advancePointByBytes(Point{}, source[:patternEnd]),
+		)
+	}
+	value, ok := rustRecoverRustExpressionNodeFromRange(source, valueStart, valueEnd, p, arena)
+	if !ok {
+		return nil, false
+	}
+	letDeclSym, ok := symbolByName(p.language, "let_declaration")
+	if !ok {
+		return nil, false
+	}
+	children := []*Node{pattern, value}
+	if hasComment {
+		if comment, ok := rustBuildRecoveredTriviaNode(arena, source, p.language, commentStart, commentEnd, "line_comment"); ok {
+			children = append(children, comment)
+		}
+	}
+	letDecl := newParentNodeInArena(
+		arena,
+		letDeclSym,
+		rustNamedForSymbol(p.language, letDeclSym),
+		children,
+		nil,
+		0,
+	)
+	letDecl.startByte = start
+	letDecl.startPoint = advancePointByBytes(Point{}, source[:start])
+	letDecl.endByte = end
+	letDecl.endPoint = advancePointByBytes(Point{}, source[:end])
+	return letDecl, true
+}
+
+func rustRecoverImplItemFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	start, end = rustTrimSpaceBounds(source, start, end)
+	if start >= end || !rustHasPrefixAt(source, start, "impl") {
+		return nil, false
+	}
+	openBrace, ok := rustFindTopLevelByte(source, start, end, '{')
+	if !ok {
+		return nil, false
+	}
+	closeBrace := rustFindMatchingDelimiter(source, int(openBrace), '{', '}')
+	if closeBrace < 0 || uint32(closeBrace+1) != end {
+		return nil, false
+	}
+	headerNodes, ok := rustRecoverImplHeaderNodesFromRange(source, start, openBrace, p, arena)
+	if !ok || len(headerNodes) < 2 {
+		return nil, false
+	}
+	bodyNodes, ok := rustRecoverImplBodyNodesFromRange(source, openBrace+1, uint32(closeBrace), p, arena)
+	if !ok {
+		return nil, false
+	}
+	declListSym, ok := symbolByName(p.language, "declaration_list")
+	if !ok {
+		return nil, false
+	}
+	implItemSym, ok := symbolByName(p.language, "impl_item")
+	if !ok {
+		return nil, false
+	}
+	declList := newParentNodeInArena(
+		arena,
+		declListSym,
+		rustNamedForSymbol(p.language, declListSym),
+		bodyNodes,
+		nil,
+		0,
+	)
+	declList.startByte = openBrace
+	declList.startPoint = advancePointByBytes(Point{}, source[:openBrace])
+	declList.endByte = uint32(closeBrace + 1)
+	declList.endPoint = advancePointByBytes(Point{}, source[:closeBrace+1])
+
+	children := append(headerNodes, declList)
+	implItem := newParentNodeInArena(
+		arena,
+		implItemSym,
+		rustNamedForSymbol(p.language, implItemSym),
+		children,
+		nil,
+		0,
+	)
+	implItem.startByte = start
+	implItem.startPoint = advancePointByBytes(Point{}, source[:start])
+	implItem.endByte = end
+	implItem.endPoint = advancePointByBytes(Point{}, source[:end])
+	return implItem, true
+}
+
+func rustRecoverImplHeaderNodesFromRange(source []byte, start, blockStart uint32, p *Parser, arena *nodeArena) ([]*Node, bool) {
+	if p == nil || p.language == nil || start >= blockStart || int(blockStart) > len(source) {
+		return nil, false
+	}
+	wrapped := make([]byte, 0, int(blockStart-start)+2)
+	wrapped = append(wrapped, source[start:blockStart]...)
+	wrapped = append(wrapped, '{', '}')
+	tree, err := p.parseForRecovery(wrapped)
+	if err != nil || tree == nil || tree.RootNode() == nil {
+		if tree != nil {
+			tree.Release()
+		}
+		return nil, false
+	}
+	defer tree.Release()
+	startPoint := advancePointByBytes(Point{}, source[:start])
+	offsetRoot := tree.RootNodeWithOffset(start, startPoint)
+	if offsetRoot == nil || offsetRoot.HasError() {
+		return nil, false
+	}
+	return rustExtractRecoveredImplHeaderNodes(offsetRoot, p.language, arena)
+}
+
+func rustExtractRecoveredImplHeaderNodes(root *Node, lang *Language, arena *nodeArena) ([]*Node, bool) {
+	if root == nil || lang == nil {
+		return nil, false
+	}
+	var implItem *Node
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil || implItem != nil {
+			return
+		}
+		if n.Type(lang) == "impl_item" {
+			implItem = n
+			return
+		}
+		for i := 0; i < n.ChildCount(); i++ {
+			walk(n.Child(i))
+		}
+	}
+	walk(root)
+	if implItem == nil {
+		return nil, false
+	}
+	out := make([]*Node, 0, implItem.NamedChildCount())
+	for i := 0; i < implItem.NamedChildCount(); i++ {
+		child := implItem.NamedChild(i)
+		if child == nil || child.Type(lang) == "declaration_list" {
+			continue
+		}
+		if arena != nil {
+			out = append(out, cloneTreeNodesIntoArena(child, arena))
+		} else {
+			out = append(out, child)
+		}
+	}
+	return out, len(out) >= 2
+}
+
+func rustRecoverImplBodyNodesFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) ([]*Node, bool) {
+	spans := rustStatementLikeSpansInRange(source, start, end)
+	if len(spans) == 0 && bytes.TrimSpace(source[start:end]) != nil && len(bytes.TrimSpace(source[start:end])) > 0 {
+		return nil, false
+	}
+	out := make([]*Node, 0, len(spans))
+	for _, span := range spans {
+		nodes, ok := rustRecoverImplBodyChunkNodesFromRange(source, span[0], span[1], p, arena)
+		if !ok || len(nodes) == 0 {
+			return nil, false
+		}
+		out = append(out, nodes...)
+	}
+	return out, true
+}
+
+func rustRecoverImplBodyChunkNodesFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) ([]*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	if nodes, ok := rustRecoverWrappedImplBodyNodesFromRange(source, start, end, p, arena); ok {
+		return nodes, true
+	}
+	trimmedStart, trimmedEnd := rustTrimSpaceBounds(source, start, end)
+	if trimmedStart >= trimmedEnd {
+		return nil, false
+	}
+	if rustHasPrefixAt(source, trimmedStart, "fn") {
+		if node, ok := rustRecoverFunctionItemFromRange(source, trimmedStart, trimmedEnd, p, arena); ok {
+			return []*Node{node}, true
+		}
+	}
+	return nil, false
+}
+
+func rustRecoverWrappedImplBodyNodesFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) ([]*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	const prefix = "impl __Trait for __Type {\n"
+	const suffix = "\n}\n"
+	wrapped := make([]byte, 0, len(prefix)+int(end-start)+len(suffix))
+	wrapped = append(wrapped, prefix...)
+	wrapped = append(wrapped, source[start:end]...)
+	wrapped = append(wrapped, suffix...)
+	tree, err := p.parseForRecovery(wrapped)
+	if err != nil || tree == nil || tree.RootNode() == nil {
+		if tree != nil {
+			tree.Release()
+		}
+		return nil, false
+	}
+	defer tree.Release()
+	startPoint := advancePointByBytes(Point{}, source[:start])
+	prefixPoint := advancePointByBytes(Point{}, []byte(prefix))
+	if startPoint.Row < prefixPoint.Row {
+		return nil, false
+	}
+	offsetRoot := tree.RootNodeWithOffset(start-uint32(len(prefix)), Point{Row: startPoint.Row - prefixPoint.Row, Column: startPoint.Column})
+	if offsetRoot == nil || offsetRoot.HasError() {
+		return nil, false
+	}
+	return rustExtractRecoveredImplBodyNodes(offsetRoot, p.language, arena)
+}
+
+func rustExtractRecoveredImplBodyNodes(root *Node, lang *Language, arena *nodeArena) ([]*Node, bool) {
+	if root == nil || lang == nil {
+		return nil, false
+	}
+	var declList *Node
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil || declList != nil {
+			return
+		}
+		if n.Type(lang) == "impl_item" {
+			for i := 0; i < n.NamedChildCount(); i++ {
+				child := n.NamedChild(i)
+				if child != nil && child.Type(lang) == "declaration_list" {
+					declList = child
+					return
+				}
+			}
+		}
+		for i := 0; i < n.ChildCount(); i++ {
+			walk(n.Child(i))
+		}
+	}
+	walk(root)
+	if declList == nil {
+		return nil, false
+	}
+	out := make([]*Node, 0, declList.NamedChildCount())
+	for i := 0; i < declList.NamedChildCount(); i++ {
+		child := declList.NamedChild(i)
+		if child == nil {
+			continue
+		}
+		if arena != nil {
+			out = append(out, cloneTreeNodesIntoArena(child, arena))
+		} else {
+			out = append(out, child)
+		}
+	}
+	return out, true
+}
+
+func rustRecoverLoopStatementFromRange(source []byte, start, end uint32, p *Parser, arena *nodeArena) (*Node, bool) {
+	if p == nil || p.language == nil || start >= end || int(end) > len(source) {
+		return nil, false
+	}
+	start, end = rustTrimSpaceBounds(source, start, end)
+	if start >= end || !rustHasPrefixAt(source, start, "loop") {
+		return nil, false
+	}
+	openBrace := rustSkipSpaceBytes(source, start+4)
+	if openBrace >= end || source[openBrace] != '{' {
+		return nil, false
+	}
+	closeBrace := rustFindMatchingDelimiter(source, int(openBrace), '{', '}')
+	if closeBrace < 0 || uint32(closeBrace+1) != end {
+		return nil, false
+	}
+	bodyStart := rustSkipSpaceBytes(source, openBrace+1)
+	if !rustHasPrefixAt(source, bodyStart, "if") {
+		return nil, false
+	}
+	condStart := rustSkipSpaceBytes(source, bodyStart+2)
+	if !rustHasPrefixAt(source, condStart, "break") {
+		return nil, false
+	}
+	breakEnd := condStart + 5
+	ifBlockStart := rustSkipSpaceBytes(source, breakEnd)
+	if ifBlockStart >= end || source[ifBlockStart] != '{' {
+		return nil, false
+	}
+	ifBlockEnd := rustFindMatchingDelimiter(source, int(ifBlockStart), '{', '}')
+	if ifBlockEnd < 0 {
+		return nil, false
+	}
+	remainderStart := rustSkipSpaceBytes(source, uint32(ifBlockEnd+1))
+	if remainderStart != uint32(closeBrace) {
+		return nil, false
+	}
+	exprStmtSym, ok := symbolByName(p.language, "expression_statement")
+	if !ok {
+		return nil, false
+	}
+	loopExprSym, ok := symbolByName(p.language, "loop_expression")
+	if !ok {
+		return nil, false
+	}
+	blockSym, ok := symbolByName(p.language, "block")
+	if !ok {
+		return nil, false
+	}
+	ifExprSym, ok := symbolByName(p.language, "if_expression")
+	if !ok {
+		return nil, false
+	}
+	breakExprSym, ok := symbolByName(p.language, "break_expression")
+	if !ok {
+		return nil, false
+	}
+	breakExpr := newParentNodeInArena(
+		arena,
+		breakExprSym,
+		rustNamedForSymbol(p.language, breakExprSym),
+		nil,
+		nil,
+		0,
+	)
+	breakExpr.startByte = condStart
+	breakExpr.startPoint = advancePointByBytes(Point{}, source[:condStart])
+	breakExpr.endByte = breakEnd
+	breakExpr.endPoint = advancePointByBytes(Point{}, source[:breakEnd])
+
+	ifBlock := newParentNodeInArena(
+		arena,
+		blockSym,
+		rustNamedForSymbol(p.language, blockSym),
+		nil,
+		nil,
+		0,
+	)
+	ifBlock.startByte = ifBlockStart
+	ifBlock.startPoint = advancePointByBytes(Point{}, source[:ifBlockStart])
+	ifBlock.endByte = uint32(ifBlockEnd + 1)
+	ifBlock.endPoint = advancePointByBytes(Point{}, source[:ifBlockEnd+1])
+
+	ifExpr := newParentNodeInArena(
+		arena,
+		ifExprSym,
+		rustNamedForSymbol(p.language, ifExprSym),
+		[]*Node{breakExpr, ifBlock},
+		nil,
+		0,
+	)
+	ifExpr.startByte = bodyStart
+	ifExpr.startPoint = advancePointByBytes(Point{}, source[:bodyStart])
+	ifExpr.endByte = uint32(ifBlockEnd + 1)
+	ifExpr.endPoint = advancePointByBytes(Point{}, source[:ifBlockEnd+1])
+
+	innerStmt := newParentNodeInArena(
+		arena,
+		exprStmtSym,
+		rustNamedForSymbol(p.language, exprStmtSym),
+		[]*Node{ifExpr},
+		nil,
+		0,
+	)
+	innerStmt.startByte = bodyStart
+	innerStmt.startPoint = ifExpr.startPoint
+	innerStmt.endByte = uint32(ifBlockEnd + 1)
+	innerStmt.endPoint = ifExpr.endPoint
+
+	loopBlock := newParentNodeInArena(
+		arena,
+		blockSym,
+		rustNamedForSymbol(p.language, blockSym),
+		[]*Node{innerStmt},
+		nil,
+		0,
+	)
+	loopBlock.startByte = openBrace
+	loopBlock.startPoint = advancePointByBytes(Point{}, source[:openBrace])
+	loopBlock.endByte = uint32(closeBrace + 1)
+	loopBlock.endPoint = advancePointByBytes(Point{}, source[:closeBrace+1])
+
+	loopExpr := newParentNodeInArena(
+		arena,
+		loopExprSym,
+		rustNamedForSymbol(p.language, loopExprSym),
+		[]*Node{loopBlock},
+		nil,
+		0,
+	)
+	loopExpr.startByte = start
+	loopExpr.startPoint = advancePointByBytes(Point{}, source[:start])
+	loopExpr.endByte = uint32(closeBrace + 1)
+	loopExpr.endPoint = advancePointByBytes(Point{}, source[:closeBrace+1])
+
+	stmt := newParentNodeInArena(
+		arena,
+		exprStmtSym,
+		rustNamedForSymbol(p.language, exprStmtSym),
+		[]*Node{loopExpr},
+		nil,
+		0,
+	)
+	stmt.startByte = start
+	stmt.startPoint = loopExpr.startPoint
+	stmt.endByte = end
+	stmt.endPoint = loopExpr.endPoint
+	return stmt, true
+}
+
+func rustFindTrailingLineCommentBounds(source []byte, start, end uint32) (uint32, uint32, bool) {
+	if start >= end || int(end) > len(source) {
+		return 0, 0, false
+	}
+	var commentStart, commentEnd uint32
+	braceDepth := 0
+	parenDepth := 0
+	bracketDepth := 0
+	inString := false
+	escaped := false
+	inBlockComment := false
+	for i := start; i < end; i++ {
+		b := source[i]
+		if inBlockComment {
+			if b == '*' && i+1 < end && source[i+1] == '/' {
+				inBlockComment = false
+				i++
+			}
+			continue
+		}
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if b == '\\' {
+				escaped = true
+				continue
+			}
+			if b == '"' {
+				inString = false
+			}
+			continue
+		}
+		if b == '/' && i+1 < end {
+			if source[i+1] == '*' {
+				inBlockComment = true
+				i++
+				continue
+			}
+			if source[i+1] == '/' && braceDepth == 0 && parenDepth == 0 && bracketDepth == 0 {
+				commentStart = i
+				commentEnd = end
+				for j := i + 2; j < end; j++ {
+					if source[j] == '\n' || source[j] == '\r' {
+						commentEnd = j
+						break
+					}
+				}
+				break
+			}
+		}
+		switch b {
+		case '"':
+			inString = true
+		case '{':
+			braceDepth++
+		case '}':
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case '[':
+			bracketDepth++
+		case ']':
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+		}
+	}
+	if commentStart == 0 && !rustHasPrefixAt(source, start, "//") {
+		return 0, 0, false
+	}
+	return commentStart, commentEnd, commentEnd > commentStart
+}
+
+func rustSkipBackwardSpaceBytes(source []byte, pos uint32) uint32 {
+	for pos > 0 && rustIsSpaceByte(source[pos-1]) {
+		pos--
+	}
+	return pos
 }
 
 func normalizeRustRecoveredStructExpressionRoot(root *Node, source []byte, lang *Language) {

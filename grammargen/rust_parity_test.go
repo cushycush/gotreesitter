@@ -146,6 +146,97 @@ func TestRustMacroInvocationParity(t *testing.T) {
 	assertGeneratedAndReferenceDeepParity(t, genLang, refLang, sample)
 }
 
+func TestRustWeirdExpressionsParity(t *testing.T) {
+	jsonPath := rustGrammarJSONPathForTest(t)
+	source, err := os.ReadFile(jsonPath)
+	if err != nil {
+		t.Skipf("Rust grammar.json not available: %v", err)
+	}
+	gram, err := ImportGrammarJSON(source)
+	if err != nil {
+		t.Fatalf("import Rust grammar.json: %v", err)
+	}
+	genLang, err := generateWithTimeout(gram, 90*time.Second)
+	if err != nil {
+		t.Fatalf("generate Rust language: %v", err)
+	}
+	refLang := grammars.RustLanguage()
+	adaptExternalScanner(refLang, genLang)
+
+	sample := "fn angrydome() {\n" +
+		"    loop { if break { } }\n" +
+		"    let mut i = 0;\n" +
+		"    loop { i += 1; if i == 1 { match (continue) { 1 => { }, _ => panic!(\"wat\") } }\n" +
+		"      break; }\n" +
+		"}\n\n" +
+		"fn special_characters() {\n" +
+		"    let val = !((|(..):(_,_),(|__@_|__)|__)((&*\"\\\\\",'🤔')/**/,{})=={&[..=..][..];})//\n" +
+		"    ;\n" +
+		"    assert!(!val);\n" +
+		"}\n\n" +
+		"fn function() {\n" +
+		"    struct foo;\n" +
+		"    impl Deref for foo {\n" +
+		"        type Target = fn() -> Self;\n" +
+		"        fn deref(&self) -> &Self::Target {\n" +
+		"            &((|| foo) as _)\n" +
+		"        }\n" +
+		"    }\n" +
+		"    let foo = foo () ()() ()()() ()()()() ()()()()();\n" +
+		"}\n\n" +
+		"fn closure_matching() {\n" +
+		"    let x = |_| Some(1);\n" +
+		"    let (|x| x) = match x(..) {\n" +
+		"        |_| Some(2) => |_| Some(3),\n" +
+		"        |_| _ => unreachable!(),\n" +
+		"    };\n" +
+		"    assert!(matches!(x(..), |_| Some(4)));\n" +
+		"}\n"
+
+	assertGeneratedAndReferenceDeepParity(t, genLang, refLang, sample)
+}
+
+func TestRustWeirdTopLevelParity(t *testing.T) {
+	jsonPath := rustGrammarJSONPathForTest(t)
+	source, err := os.ReadFile(jsonPath)
+	if err != nil {
+		t.Skipf("Rust grammar.json not available: %v", err)
+	}
+	gram, err := ImportGrammarJSON(source)
+	if err != nil {
+		t.Fatalf("import Rust grammar.json: %v", err)
+	}
+	genLang, err := generateWithTimeout(gram, 90*time.Second)
+	if err != nil {
+		t.Fatalf("generate Rust language: %v", err)
+	}
+	refLang := grammars.RustLanguage()
+	adaptExternalScanner(refLang, genLang)
+
+	sample := "// Just a grab bag of stuff that you wouldn't want to actually write.\n\n" +
+		"fn strange() -> bool { let _x: bool = return true; }\n\n" +
+		"fn what() {\n" +
+		"    fn the(x: &Cell<bool>) {\n" +
+		"        return while !x.get() { x.set(true); };\n" +
+		"    }\n" +
+		"    let i = &Cell::new(false);\n" +
+		"    let dont = {||the(i)};\n" +
+		"    dont();\n" +
+		"    assert!((i.get()));\n" +
+		"}\n\n" +
+		"fn punch_card() -> impl std::fmt::Debug {\n" +
+		"    ..=..=.. ..    .. .. .. ..    .. .. .. ..    .. ..=.. ..\n" +
+		"    ..=.. ..=..    .. .. .. ..    .. .. .. ..    ..=..=..=..\n" +
+		"    ..=.. ..=..    ..=.. ..=..    .. ..=..=..    .. ..=.. ..\n" +
+		"    ..=..=.. ..    ..=.. ..=..    ..=.. .. ..    .. ..=.. ..\n" +
+		"    ..=.. ..=..    ..=.. ..=..    .. ..=.. ..    .. ..=.. ..\n" +
+		"    ..=.. ..=..    ..=.. ..=..    .. .. ..=..    .. ..=.. ..\n" +
+		"    ..=.. ..=..    .. ..=..=..    ..=..=.. ..    .. ..=.. ..\n" +
+		"}\n"
+
+	assertGeneratedAndReferenceDeepParity(t, genLang, refLang, sample)
+}
+
 func rustGrammarJSONPathForTest(t *testing.T) string {
 	t.Helper()
 
