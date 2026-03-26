@@ -645,6 +645,8 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, p *Parser) {
 		normalizePythonStringContinuationEscapes(root, source, lang)
 	case "rst":
 		normalizeRSTTopLevelSectionEnd(root, source, lang)
+	case "rust":
+		normalizeRustTokenBindingPatterns(root, source, lang)
 	case "ruby":
 		normalizeRubyThenStarts(root, lang)
 		normalizeRubyTopLevelModuleBounds(root, source, lang)
@@ -13303,6 +13305,90 @@ func pythonNodeTextEqual(a, b *Node, source []byte) bool {
 		return false
 	}
 	return string(source[a.startByte:a.endByte]) == string(source[b.startByte:b.endByte])
+}
+
+func normalizeRustTokenBindingPatterns(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "rust" || len(source) == 0 {
+		return
+	}
+	tokenBindingPatternSym, ok := symbolByName(lang, "token_binding_pattern")
+	if !ok {
+		return
+	}
+	fragmentSpecifierSym, ok := symbolByName(lang, "fragment_specifier")
+	if !ok {
+		return
+	}
+	tokenBindingPatternNamed := true
+	if int(tokenBindingPatternSym) < len(lang.SymbolMetadata) {
+		tokenBindingPatternNamed = lang.SymbolMetadata[tokenBindingPatternSym].Named
+	}
+	fragmentSpecifierNamed := true
+	if int(fragmentSpecifierSym) < len(lang.SymbolMetadata) {
+		fragmentSpecifierNamed = lang.SymbolMetadata[fragmentSpecifierSym].Named
+	}
+
+	var walk func(*Node)
+	walk = func(node *Node) {
+		if node == nil {
+			return
+		}
+		for _, child := range node.children {
+			walk(child)
+		}
+		if node.Type(lang) != "token_tree_pattern" || len(node.children) < 3 {
+			return
+		}
+		for i := 0; i+2 < len(node.children); i++ {
+			meta := node.children[i]
+			colon := node.children[i+1]
+			frag := node.children[i+2]
+			if meta == nil || colon == nil || frag == nil {
+				continue
+			}
+			if meta.Type(lang) != "metavariable" || colon.Type(lang) != ":" || frag.Type(lang) != "identifier" {
+				continue
+			}
+			if !rustFragmentSpecifierFollowsColon(meta, colon, frag, source) {
+				continue
+			}
+			fragClone := cloneNodeInArena(frag.ownerArena, frag)
+			fragClone.symbol = fragmentSpecifierSym
+			fragClone.isNamed = fragmentSpecifierNamed
+			fragClone.children = nil
+			fragClone.fieldIDs = nil
+			fragClone.fieldSources = nil
+
+			binding := cloneNodeInArena(node.ownerArena, meta)
+			binding.symbol = tokenBindingPatternSym
+			binding.isNamed = tokenBindingPatternNamed
+			binding.children = cloneNodeSliceInArena(binding.ownerArena, []*Node{meta, fragClone})
+			binding.fieldIDs = nil
+			binding.fieldSources = nil
+			binding.productionID = 0
+			populateParentNode(binding, binding.children)
+
+			replaceChildRangeWithSingleNode(node, i, i+3, binding)
+		}
+	}
+	walk(root)
+}
+
+func rustFragmentSpecifierFollowsColon(meta, colon, frag *Node, source []byte) bool {
+	if meta == nil || colon == nil || frag == nil || len(source) == 0 {
+		return false
+	}
+	if int(meta.endByte) > len(source) || int(frag.endByte) > len(source) {
+		return false
+	}
+	if meta.endByte > frag.startByte || colon.startByte > colon.endByte {
+		return false
+	}
+	betweenMetaAndFrag := strings.TrimSpace(string(source[meta.endByte:frag.startByte]))
+	if !strings.Contains(betweenMetaAndFrag, ":") {
+		return false
+	}
+	return true
 }
 
 func flattenDPropertyTypeChain(n *Node, lang *Language) ([]*Node, bool) {
