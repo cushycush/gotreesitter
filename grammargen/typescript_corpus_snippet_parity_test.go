@@ -113,6 +113,34 @@ func TestTypeScriptCorpusSnippetParity(t *testing.T) {
 			name: "destructured_function_type_parameter",
 			src:  "let foo: ({a}: Foo) => number\n",
 		},
+		{
+			name: "const_type_parameters_function",
+			src:  "function foo<const T, const U extends string>(x: T, y: U) {\n\n}\n",
+		},
+		{
+			name: "template_literal_types",
+			src:  "type A<B, C> = `${B}${C}`;\ntype A = `${B[0]}-foo-${C}-bar-${D<U, D>}`\n",
+		},
+		{
+			name: "class_method_with_accessibility_and_string_concat",
+			src:  "class A extends B {\n    constructor(x: number, y: number) {\n        super(x);\n    }\n    public toString() {\n        return super.toString() + \" y=\" + this.y;\n    }\n}\n",
+		},
+		{
+			name: "functions_typed_parameters_corpus_block_exact",
+			src:  "function greeter(person: string) {\n  return \"Hello, \" + person;\n}\n\nfunction foo<T>(x: T): T {\n\n}\n\nfunction foo<T, U>(a: T[], f: (x: T) => U): U[] {\n\n}\n\nfunction foo<T, U>(this: T[]): U[] {\n  return []\n}\n\nfunction foo<const T, const U extends string>(x: T, y: U) {\n\n}\n",
+		},
+		{
+			name: "template_literal_types_corpus_block_exact",
+			src:  "type A<B, C> = `${B}${C}`;\ntype A = `${B[0]}-foo-${C}-bar-${D<U, D>}`\ntype A = `[${'a'}${0}]`\ntype A<B, C> = B extends C\n  ? C extends string\n    ? `${C}${\"\" extends C ? \"\" : \".\"}${B}`\n    : never\n  : never\ntype Trim<S extends string> = S extends `${infer R}` ? Trim<R>  : S;\ntype A = `${true & ('foo' | false)}`;\ntype StringToNumber<S extends string> = S extends `${infer N extends number}` ? N : never;\n",
+		},
+		{
+			name: "enum_declarations_corpus_block_exact",
+			src:  "enum Test {\n    A,\n    'B',\n    'C' = Math.floor(Math.random() * 1000),\n    D = 10,\n    E\n}\n\nenum Style {\n    None = 0,\n    Bold = 1,\n    Italic = 2,\n    Underline = 4,\n    Emphasis = Bold | Italic,\n    Hyperlink = Bold | Underline\n}\n",
+		},
+		{
+			name: "super_class_corpus_block_exact",
+			src:  "class A extends B {\n    constructor(x: number, y: number) {\n        super(x);\n    }\n    public toString() {\n        return super.toString() + \" y=\" + this.y;\n    }\n}\n",
+		},
 	}
 
 	for _, tt := range tests {
@@ -171,6 +199,34 @@ func TestTSXCorpusSnippetParity(t *testing.T) {
 		{
 			name: "destructured_function_type_parameter",
 			src:  "let foo: ({a}: Foo) => number\n",
+		},
+		{
+			name: "const_type_parameters_function",
+			src:  "function foo<const T, const U extends string>(x: T, y: U) {\n\n}\n",
+		},
+		{
+			name: "template_literal_types",
+			src:  "type A<B, C> = `${B}${C}`;\ntype A = `${B[0]}-foo-${C}-bar-${D<U, D>}`\n",
+		},
+		{
+			name: "class_method_with_accessibility_and_string_concat",
+			src:  "class A extends B {\n    constructor(x: number, y: number) {\n        super(x);\n    }\n    public toString() {\n        return super.toString() + \" y=\" + this.y;\n    }\n}\n",
+		},
+		{
+			name: "functions_typed_parameters_corpus_block_exact",
+			src:  "function greeter(person: string) {\n  return \"Hello, \" + person;\n}\n\nfunction foo<T>(x: T): T {\n\n}\n\nfunction foo<T, U>(a: T[], f: (x: T) => U): U[] {\n\n}\n\nfunction foo<T, U>(this: T[]): U[] {\n  return []\n}\n\nfunction foo<const T, const U extends string>(x: T, y: U) {\n\n}\n",
+		},
+		{
+			name: "template_literal_types_corpus_block_exact",
+			src:  "type A<B, C> = `${B}${C}`;\ntype A = `${B[0]}-foo-${C}-bar-${D<U, D>}`\ntype A = `[${'a'}${0}]`\ntype A<B, C> = B extends C\n  ? C extends string\n    ? `${C}${\"\" extends C ? \"\" : \".\"}${B}`\n    : never\n  : never\ntype Trim<S extends string> = S extends `${infer R}` ? Trim<R>  : S;\ntype A = `${true & ('foo' | false)}`;\ntype StringToNumber<S extends string> = S extends `${infer N extends number}` ? N : never;\n",
+		},
+		{
+			name: "enum_declarations_corpus_block_exact",
+			src:  "enum Test {\n    A,\n    'B',\n    'C' = Math.floor(Math.random() * 1000),\n    D = 10,\n    E\n}\n\nenum Style {\n    None = 0,\n    Bold = 1,\n    Italic = 2,\n    Underline = 4,\n    Emphasis = Bold | Italic,\n    Hyperlink = Bold | Underline\n}\n",
+		},
+		{
+			name: "super_class_corpus_block_exact",
+			src:  "class A extends B {\n    constructor(x: number, y: number) {\n        super(x);\n    }\n    public toString() {\n        return super.toString() + \" y=\" + this.y;\n    }\n}\n",
 		},
 	}
 
@@ -327,10 +383,18 @@ func assertGeneratedAndReferenceDeepParity(t *testing.T, genLang, refLang *gotre
 	genRoot := genTree.RootNode()
 	refRoot := refTree.RootNode()
 	if genRoot.HasError() != refRoot.HasError() {
+		if os.Getenv("DIAG_TS_CORPUS_SNIPPET") == "1" {
+			logCorpusSnippetDiag(t, "gen", genLang, data)
+			logCorpusSnippetDiag(t, "ref", refLang, data)
+		}
 		t.Fatalf("error mismatch: gen=%v ref=%v\nGEN: %s\nREF: %s", genRoot.HasError(), refRoot.HasError(), safeSExpr(genRoot, genLang, 256), safeSExpr(refRoot, refLang, 256))
 	}
 	divs := compareTreesDeep(genRoot, genLang, refRoot, refLang, "root", 10)
 	if len(divs) > 0 {
+		if os.Getenv("DIAG_TS_CORPUS_SNIPPET") == "1" {
+			logCorpusSnippetDiag(t, "gen", genLang, data)
+			logCorpusSnippetDiag(t, "ref", refLang, data)
+		}
 		t.Fatalf("deep mismatch\nGEN: %s\nREF: %s\nDIVS: %v", safeSExpr(genRoot, genLang, 256), safeSExpr(refRoot, refLang, 256), divs)
 	}
 }
