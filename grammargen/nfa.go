@@ -449,8 +449,40 @@ func (b *nfaBuilder) buildOptional(r *Rule) (nfaFragment, error) {
 func buildCombinedNFA(patterns []TerminalPattern) (*nfa, error) {
 	b := newNFABuilder()
 	start := b.addState()
+	stringCounts := make(map[string]int)
+	for _, pat := range patterns {
+		if pat.Rule != nil && pat.Rule.Kind == RuleString {
+			stringCounts[pat.Rule.Value]++
+		}
+	}
+	trieEdges := make(map[int]map[rune]int)
+	addStringPattern := func(lit string, symID, priority int) {
+		cur := start
+		for i := 0; i < len(lit); {
+			r, size := utf8.DecodeRuneInString(lit[i:])
+			byRune := trieEdges[cur]
+			if byRune == nil {
+				byRune = make(map[rune]int)
+				trieEdges[cur] = byRune
+			}
+			next, ok := byRune[r]
+			if !ok {
+				next = b.addState()
+				b.addCharRange(cur, r, r, next)
+				byRune[r] = next
+			}
+			cur = next
+			i += size
+		}
+		b.states[cur].accept = symID
+		b.states[cur].priority = priority
+	}
 
 	for _, pat := range patterns {
+		if pat.Rule != nil && pat.Rule.Kind == RuleString && stringCounts[pat.Rule.Value] == 1 {
+			addStringPattern(pat.Rule.Value, pat.SymbolID, pat.Priority)
+			continue
+		}
 		frag, err := b.buildFromRule(pat.Rule)
 		if err != nil {
 			return nil, fmt.Errorf("terminal %d: %w", pat.SymbolID, err)
