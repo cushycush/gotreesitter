@@ -709,6 +709,11 @@ func csharpRecoverQueryExpressionNodeFromRange(source []byte, start, end uint32,
 			return node, true
 		}
 	}
+	if source[start] == '(' && source[end-1] == ')' {
+		if node, ok := csharpBuildTupleExpressionNode(arena, source, lang, start, end); ok {
+			return node, true
+		}
+	}
 	if arrowPos, ok := csharpFindTopLevelOperator(source, start, end, "=>"); ok {
 		return csharpBuildLambdaExpressionNode(arena, source, lang, start, arrowPos, end)
 	}
@@ -726,7 +731,7 @@ func csharpRecoverQueryExpressionNodeFromRange(source []byte, start, end uint32,
 			return node, true
 		}
 	}
-	if dotPos, ok := csharpFindTopLevelOperator(source, start, end, "."); ok {
+	if dotPos, ok := csharpFindLastTopLevelOperator(source, start, end, "."); ok {
 		return csharpBuildMemberAccessExpressionNode(arena, source, lang, start, dotPos, end)
 	}
 	if source[start] == '"' && source[end-1] == '"' && end-start >= 2 {
@@ -739,6 +744,62 @@ func csharpRecoverQueryExpressionNodeFromRange(source []byte, start, end uint32,
 		return csharpBuildIdentifierNodeFromSource(source, start, end, lang, arena)
 	}
 	return nil, false
+}
+
+func csharpBuildTupleExpressionNode(arena *nodeArena, source []byte, lang *Language, start, end uint32) (*Node, bool) {
+	if lang == nil || start >= end || int(end) > len(source) || source[start] != '(' || source[end-1] != ')' {
+		return nil, false
+	}
+	items := csharpSplitTopLevelByComma(source, start+1, end-1)
+	if len(items) < 2 {
+		return nil, false
+	}
+	sym, ok := symbolByName(lang, "tuple_expression")
+	if !ok {
+		return nil, false
+	}
+	argSym, ok := symbolByName(lang, "argument")
+	if !ok {
+		return nil, false
+	}
+	argNamed := int(argSym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[argSym].Named
+	openTok, ok := csharpBuildLeafNodeByName(arena, source, lang, "(", start, start+1)
+	if !ok {
+		return nil, false
+	}
+	closeTok, ok := csharpBuildLeafNodeByName(arena, source, lang, ")", end-1, end)
+	if !ok {
+		return nil, false
+	}
+	children := []*Node{openTok}
+	for i, span := range items {
+		itemStart, itemEnd := csharpTrimSpaceBounds(source, span[0], span[1])
+		if itemStart >= itemEnd {
+			return nil, false
+		}
+		value, ok := csharpRecoverQueryExpressionNodeFromRange(source, itemStart, itemEnd, lang, arena)
+		if !ok {
+			return nil, false
+		}
+		children = append(children, newParentNodeInArena(arena, argSym, argNamed, []*Node{value}, nil, 0))
+		if i < len(items)-1 {
+			commaPos := csharpFindCommaBetween(source, span[1], items[i+1][0])
+			if commaPos == 0 && source[span[1]] != ',' {
+				return nil, false
+			}
+			if commaPos == 0 {
+				commaPos = span[1]
+			}
+			commaTok, ok := csharpBuildLeafNodeByName(arena, source, lang, ",", commaPos, commaPos+1)
+			if !ok {
+				return nil, false
+			}
+			children = append(children, commaTok)
+		}
+	}
+	children = append(children, closeTok)
+	named := int(sym) < len(lang.SymbolMetadata) && lang.SymbolMetadata[sym].Named
+	return newParentNodeInArena(arena, sym, named, children, nil, 0), true
 }
 
 func csharpRecoverSimpleQueryAtomNodeFromRange(source []byte, start, end uint32, lang *Language, arena *nodeArena) (*Node, bool) {
@@ -758,7 +819,7 @@ func csharpRecoverSimpleQueryAtomNodeFromRange(source []byte, start, end uint32,
 	if identStart, identEnd, ok := csharpScanIdentifierAt(source, start); ok && identStart == start && identEnd == end {
 		return csharpBuildIdentifierNodeFromSource(source, start, end, lang, arena)
 	}
-	if dotPos, ok := csharpFindTopLevelOperator(source, start, end, "."); ok {
+	if dotPos, ok := csharpFindLastTopLevelOperator(source, start, end, "."); ok {
 		return csharpBuildMemberAccessExpressionNode(arena, source, lang, start, dotPos, end)
 	}
 	return nil, false

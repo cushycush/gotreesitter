@@ -254,6 +254,9 @@ func csharpRecoverTopLevelChunkNodesFromRange(source []byte, start, end uint32, 
 	if invocation, ok := csharpRecoverTopLevelInvocationStatementFromRange(source, start, end, p.language, arena); ok {
 		return []*Node{invocation}, true
 	}
+	if stmt, ok := csharpRecoverTopLevelStatementFromRange(source, start, end, p, arena); ok {
+		return []*Node{stmt}, true
+	}
 	return nil, false
 }
 

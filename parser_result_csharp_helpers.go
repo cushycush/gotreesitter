@@ -64,6 +64,71 @@ func csharpFindTopLevelOperator(source []byte, start, end uint32, op string) (ui
 	return 0, false
 }
 
+func csharpFindLastTopLevelOperator(source []byte, start, end uint32, op string) (uint32, bool) {
+	if start >= end || op == "" {
+		return 0, false
+	}
+	parens := 0
+	braces := 0
+	brackets := 0
+	inString := false
+	escape := false
+	opLen := uint32(len(op))
+	last := uint32(0)
+	found := false
+	for i := start; i+opLen <= end; i++ {
+		b := source[i]
+		if inString {
+			if escape {
+				escape = false
+				continue
+			}
+			if b == '\\' {
+				escape = true
+				continue
+			}
+			if b == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch b {
+		case '"':
+			inString = true
+			continue
+		case '(':
+			parens++
+			continue
+		case ')':
+			if parens > 0 {
+				parens--
+			}
+			continue
+		case '{':
+			braces++
+			continue
+		case '}':
+			if braces > 0 {
+				braces--
+			}
+			continue
+		case '[':
+			brackets++
+			continue
+		case ']':
+			if brackets > 0 {
+				brackets--
+			}
+			continue
+		}
+		if parens == 0 && braces == 0 && brackets == 0 && string(source[i:i+opLen]) == op {
+			last = i
+			found = true
+		}
+	}
+	return last, found
+}
+
 func csharpFindConditionalColon(source []byte, start, end uint32) (uint32, bool) {
 	parens := 0
 	braces := 0

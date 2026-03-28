@@ -218,6 +218,14 @@ func normalizeCSharpSwitchTupleCasePatterns(root *Node, lang *Language) {
 	if !ok {
 		return
 	}
+	positionalSym, ok := lang.SymbolByName("positional_pattern_clause")
+	if !ok {
+		return
+	}
+	subpatternSym, ok := lang.SymbolByName("subpattern")
+	if !ok {
+		return
+	}
 	named := false
 	if idx := int(patternSym); idx < len(lang.SymbolMetadata) {
 		named = lang.SymbolMetadata[patternSym].Named
@@ -225,6 +233,14 @@ func normalizeCSharpSwitchTupleCasePatterns(root *Node, lang *Language) {
 	tupleNamed := false
 	if idx := int(tupleExprSym); idx < len(lang.SymbolMetadata) {
 		tupleNamed = lang.SymbolMetadata[tupleExprSym].Named
+	}
+	positionalNamed := false
+	if idx := int(positionalSym); idx < len(lang.SymbolMetadata) {
+		positionalNamed = lang.SymbolMetadata[positionalSym].Named
+	}
+	subpatternNamed := false
+	if idx := int(subpatternSym); idx < len(lang.SymbolMetadata) {
+		subpatternNamed = lang.SymbolMetadata[subpatternSym].Named
 	}
 	var walk func(*Node)
 	walk = func(n *Node) {
@@ -249,6 +265,10 @@ func normalizeCSharpSwitchTupleCasePatterns(root *Node, lang *Language) {
 				repl.parent = n
 				repl.childIndex = 1
 				n.children[1] = repl
+				pat = repl
+			}
+			if pat != nil && pat.Type(lang) == "constant_pattern" && len(pat.children) == 1 && pat.children[0] != nil {
+				csharpRewriteSwitchTupleLiteralPatternArguments(pat.children[0], lang, positionalSym, positionalNamed, subpatternSym, subpatternNamed, patternSym, named)
 			}
 		}
 		for _, child := range n.children {
@@ -256,4 +276,71 @@ func normalizeCSharpSwitchTupleCasePatterns(root *Node, lang *Language) {
 		}
 	}
 	walk(root)
+}
+
+func csharpRewriteSwitchTupleLiteralPatternArguments(tuple *Node, lang *Language, positionalSym Symbol, positionalNamed bool, subpatternSym Symbol, subpatternNamed bool, constantPatternSym Symbol, constantPatternNamed bool) bool {
+	if tuple == nil || lang == nil || tuple.Type(lang) != "tuple_expression" || len(tuple.children) < 3 {
+		return false
+	}
+	for _, child := range tuple.children {
+		if child != nil && child.IsNamed() && child.Type(lang) == "positional_pattern_clause" {
+			return false
+		}
+	}
+	clauseChildren := make([]*Node, 0, len(tuple.children)-2)
+	for _, child := range tuple.children[1 : len(tuple.children)-1] {
+		if child == nil {
+			continue
+		}
+		if !child.IsNamed() {
+			clauseChildren = append(clauseChildren, child)
+			continue
+		}
+		if child.Type(lang) != "argument" || len(child.children) != 1 || child.children[0] == nil {
+			return false
+		}
+		patternChild := child.children[0]
+		if patternChild.Type(lang) != "discard" && patternChild.Type(lang) != "constant_pattern" {
+			patternChildren := []*Node{patternChild}
+			if tuple.ownerArena != nil {
+				buf := tuple.ownerArena.allocNodeSlice(len(patternChildren))
+				copy(buf, patternChildren)
+				patternChildren = buf
+			}
+			patternChild = newParentNodeInArena(tuple.ownerArena, constantPatternSym, constantPatternNamed, patternChildren, nil, 0)
+			patternChild.hasError = false
+		}
+		subChildren := []*Node{patternChild}
+		if tuple.ownerArena != nil {
+			buf := tuple.ownerArena.allocNodeSlice(len(subChildren))
+			copy(buf, subChildren)
+			subChildren = buf
+		}
+		sub := newParentNodeInArena(tuple.ownerArena, subpatternSym, subpatternNamed, subChildren, nil, 0)
+		sub.hasError = false
+		clauseChildren = append(clauseChildren, sub)
+	}
+	if len(clauseChildren) == 0 {
+		return false
+	}
+	if tuple.ownerArena != nil {
+		buf := tuple.ownerArena.allocNodeSlice(len(clauseChildren))
+		copy(buf, clauseChildren)
+		clauseChildren = buf
+	}
+	clause := newParentNodeInArena(tuple.ownerArena, positionalSym, positionalNamed, clauseChildren, nil, 0)
+	clause.hasError = false
+	children := []*Node{tuple.children[0], clause, tuple.children[len(tuple.children)-1]}
+	if tuple.ownerArena != nil {
+		buf := tuple.ownerArena.allocNodeSlice(len(children))
+		copy(buf, children)
+		children = buf
+	}
+	tuple.children = children
+	tuple.fieldIDs = nil
+	tuple.fieldSources = nil
+	tuple.productionID = 0
+	tuple.hasError = false
+	populateParentNode(tuple, tuple.children)
+	return true
 }

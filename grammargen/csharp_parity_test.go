@@ -211,6 +211,38 @@ func TestCSharpTopLevelChunkParity(t *testing.T) {
 				"  }\n" +
 				"}\n",
 		},
+		{
+			name: "global_lambda_chain",
+			src:  "var result = list.Select(c => (c.f1, c.f2)).Where(t => t.f2 == 1);\n",
+		},
+		{
+			name: "top_level_local_function_switch_patterns",
+			src: "int Sample9(int a) {\n" +
+				"  switch (a, a) {\n" +
+				"    case (1, 1):\n" +
+				"      return 1;\n" +
+				"    default:\n" +
+				"      return 0;\n" +
+				"  }\n" +
+				"\n" +
+				"  switch (A, B) {\n" +
+				"      case (_, _) when !c:\n" +
+				"        break;\n" +
+				"  }\n" +
+				"\n" +
+				"  switch (A) {\n" +
+				"      case {Length: 2} when !c:\n" +
+				"        break;\n" +
+				"  }\n" +
+				"\n" +
+				"  int i = 123;\n" +
+				"  switch (i)\n" +
+				"  {\n" +
+				"      case int when i < 5:\n" +
+				"          break;\n" +
+				"  }\n" +
+				"}\n",
+		},
 	}
 
 	for _, tc := range cases {
