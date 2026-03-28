@@ -9,6 +9,21 @@ for tags and release notes while still in `0.x`.
 
 - Nothing yet.
 
+## [0.12.0] - 2026-03-28
+
+### Added
+- `grammargen` now imports and emits tree-sitter ABI 15 reserved-word sets, preserving reserved-word metadata through grammar extension and normalization.
+- Added Python pattern-matching and f-string parity coverage, plus comprehensive YAML and C# parity and regression suites including a Docker-isolated C# CGO regression lane.
+- Added parser recovery and normalization coverage for Rust dot ranges, Rust token trees and struct expressions, YAML recovered roots, and C# namespaces, query expressions, type declarations, Unicode identifiers, and implicit `var` restoration.
+
+### Changed
+- GLR stack equivalence checks now skip recursive frontier descent where possible and cache frontier equivalence per parse to reduce duplicate merge work on ambiguous parses.
+
+### Fixed
+- Restored Python real-corpus parity with keyword-leaf repair, print and interpolation normalization, and trailing self-call recovery in repaired blocks.
+- Tightened Rust parity for macro token bindings, token trees, pattern statements, recovered function items, and struct-expression spans.
+- Imported-language scanner adaptation now preserves existing `ExternalLexStates` instead of overwriting them during scanner wiring.
+
 ## [0.11.2] - 2026-03-26
 
 ### Added
@@ -212,6 +227,8 @@ for tags and release notes while still in `0.x`.
 - Initial standalone pure-Go runtime module.
 - External scanner VM foundation and base parser/lexer/tree infrastructure.
 
+[Unreleased]: https://github.com/odvcencio/gotreesitter/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/odvcencio/gotreesitter/compare/v0.11.2...v0.12.0
 [0.11.2]: https://github.com/odvcencio/gotreesitter/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/odvcencio/gotreesitter/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/odvcencio/gotreesitter/compare/v0.10.1...v0.11.0
