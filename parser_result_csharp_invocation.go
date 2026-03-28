@@ -250,6 +250,14 @@ func normalizeCSharpSwitchTupleCasePatterns(root *Node, lang *Language) {
 		if n.Type(lang) == "switch_section" && len(n.children) > 1 {
 			pat := n.children[1]
 			if n.children[0] != nil && n.children[0].Type(lang) == "case" &&
+				pat != nil && csharpShouldWrapSwitchCaseConstantPattern(pat, lang) {
+				repl := newParentNodeInArena(n.ownerArena, patternSym, named, []*Node{pat}, nil, 0)
+				repl.parent = n
+				repl.childIndex = 1
+				n.children[1] = repl
+				pat = repl
+			}
+			if n.children[0] != nil && n.children[0].Type(lang) == "case" &&
 				pat != nil && (pat.Type(lang) == "tuple_expression" || pat.Type(lang) == "recursive_pattern") {
 				tuple := pat
 				if pat.Type(lang) != "tuple_expression" {
@@ -276,6 +284,18 @@ func normalizeCSharpSwitchTupleCasePatterns(root *Node, lang *Language) {
 		}
 	}
 	walk(root)
+}
+
+func csharpShouldWrapSwitchCaseConstantPattern(n *Node, lang *Language) bool {
+	if n == nil || lang == nil {
+		return false
+	}
+	switch n.Type(lang) {
+	case "integer_literal", "real_literal", "string_literal", "character_literal", "null_literal", "boolean_literal", "identifier", "member_access_expression":
+		return true
+	default:
+		return false
+	}
 }
 
 func csharpRewriteSwitchTupleLiteralPatternArguments(tuple *Node, lang *Language, positionalSym Symbol, positionalNamed bool, subpatternSym Symbol, subpatternNamed bool, constantPatternSym Symbol, constantPatternNamed bool) bool {

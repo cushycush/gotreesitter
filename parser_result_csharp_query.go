@@ -819,10 +819,34 @@ func csharpRecoverSimpleQueryAtomNodeFromRange(source []byte, start, end uint32,
 	if identStart, identEnd, ok := csharpScanIdentifierAt(source, start); ok && identStart == start && identEnd == end {
 		return csharpBuildIdentifierNodeFromSource(source, start, end, lang, arena)
 	}
-	if dotPos, ok := csharpFindLastTopLevelOperator(source, start, end, "."); ok {
+	if dotPos, ok := csharpFindLastTopLevelOperator(source, start, end, "."); ok && csharpLooksLikeSimpleMemberAccessChain(source, start, end) {
 		return csharpBuildMemberAccessExpressionNode(arena, source, lang, start, dotPos, end)
 	}
 	return nil, false
+}
+
+func csharpLooksLikeSimpleMemberAccessChain(source []byte, start, end uint32) bool {
+	cursor := csharpSkipSpaceBytes(source, start)
+	if cursor >= end {
+		return false
+	}
+	for {
+		identStart, identEnd, ok := csharpScanIdentifierAt(source, cursor)
+		if !ok || identStart != cursor {
+			return false
+		}
+		cursor = csharpSkipSpaceBytes(source, identEnd)
+		if cursor >= end {
+			return true
+		}
+		if source[cursor] != '.' {
+			return false
+		}
+		cursor = csharpSkipSpaceBytes(source, cursor+1)
+		if cursor >= end {
+			return false
+		}
+	}
 }
 
 func csharpBuildConditionalExpressionNode(arena *nodeArena, source []byte, lang *Language, condition *Node, qPos uint32, consequence *Node, colonPos uint32, alternative *Node) (*Node, bool) {
