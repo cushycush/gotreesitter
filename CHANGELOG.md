@@ -9,6 +9,21 @@ for tags and release notes while still in `0.x`.
 
 - Nothing yet.
 
+## [0.12.2] - 2026-03-30
+
+### Added
+- Bounded Docker presets for Fortran real-corpus grammargen runs, plus focused SQL imported-parity and direct-C regression coverage.
+- Additional C#, YAML, Rust, and SQL parity tests and parser result helpers carried in from the `yaml-parity-drive` integration branch.
+
+### Changed
+- Large-grammar grammargen generation now uses lower-memory LR0/LALR data structures, tighter scratch reuse, and configurable generation budgets/timeouts to keep Fortran investigation lanes bounded.
+- Parser-result normalization is split across smaller language-focused files to make recovery logic easier to maintain and extend.
+
+### Fixed
+- Imported SQL `grammar.json` round-trips no longer conflate anonymous string literals with inline regex terminals that share the same display text, restoring the affected `SELECT`/`INSERT` parity cases.
+- LALR lookahead bitset initialization is now lazy-safe for tests that construct `lrContext` directly.
+- `Node.Text()` edge cases, scanner adaptation, and several C#/YAML/Rust recovery and parity regressions were corrected on the merged branch.
+
 ## [0.12.1] - 2026-03-28
 
 ### Changed
@@ -235,7 +250,8 @@ for tags and release notes while still in `0.x`.
 - Initial standalone pure-Go runtime module.
 - External scanner VM foundation and base parser/lexer/tree infrastructure.
 
-[Unreleased]: https://github.com/odvcencio/gotreesitter/compare/v0.12.1...HEAD
+[Unreleased]: https://github.com/odvcencio/gotreesitter/compare/v0.12.2...HEAD
+[0.12.2]: https://github.com/odvcencio/gotreesitter/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/odvcencio/gotreesitter/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/odvcencio/gotreesitter/compare/v0.11.2...v0.12.0
 [0.11.2]: https://github.com/odvcencio/gotreesitter/compare/v0.11.1...v0.11.2
