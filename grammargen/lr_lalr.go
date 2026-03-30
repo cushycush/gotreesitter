@@ -73,6 +73,10 @@ func (ctx *lrContext) buildLR0() {
 	tokenCount := ctx.tokenCount
 	debugLALR := os.Getenv("GOT_DEBUG_LALR") == "1"
 	ctx.ensureLR0SymbolSeenCapacity(len(ng.Symbols))
+	contextTagsEnabled := os.Getenv("GOT_LR_DISABLE_CONTEXT_TAGS") != "1" && len(ng.Productions) >= 2000
+	if contextTagsEnabled {
+		ctx.ensureRepeatWrapperLHS()
+	}
 
 	// Hash map for state dedup: coreHash → chain of state indices.
 	coreMap := make(map[uint64]*stateHashEntry)
@@ -117,7 +121,13 @@ func (ctx *lrContext) buildLR0() {
 
 		// Collect all symbols after the dot.
 		symbolSeenEpoch := ctx.nextLR0SymbolSeenEpoch()
+		repeatRecursiveEpoch := uint32(0)
+		if contextTagsEnabled {
+			repeatRecursiveEpoch = ctx.nextLR0SymbolSeenEpoch()
+		}
 		syms := ctx.gotoSymbolsScratch[:0]
+		sourceTemplateCarrier := false
+		sourceConditionalTypeEntry := false
 		for _, ce := range itemSet.cores {
 			prodIdx := int(ce.prodIdx())
 			dot := int(ce.dot())
@@ -129,17 +139,60 @@ func (ctx *lrContext) buildLR0() {
 					syms = append(syms, sym)
 				}
 			}
+			if !contextTagsEnabled {
+				continue
+			}
+			lhs := prod.LHS
+			if !sourceTemplateCarrier {
+				switch lhs {
+				case ctx.bracedTemplateBodySym, ctx.bracedTemplateBody1Sym, ctx.bracedTemplateBody2Sym:
+					sourceTemplateCarrier = true
+				default:
+					if lhs >= 0 && lhs < len(ctx.templateDefinitionCarrierLHS) && ctx.templateDefinitionCarrierLHS[lhs] {
+						sourceTemplateCarrier = true
+					}
+				}
+			}
+			if !sourceConditionalTypeEntry &&
+				lhs == ctx.conditionalTypeSym &&
+				len(prod.RHS) >= 4 &&
+				prod.RHS[1] == ctx.conditionalTypeExtendsSym &&
+				prod.RHS[3] == ctx.conditionalTypePlainQmarkSym &&
+				dot == 1 {
+				sourceConditionalTypeEntry = true
+			}
+			if lhs < 0 || lhs >= len(ctx.repeatWrapperLHS) || !ctx.repeatWrapperLHS[lhs] || dot != len(prod.RHS) {
+				continue
+			}
+			for _, rhsSym := range prod.RHS {
+				if rhsSym == lhs {
+					ctx.lr0SymbolSeenGen[lhs] = repeatRecursiveEpoch
+					break
+				}
+			}
 		}
 
 		for _, sym := range syms {
 			// Compute GOTO(state, sym): advance dot past sym, then close.
 			kernel := ctx.lr0KernelScratch[:0]
+			targetRepeatWrapperLHS := -1
 			for _, ce := range itemSet.cores {
 				prodIdx := int(ce.prodIdx())
 				dot := int(ce.dot())
 				prod := &ng.Productions[prodIdx]
 				if dot < len(prod.RHS) && prod.RHS[dot] == sym {
-					kernel = append(kernel, coreItem{prodIdx: prodIdx, dot: dot + 1})
+					nextDot := dot + 1
+					kernel = append(kernel, coreItem{prodIdx: prodIdx, dot: nextDot})
+					if contextTagsEnabled &&
+						targetRepeatWrapperLHS < 0 &&
+						sym >= tokenCount &&
+						nextDot == len(prod.RHS) &&
+						len(prod.RHS) == 1 &&
+						prod.LHS >= 0 &&
+						prod.LHS < len(ctx.repeatWrapperLHS) &&
+						ctx.repeatWrapperLHS[prod.LHS] {
+						targetRepeatWrapperLHS = prod.LHS
+					}
 				}
 			}
 			if len(kernel) == 0 {
@@ -148,9 +201,58 @@ func (ctx *lrContext) buildLR0() {
 
 			closedSet := ctx.lr0Closure(kernel)
 			ctx.lr0KernelScratch = kernel[:0]
-			closedSet.annotationArgTag = ctx.templateContextTagForLR0Transition(stateIdx, sym, &closedSet)
-			closedSet.annotationArgTag |= ctx.repeatWrapperSourceTagForLR0Transition(stateIdx, sym, &closedSet)
-			closedSet.annotationArgTag |= ctx.conditionalTypeContextTagForLR0Transition(stateIdx, sym, &closedSet)
+			if contextTagsEnabled {
+				targetTemplateCarrier := false
+				targetConditionalCarrier := false
+				for _, ce := range closedSet.cores {
+					lhs := ng.Productions[int(ce.prodIdx())].LHS
+					if !targetTemplateCarrier {
+						switch lhs {
+						case ctx.bracedTemplateBodySym, ctx.bracedTemplateBody1Sym, ctx.bracedTemplateBody2Sym:
+							targetTemplateCarrier = true
+						default:
+							if lhs >= 0 && lhs < len(ctx.templateDefinitionCarrierLHS) && ctx.templateDefinitionCarrierLHS[lhs] {
+								targetTemplateCarrier = true
+							}
+						}
+					}
+					if !targetConditionalCarrier &&
+						lhs >= 0 &&
+						lhs < len(ctx.conditionalTypeCarrierLHS) &&
+						ctx.conditionalTypeCarrierLHS[lhs] {
+						targetConditionalCarrier = true
+					}
+					if targetTemplateCarrier && targetConditionalCarrier {
+						break
+					}
+				}
+				srcTemplateTag := itemSet.annotationArgTag & templateContextTagMask
+				if srcTemplateTag != 0 && targetRepeatWrapperLHS >= 0 {
+					closedSet.annotationArgTag = srcTemplateTag
+				} else if sourceTemplateCarrier || targetTemplateCarrier {
+					if ctx.annotationAtSym >= 0 && sym == ctx.annotationAtSym && targetTemplateCarrier {
+						if srcTemplateTag != 0 && srcTemplateTag != templateContextPendingTag {
+							closedSet.annotationArgTag = srcTemplateTag
+						} else {
+							closedSet.annotationArgTag = templateContextPendingTag
+						}
+					} else if sym >= 0 && sym < len(ctx.definitionBoundaryTagBySym) {
+						if tag := ctx.definitionBoundaryTagBySym[sym]; tag != 0 && (sourceTemplateCarrier || srcTemplateTag != 0 || targetTemplateCarrier) {
+							closedSet.annotationArgTag = tag
+						}
+					} else if srcTemplateTag != 0 && targetTemplateCarrier {
+						closedSet.annotationArgTag = srcTemplateTag
+					}
+				}
+				if targetRepeatWrapperLHS >= 0 && ctx.lr0SymbolSeenGen[targetRepeatWrapperLHS] == repeatRecursiveEpoch {
+					closedSet.annotationArgTag |= 1 << 24
+				}
+				if targetConditionalCarrier &&
+					(itemSet.annotationArgTag&conditionalTypeContextTag != 0 ||
+						(sym == ctx.conditionalTypeExtendsSym && sym != ctx.conditionalTypePlainQmarkSym && sourceConditionalTypeEntry)) {
+					closedSet.annotationArgTag |= conditionalTypeContextTag
+				}
+			}
 
 			// Find existing state with same core, or create new.
 			targetIdx := -1
