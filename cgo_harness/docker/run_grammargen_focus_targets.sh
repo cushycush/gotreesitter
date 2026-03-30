@@ -6,16 +6,33 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 REAL_RUNNER="$SCRIPT_DIR/run_single_grammar_parity.sh"
 CGO_RUNNER="$SCRIPT_DIR/run_grammargen_c_parity.sh"
 
+DEFAULT_MEMORY_LIMIT="8g"
+DEFAULT_CPUS_LIMIT="1"
+DEFAULT_PIDS_LIMIT="512"
+DEFAULT_GOMAXPROCS_VALUE="1"
+DEFAULT_GOFLAGS_VALUE="-p=1"
+DEFAULT_REAL_TIMEOUT="15m"
+DEFAULT_REAL_MAX_CASES="25"
+DEFAULT_REAL_PROFILE="aggressive"
+
+FORTRAN_SAFE_MEMORY_LIMIT="3g"
+FORTRAN_SAFE_CPUS_LIMIT="1"
+FORTRAN_SAFE_PIDS_LIMIT="512"
+FORTRAN_SAFE_GOMAXPROCS_VALUE="1"
+FORTRAN_SAFE_GOFLAGS_VALUE="-p=1"
+FORTRAN_SAFE_LR0_CORE_BUDGET="160000000"
+FORTRAN_SAFE_GENERATE_TIMEOUT="15m"
+
 MODE="all"
 LANGS_CSV="css,javascript,typescript,tsx,c,cpp,c_sharp,cobol,fortran"
-MEMORY_LIMIT="8g"
-CPUS_LIMIT="1"
-PIDS_LIMIT="512"
-GOMAXPROCS_VALUE="1"
-GOFLAGS_VALUE="-p=1"
-REAL_TIMEOUT="15m"
-REAL_MAX_CASES="25"
-REAL_PROFILE="aggressive"
+MEMORY_LIMIT="$DEFAULT_MEMORY_LIMIT"
+CPUS_LIMIT="$DEFAULT_CPUS_LIMIT"
+PIDS_LIMIT="$DEFAULT_PIDS_LIMIT"
+GOMAXPROCS_VALUE="$DEFAULT_GOMAXPROCS_VALUE"
+GOFLAGS_VALUE="$DEFAULT_GOFLAGS_VALUE"
+REAL_TIMEOUT="$DEFAULT_REAL_TIMEOUT"
+REAL_MAX_CASES="$DEFAULT_REAL_MAX_CASES"
+REAL_PROFILE="$DEFAULT_REAL_PROFILE"
 CGO_TIMEOUT_MINS="45"
 CGO_MAX_CASES="20"
 CGO_MAX_BYTES="262144"
@@ -26,6 +43,15 @@ BUILD_IMAGE=1
 LR_SPLIT=0
 REAL_LR0_CORE_BUDGET=""
 REAL_GENERATE_TIMEOUT=""
+FORTRAN_SAFE_DEFAULTS=1
+
+MEMORY_SET=0
+CPUS_SET=0
+PIDS_SET=0
+GOMAXPROCS_SET=0
+GOFLAGS_SET=0
+REAL_LR0_CORE_BUDGET_SET=0
+REAL_GENERATE_TIMEOUT_SET=0
 
 usage() {
   cat <<'EOF'
@@ -50,6 +76,12 @@ Options:
   --lr0-core-budget <n>  Export GOT_LALR_LR0_CORE_BUDGET for real-corpus runs
   --generate-timeout <d> Export GTS_GRAMMARGEN_REAL_CORPUS_GENERATE_TIMEOUT
                          for real-corpus runs
+  --unsafe-fortran-defaults
+                         Disable the default bounded Fortran preset for
+                         real-corpus runs. By default, Fortran uses
+                         memory=3g, cpus=1, pids=512, GOMAXPROCS=1,
+                         GOFLAGS=-p=1, lr0_core_budget=160000000, and
+                         generate_timeout=15m unless you override them.
   --real-timeout <dur>   Real-corpus timeout per grammar (default: 15m)
   --real-max-cases <n>   Real-corpus max cases per grammar (default: 25)
   --profile <name>       smoke|balanced|aggressive (default: aggressive)
@@ -69,6 +101,8 @@ Notes:
   - Direct C parity also runs one language per container via run_grammargen_c_parity.sh.
   - The default lane is single-worker by design: one grammar, one container,
     cpus=1, GOMAXPROCS=1, GOFLAGS=-p=1.
+  - fortran real-corpus runs also default to a tighter bounded envelope
+    unless you override it or pass --unsafe-fortran-defaults.
   - fortran is currently real-corpus-only; the direct grammargen-vs-C harness
     does not expose it yet.
 EOF
@@ -113,13 +147,14 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --mode) MODE="$2"; shift 2 ;;
     --langs) LANGS_CSV="$2"; shift 2 ;;
-    --memory) MEMORY_LIMIT="$2"; shift 2 ;;
-    --cpus) CPUS_LIMIT="$2"; shift 2 ;;
-    --pids) PIDS_LIMIT="$2"; shift 2 ;;
-    --gomaxprocs) GOMAXPROCS_VALUE="$2"; shift 2 ;;
-    --goflags) GOFLAGS_VALUE="$2"; shift 2 ;;
-    --lr0-core-budget) REAL_LR0_CORE_BUDGET="$2"; shift 2 ;;
-    --generate-timeout) REAL_GENERATE_TIMEOUT="$2"; shift 2 ;;
+    --memory) MEMORY_LIMIT="$2"; MEMORY_SET=1; shift 2 ;;
+    --cpus) CPUS_LIMIT="$2"; CPUS_SET=1; shift 2 ;;
+    --pids) PIDS_LIMIT="$2"; PIDS_SET=1; shift 2 ;;
+    --gomaxprocs) GOMAXPROCS_VALUE="$2"; GOMAXPROCS_SET=1; shift 2 ;;
+    --goflags) GOFLAGS_VALUE="$2"; GOFLAGS_SET=1; shift 2 ;;
+    --lr0-core-budget) REAL_LR0_CORE_BUDGET="$2"; REAL_LR0_CORE_BUDGET_SET=1; shift 2 ;;
+    --generate-timeout) REAL_GENERATE_TIMEOUT="$2"; REAL_GENERATE_TIMEOUT_SET=1; shift 2 ;;
+    --unsafe-fortran-defaults) FORTRAN_SAFE_DEFAULTS=0; shift ;;
     --real-timeout) REAL_TIMEOUT="$2"; shift 2 ;;
     --real-max-cases) REAL_MAX_CASES="$2"; shift 2 ;;
     --profile) REAL_PROFILE="$2"; shift 2 ;;
@@ -179,6 +214,20 @@ if [[ ${#TARGET_LANGS[@]} -eq 0 ]]; then
   exit 2
 fi
 
+resolve_fortran_real_corpus_setting() {
+  local lang="$1"
+  local current="$2"
+  local was_set="$3"
+  local safe_default="$4"
+
+  if [[ "$lang" == "fortran" && "$FORTRAN_SAFE_DEFAULTS" == "1" && "$was_set" == "0" ]]; then
+    echo "$safe_default"
+    return
+  fi
+
+  echo "$current"
+}
+
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 REAL_REPORT_DIR="$REPORT_ROOT/$STAMP/real_corpus"
 
@@ -223,31 +272,46 @@ real_corpus_status_from_log() {
 run_real_corpus_lang() {
   local lang="$1"
   local grammar log_path
+  local effective_memory_limit
+  local effective_cpus_limit
+  local effective_pids_limit
+  local effective_gomaxprocs_value
+  local effective_goflags_value
+  local effective_lr0_core_budget
+  local effective_generate_timeout
+
   grammar="$(real_corpus_lang "$lang")"
   log_path="$REAL_REPORT_DIR/diag_${grammar}.log"
+  effective_memory_limit="$(resolve_fortran_real_corpus_setting "$lang" "$MEMORY_LIMIT" "$MEMORY_SET" "$FORTRAN_SAFE_MEMORY_LIMIT")"
+  effective_cpus_limit="$(resolve_fortran_real_corpus_setting "$lang" "$CPUS_LIMIT" "$CPUS_SET" "$FORTRAN_SAFE_CPUS_LIMIT")"
+  effective_pids_limit="$(resolve_fortran_real_corpus_setting "$lang" "$PIDS_LIMIT" "$PIDS_SET" "$FORTRAN_SAFE_PIDS_LIMIT")"
+  effective_gomaxprocs_value="$(resolve_fortran_real_corpus_setting "$lang" "$GOMAXPROCS_VALUE" "$GOMAXPROCS_SET" "$FORTRAN_SAFE_GOMAXPROCS_VALUE")"
+  effective_goflags_value="$(resolve_fortran_real_corpus_setting "$lang" "$GOFLAGS_VALUE" "$GOFLAGS_SET" "$FORTRAN_SAFE_GOFLAGS_VALUE")"
+  effective_lr0_core_budget="$(resolve_fortran_real_corpus_setting "$lang" "$REAL_LR0_CORE_BUDGET" "$REAL_LR0_CORE_BUDGET_SET" "$FORTRAN_SAFE_LR0_CORE_BUDGET")"
+  effective_generate_timeout="$(resolve_fortran_real_corpus_setting "$lang" "$REAL_GENERATE_TIMEOUT" "$REAL_GENERATE_TIMEOUT_SET" "$FORTRAN_SAFE_GENERATE_TIMEOUT")"
 
   mkdir -p "$REAL_REPORT_DIR"
 
   local -a args=(
-    --memory "$MEMORY_LIMIT"
-    --cpus "$CPUS_LIMIT"
-    --pids "$PIDS_LIMIT"
+    --memory "$effective_memory_limit"
+    --cpus "$effective_cpus_limit"
+    --pids "$effective_pids_limit"
     --timeout "$REAL_TIMEOUT"
     --max-cases "$REAL_MAX_CASES"
     --profile "$REAL_PROFILE"
     --report-dir "$REAL_REPORT_DIR"
   )
-  if [[ -n "$GOMAXPROCS_VALUE" ]]; then
-    args+=(--gomaxprocs "$GOMAXPROCS_VALUE")
+  if [[ -n "$effective_gomaxprocs_value" ]]; then
+    args+=(--gomaxprocs "$effective_gomaxprocs_value")
   fi
-  if [[ -n "$GOFLAGS_VALUE" ]]; then
-    args+=(--goflags "$GOFLAGS_VALUE")
+  if [[ -n "$effective_goflags_value" ]]; then
+    args+=(--goflags "$effective_goflags_value")
   fi
-  if [[ -n "$REAL_LR0_CORE_BUDGET" ]]; then
-    args+=(--lr0-core-budget "$REAL_LR0_CORE_BUDGET")
+  if [[ -n "$effective_lr0_core_budget" ]]; then
+    args+=(--lr0-core-budget "$effective_lr0_core_budget")
   fi
-  if [[ -n "$REAL_GENERATE_TIMEOUT" ]]; then
-    args+=(--generate-timeout "$REAL_GENERATE_TIMEOUT")
+  if [[ -n "$effective_generate_timeout" ]]; then
+    args+=(--generate-timeout "$effective_generate_timeout")
   fi
   if [[ -n "$SEED_DIR" ]]; then
     args+=(--seed-dir "$SEED_DIR")
@@ -257,6 +321,9 @@ run_real_corpus_lang() {
   fi
   if [[ "$LR_SPLIT" == "1" ]]; then
     args+=(--lr-split)
+  fi
+  if [[ "$FORTRAN_SAFE_DEFAULTS" == "0" ]]; then
+    args+=(--unsafe-fortran-defaults)
   fi
   if [[ "$real_build_enabled" == "0" ]]; then
     args+=(--no-build)
@@ -350,7 +417,7 @@ run_cgo_lang() {
 }
 
 echo "Focused grammargen targets: ${TARGET_LANGS[*]}"
-echo "mode=$MODE memory=$MEMORY_LIMIT cpus=$CPUS_LIMIT pids=$PIDS_LIMIT gomaxprocs=${GOMAXPROCS_VALUE:-inherit} goflags=${GOFLAGS_VALUE:-inherit} lr0_core_budget=${REAL_LR0_CORE_BUDGET:-inherit} offline=$OFFLINE lr_split=$LR_SPLIT"
+echo "mode=$MODE memory=$MEMORY_LIMIT cpus=$CPUS_LIMIT pids=$PIDS_LIMIT gomaxprocs=${GOMAXPROCS_VALUE:-inherit} goflags=${GOFLAGS_VALUE:-inherit} lr0_core_budget=${REAL_LR0_CORE_BUDGET:-inherit} generate_timeout=${REAL_GENERATE_TIMEOUT:-inherit} fortran_safe_defaults=$FORTRAN_SAFE_DEFAULTS offline=$OFFLINE lr_split=$LR_SPLIT"
 echo ""
 
 if [[ "$MODE" == "all" || "$MODE" == "real-corpus" ]]; then

@@ -442,6 +442,12 @@ bash cgo_harness/docker/run_grammargen_focus_targets.sh --mode cgo --langs types
 grammars: it runs one grammar per container and defaults to a single-worker
 profile (`--cpus 1`, `--pids 512`, `GOMAXPROCS=1`, `GOFLAGS=-p=1`).
 
+For Fortran, both real-corpus runners also default to a tighter bounded local
+preset unless you explicitly override it or pass
+`--unsafe-fortran-defaults`: `--memory 3g`, `--cpus 1`, `--pids 512`,
+`GOMAXPROCS=1`, `GOFLAGS=-p=1`, `GOT_LALR_LR0_CORE_BUDGET=160000000`, and
+`GTS_GRAMMARGEN_REAL_CORPUS_GENERATE_TIMEOUT=15m`.
+
 If you only need a fast package-local regression check, keep it in Docker and
 narrow the `-run` regex:
 

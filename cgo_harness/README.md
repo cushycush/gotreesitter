@@ -324,6 +324,12 @@ contained to a single target instead of killing the host. `fortran` is
 currently real-corpus-only because the direct C-oracle harness does not expose
 it yet.
 
+For Fortran real-corpus work, the single-grammar runner and focused target lane
+now default to a tighter bounded preset unless you explicitly override it or
+pass `--unsafe-fortran-defaults`: `--memory 3g`, `--cpus 1`, `--pids 512`,
+`GOMAXPROCS=1`, `GOFLAGS=-p=1`, `GOT_LALR_LR0_CORE_BUDGET=160000000`, and
+`GTS_GRAMMARGEN_REAL_CORPUS_GENERATE_TIMEOUT=15m`.
+
 ## Run C Baseline Benchmarks
 
 ```sh

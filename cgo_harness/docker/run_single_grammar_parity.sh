@@ -15,22 +15,48 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER="$SCRIPT_DIR/run_parity_in_docker.sh"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+DEFAULT_MEMORY_LIMIT="8g"
+DEFAULT_CPUS_LIMIT="4"
+DEFAULT_PIDS_LIMIT="4096"
+DEFAULT_TIMEOUT_PER_GRAMMAR="15m"
+DEFAULT_MAX_CASES="25"
+DEFAULT_PROFILE="aggressive"
+DEFAULT_GOMAXPROCS_VALUE=""
+DEFAULT_GOFLAGS_VALUE=""
+
+FORTRAN_SAFE_MEMORY_LIMIT="3g"
+FORTRAN_SAFE_CPUS_LIMIT="1"
+FORTRAN_SAFE_PIDS_LIMIT="512"
+FORTRAN_SAFE_GOMAXPROCS_VALUE="1"
+FORTRAN_SAFE_GOFLAGS_VALUE="-p=1"
+FORTRAN_SAFE_LR0_CORE_BUDGET="160000000"
+FORTRAN_SAFE_GENERATE_TIMEOUT="15m"
+
 IMAGE_TAG="gotreesitter/cgo-harness:go1.24-local"
-MEMORY_LIMIT="8g"
-CPUS_LIMIT="4"
-PIDS_LIMIT="4096"
-TIMEOUT_PER_GRAMMAR="15m"
-MAX_CASES="25"
-PROFILE="aggressive"
+MEMORY_LIMIT="$DEFAULT_MEMORY_LIMIT"
+CPUS_LIMIT="$DEFAULT_CPUS_LIMIT"
+PIDS_LIMIT="$DEFAULT_PIDS_LIMIT"
+TIMEOUT_PER_GRAMMAR="$DEFAULT_TIMEOUT_PER_GRAMMAR"
+MAX_CASES="$DEFAULT_MAX_CASES"
+PROFILE="$DEFAULT_PROFILE"
 REPORT_DIR="$REPO_ROOT/cgo_harness/reports"
 BUILD_IMAGE=1
 SEED_DIR=""
 OFFLINE=0
 LR_SPLIT=0
-GOMAXPROCS_VALUE=""
-GOFLAGS_VALUE=""
+GOMAXPROCS_VALUE="$DEFAULT_GOMAXPROCS_VALUE"
+GOFLAGS_VALUE="$DEFAULT_GOFLAGS_VALUE"
 LR0_CORE_BUDGET=""
 GENERATE_TIMEOUT=""
+FORTRAN_SAFE_DEFAULTS=1
+
+MEMORY_SET=0
+CPUS_SET=0
+PIDS_SET=0
+GOMAXPROCS_SET=0
+GOFLAGS_SET=0
+LR0_CORE_BUDGET_SET=0
+GENERATE_TIMEOUT_SET=0
 
 # All grammars in the test set (alphabetical order matching importParityGrammars).
 ALL_GRAMMARS=(
@@ -92,6 +118,12 @@ Options:
                        Export GTS_GRAMMARGEN_REAL_CORPUS_GENERATE_TIMEOUT.
                        If unset, fortran defaults to 15m so the memory-safe
                        LALR path can finish in Docker.
+  --unsafe-fortran-defaults
+                       Disable the default bounded Fortran preset. By default,
+                       Fortran runs that do not set explicit resource controls
+                       use memory=3g, cpus=1, pids=512, GOMAXPROCS=1,
+                       GOFLAGS=-p=1, lr0_core_budget=160000000, and
+                       generate_timeout=15m.
   --no-build           Skip Docker image build
   -h, --help           Show this help
 
@@ -120,14 +152,17 @@ while [[ $# -gt 0 ]]; do
       ;;
     --memory)
       MEMORY_LIMIT="$2"
+      MEMORY_SET=1
       shift 2
       ;;
     --cpus)
       CPUS_LIMIT="$2"
+      CPUS_SET=1
       shift 2
       ;;
     --pids)
       PIDS_LIMIT="$2"
+      PIDS_SET=1
       shift 2
       ;;
     --timeout)
@@ -160,19 +195,27 @@ while [[ $# -gt 0 ]]; do
       ;;
     --gomaxprocs)
       GOMAXPROCS_VALUE="$2"
+      GOMAXPROCS_SET=1
       shift 2
       ;;
     --goflags)
       GOFLAGS_VALUE="$2"
+      GOFLAGS_SET=1
       shift 2
       ;;
     --lr0-core-budget)
       LR0_CORE_BUDGET="$2"
+      LR0_CORE_BUDGET_SET=1
       shift 2
       ;;
     --generate-timeout)
       GENERATE_TIMEOUT="$2"
+      GENERATE_TIMEOUT_SET=1
       shift 2
+      ;;
+    --unsafe-fortran-defaults)
+      FORTRAN_SAFE_DEFAULTS=0
+      shift
       ;;
     --no-build)
       BUILD_IMAGE=0
@@ -352,19 +395,73 @@ fi
 CLONE_EOF
 }
 
+resolve_fortran_setting() {
+  local grammar="$1"
+  local current="$2"
+  local was_set="$3"
+  local safe_default="$4"
+
+  if [[ "$grammar" == "fortran" && "$FORTRAN_SAFE_DEFAULTS" == "1" && "$was_set" == "0" ]]; then
+    echo "$safe_default"
+    return
+  fi
+
+  echo "$current"
+}
+
+docker_memory_limit_to_gomemlimit() {
+  local raw="$1"
+  local lower
+
+  raw="${raw//[[:space:]]/}"
+  lower="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+
+  if [[ "$lower" =~ ^([0-9]+)$ ]]; then
+    echo "${BASH_REMATCH[1]}B"
+    return 0
+  fi
+  if [[ "$lower" =~ ^([0-9]+)b$ ]]; then
+    echo "${BASH_REMATCH[1]}B"
+    return 0
+  fi
+  if [[ "$lower" =~ ^([0-9]+)(k|kb|ki|kib)$ ]]; then
+    echo "${BASH_REMATCH[1]}KiB"
+    return 0
+  fi
+  if [[ "$lower" =~ ^([0-9]+)(m|mb|mi|mib)$ ]]; then
+    echo "${BASH_REMATCH[1]}MiB"
+    return 0
+  fi
+  if [[ "$lower" =~ ^([0-9]+)(g|gb|gi|gib)$ ]]; then
+    echo "${BASH_REMATCH[1]}GiB"
+    return 0
+  fi
+
+  return 1
+}
+
 run_grammar() {
   local grammar="$1"
   local log_file="$REPORT_DIR/diag_${grammar}.log"
-  local effective_lr0_core_budget="$LR0_CORE_BUDGET"
-  local effective_generate_timeout="$GENERATE_TIMEOUT"
-  if [[ -z "$effective_lr0_core_budget" && "$grammar" == "fortran" ]]; then
-    effective_lr0_core_budget="160000000"
-  fi
-  if [[ -z "$effective_generate_timeout" && "$grammar" == "fortran" ]]; then
-    effective_generate_timeout="15m"
-  fi
+  local effective_memory_limit
+  local effective_cpus_limit
+  local effective_pids_limit
+  local effective_gomaxprocs_value
+  local effective_goflags_value
+  local effective_lr0_core_budget
+  local effective_generate_timeout
+  local effective_gomemlimit=""
 
-  echo "=== Testing: $grammar (memory=$MEMORY_LIMIT cpus=$CPUS_LIMIT pids=$PIDS_LIMIT timeout=$TIMEOUT_PER_GRAMMAR generate_timeout=${effective_generate_timeout:-inherit} gomaxprocs=${GOMAXPROCS_VALUE:-inherit} goflags=${GOFLAGS_VALUE:-inherit} lr0_core_budget=${effective_lr0_core_budget:-inherit}) ==="
+  effective_memory_limit="$(resolve_fortran_setting "$grammar" "$MEMORY_LIMIT" "$MEMORY_SET" "$FORTRAN_SAFE_MEMORY_LIMIT")"
+  effective_cpus_limit="$(resolve_fortran_setting "$grammar" "$CPUS_LIMIT" "$CPUS_SET" "$FORTRAN_SAFE_CPUS_LIMIT")"
+  effective_pids_limit="$(resolve_fortran_setting "$grammar" "$PIDS_LIMIT" "$PIDS_SET" "$FORTRAN_SAFE_PIDS_LIMIT")"
+  effective_gomaxprocs_value="$(resolve_fortran_setting "$grammar" "$GOMAXPROCS_VALUE" "$GOMAXPROCS_SET" "$FORTRAN_SAFE_GOMAXPROCS_VALUE")"
+  effective_goflags_value="$(resolve_fortran_setting "$grammar" "$GOFLAGS_VALUE" "$GOFLAGS_SET" "$FORTRAN_SAFE_GOFLAGS_VALUE")"
+  effective_lr0_core_budget="$(resolve_fortran_setting "$grammar" "$LR0_CORE_BUDGET" "$LR0_CORE_BUDGET_SET" "$FORTRAN_SAFE_LR0_CORE_BUDGET")"
+  effective_generate_timeout="$(resolve_fortran_setting "$grammar" "$GENERATE_TIMEOUT" "$GENERATE_TIMEOUT_SET" "$FORTRAN_SAFE_GENERATE_TIMEOUT")"
+  effective_gomemlimit="$(docker_memory_limit_to_gomemlimit "$effective_memory_limit" || true)"
+
+  echo "=== Testing: $grammar (memory=$effective_memory_limit cpus=$effective_cpus_limit pids=$effective_pids_limit timeout=$TIMEOUT_PER_GRAMMAR generate_timeout=${effective_generate_timeout:-inherit} gomaxprocs=${effective_gomaxprocs_value:-inherit} goflags=${effective_goflags_value:-inherit} lr0_core_budget=${effective_lr0_core_budget:-inherit} gomemlimit=${effective_gomemlimit:-inherit}) ==="
 
   # Build inner command for Docker.
   local lr_split_env=""
@@ -403,12 +500,14 @@ fi"
   read -r -d '' inner_cmd <<INNER_EOF || true
 set -eo pipefail
 export PATH=/usr/local/go/bin:\$PATH
-export GOMEMLIMIT=6GiB
-if [[ -n "$GOMAXPROCS_VALUE" ]]; then
-  export GOMAXPROCS="$GOMAXPROCS_VALUE"
+if [[ -n "$effective_gomemlimit" ]]; then
+  export GOMEMLIMIT="$effective_gomemlimit"
 fi
-if [[ -n "$GOFLAGS_VALUE" ]]; then
-  export GOFLAGS="$GOFLAGS_VALUE"
+if [[ -n "$effective_gomaxprocs_value" ]]; then
+  export GOMAXPROCS="$effective_gomaxprocs_value"
+fi
+if [[ -n "$effective_goflags_value" ]]; then
+  export GOFLAGS="$effective_goflags_value"
 fi
 mkdir -p /tmp/grammar_parity
 $seed_block
@@ -434,9 +533,9 @@ INNER_EOF
   "$RUNNER" \
     --image "$IMAGE_TAG" \
     --repo-root "$REPO_ROOT" \
-    --memory "$MEMORY_LIMIT" \
-    --cpus "$CPUS_LIMIT" \
-    --pids "$PIDS_LIMIT" \
+    --memory "$effective_memory_limit" \
+    --cpus "$effective_cpus_limit" \
+    --pids "$effective_pids_limit" \
     --label "diag-${grammar}" \
     --no-build \
     -- "$inner_cmd" 2>&1 | tee "$log_file" || exit_code=$?
@@ -474,6 +573,7 @@ INNER_EOF
 total=${#GRAMMARS[@]}
 echo "Running $total grammar(s) with per-grammar Docker isolation"
 echo "Memory: $MEMORY_LIMIT | Timeout: $TIMEOUT_PER_GRAMMAR | Profile: $PROFILE | Cases: $MAX_CASES"
+echo "Fortran bounded preset: $FORTRAN_SAFE_DEFAULTS"
 echo "Reports: $REPORT_DIR"
 echo ""
 
