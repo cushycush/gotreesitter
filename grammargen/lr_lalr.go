@@ -72,6 +72,7 @@ func (ctx *lrContext) buildLR0() {
 	ng := ctx.ng
 	tokenCount := ctx.tokenCount
 	debugLALR := os.Getenv("GOT_DEBUG_LALR") == "1"
+	ctx.ensureLR0SymbolSeenCapacity(len(ng.Symbols))
 
 	// Hash map for state dedup: coreHash → chain of state indices.
 	coreMap := make(map[uint64]*stateHashEntry)
@@ -115,14 +116,16 @@ func (ctx *lrContext) buildLR0() {
 		}
 
 		// Collect all symbols after the dot.
-		symsSeen := make(map[int]bool)
-		var syms []int
+		symbolSeenEpoch := ctx.nextLR0SymbolSeenEpoch()
+		syms := ctx.gotoSymbolsScratch[:0]
 		for _, ce := range itemSet.cores {
-			prod := &ng.Productions[int(ce.prodIdx)]
-			if int(ce.dot) < len(prod.RHS) {
-				sym := prod.RHS[ce.dot]
-				if !symsSeen[sym] {
-					symsSeen[sym] = true
+			prodIdx := int(ce.prodIdx())
+			dot := int(ce.dot())
+			prod := &ng.Productions[prodIdx]
+			if dot < len(prod.RHS) {
+				sym := prod.RHS[dot]
+				if ctx.lr0SymbolSeenGen[sym] != symbolSeenEpoch {
+					ctx.lr0SymbolSeenGen[sym] = symbolSeenEpoch
 					syms = append(syms, sym)
 				}
 			}
@@ -130,11 +133,13 @@ func (ctx *lrContext) buildLR0() {
 
 		for _, sym := range syms {
 			// Compute GOTO(state, sym): advance dot past sym, then close.
-			var kernel []coreItem
+			kernel := ctx.lr0KernelScratch[:0]
 			for _, ce := range itemSet.cores {
-				prod := &ng.Productions[int(ce.prodIdx)]
-				if int(ce.dot) < len(prod.RHS) && prod.RHS[ce.dot] == sym {
-					kernel = append(kernel, coreItem{prodIdx: int(ce.prodIdx), dot: int(ce.dot) + 1})
+				prodIdx := int(ce.prodIdx())
+				dot := int(ce.dot())
+				prod := &ng.Productions[prodIdx]
+				if dot < len(prod.RHS) && prod.RHS[dot] == sym {
+					kernel = append(kernel, coreItem{prodIdx: prodIdx, dot: dot + 1})
 				}
 			}
 			if len(kernel) == 0 {
@@ -142,6 +147,7 @@ func (ctx *lrContext) buildLR0() {
 			}
 
 			closedSet := ctx.lr0Closure(kernel)
+			ctx.lr0KernelScratch = kernel[:0]
 			closedSet.annotationArgTag = ctx.templateContextTagForLR0Transition(stateIdx, sym, &closedSet)
 			closedSet.annotationArgTag |= ctx.repeatWrapperSourceTagForLR0Transition(stateIdx, sym, &closedSet)
 			closedSet.annotationArgTag |= ctx.conditionalTypeContextTagForLR0Transition(stateIdx, sym, &closedSet)
@@ -188,13 +194,14 @@ func (ctx *lrContext) buildLR0() {
 
 			// Record transition.
 			if ctx.transitions[stateIdx] == nil {
-				ctx.transitions[stateIdx] = make(map[int]int)
+				ctx.transitions[stateIdx] = make(map[int]int, len(syms))
 			}
 			ctx.transitions[stateIdx][sym] = targetIdx
 
 			// After appending to itemSets, re-read pointer in case of slice realloc.
 			itemSet = &ctx.lalrLR0ItemSets[stateIdx]
 		}
+		ctx.gotoSymbolsScratch = syms[:0]
 
 		_ = tokenCount // used implicitly via lr0Closure
 	}
@@ -211,21 +218,12 @@ func (ctx *lrContext) lr0Closure(kernel []coreItem) lr0ItemSet {
 	}
 	ctx.dot0Dirty = ctx.dot0Dirty[:0]
 
-	kernelSeen := make(map[uint64]int, len(kernel))
 	cores := make([]lr0CoreEntry, 0, len(kernel)*2)
 
 	// Add kernel items.
 	for _, ki := range kernel {
-		key := packCoreItemKey(ki.prodIdx, ki.dot)
-		if _, ok := kernelSeen[key]; ok {
-			continue // deduplicate
-		}
 		idx := len(cores)
-		kernelSeen[key] = idx
-		cores = append(cores, lr0CoreEntry{
-			prodIdx: uint32(ki.prodIdx),
-			dot:     uint32(ki.dot),
-		})
+		cores = append(cores, packLR0CoreEntry(ki.prodIdx, ki.dot))
 		if ki.dot == 0 {
 			ctx.dot0Index[ki.prodIdx] = idx
 			ctx.dot0Dirty = append(ctx.dot0Dirty, ki.prodIdx)
@@ -237,12 +235,14 @@ func (ctx *lrContext) lr0Closure(kernel []coreItem) lr0ItemSet {
 	// since LR(0) closure doesn't change — there are no lookaheads to propagate).
 	for i := 0; i < len(cores); i++ {
 		ce := &cores[i]
-		prod := &ng.Productions[int(ce.prodIdx)]
-		if int(ce.dot) >= len(prod.RHS) {
+		prodIdx := int(ce.prodIdx())
+		dot := int(ce.dot())
+		prod := &ng.Productions[prodIdx]
+		if dot >= len(prod.RHS) {
 			continue
 		}
 
-		nextSym := prod.RHS[ce.dot]
+		nextSym := prod.RHS[dot]
 		if nextSym < tokenCount {
 			continue
 		}
@@ -254,20 +254,25 @@ func (ctx *lrContext) lr0Closure(kernel []coreItem) lr0ItemSet {
 			idx := len(cores)
 			ctx.dot0Index[prodIdx] = idx
 			ctx.dot0Dirty = append(ctx.dot0Dirty, prodIdx)
-			cores = append(cores, lr0CoreEntry{
-				prodIdx: uint32(prodIdx),
-				dot:     0,
-			})
+			cores = append(cores, packLR0CoreEntry(prodIdx, 0))
 		}
 	}
 
 	if len(cores) > 1 {
 		sort.Slice(cores, func(i, j int) bool {
-			if cores[i].prodIdx != cores[j].prodIdx {
-				return cores[i].prodIdx < cores[j].prodIdx
+			if cores[i].prodIdx() != cores[j].prodIdx() {
+				return cores[i].prodIdx() < cores[j].prodIdx()
 			}
-			return cores[i].dot < cores[j].dot
+			return cores[i].dot() < cores[j].dot()
 		})
+	}
+	// LR0 states are retained until lookahead computation finishes. For large
+	// grammars, append growth leaves substantial spare capacity on these slices,
+	// so copy them down to exact size before storing them on the context.
+	if cap(cores) != len(cores) {
+		tight := make([]lr0CoreEntry, len(cores))
+		copy(tight, cores)
+		cores = tight
 	}
 
 	set := lr0ItemSet{
@@ -276,7 +281,7 @@ func (ctx *lrContext) lr0Closure(kernel []coreItem) lr0ItemSet {
 	// Compute only coreHash (fullHash and completionLAHash will be set after lookaheads).
 	var ch uint64
 	for _, c := range cores {
-		ch += mixCoreItem(int(c.prodIdx), int(c.dot))
+		ch += mixCoreItem(int(c.prodIdx()), int(c.dot()))
 	}
 	set.coreHash = ch
 
@@ -453,10 +458,10 @@ func (ctx *lrContext) computeLALRLookaheads() {
 		}
 		itemSet := &ctx.lalrLR0ItemSets[stateIdx]
 		for _, ce := range itemSet.cores {
-			if ce.dot != 0 {
+			if ce.dot() != 0 {
 				continue
 			}
-			pi := int(ce.prodIdx)
+			pi := int(ce.prodIdx())
 			prod := &ng.Productions[pi]
 			lhs := prod.LHS
 			rhs := prod.RHS
@@ -608,8 +613,8 @@ func (ctx *lrContext) materializeLALRItemSets(reduceLookaheads []map[int]bitset)
 		laByCore := reduceLookaheads[i]
 		for ci, ce := range lr0Set.cores {
 			cores[ci] = coreEntry{
-				prodIdx: ce.prodIdx,
-				dot:     ce.dot,
+				prodIdx: ce.prodIdx(),
+				dot:     uint32(ce.dot()),
 			}
 			if laByCore != nil {
 				if la, ok := laByCore[ci]; ok {

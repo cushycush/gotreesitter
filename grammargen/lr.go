@@ -17,9 +17,38 @@ type coreEntry struct {
 	lookaheads bitset
 }
 
-type lr0CoreEntry struct {
-	prodIdx uint32
-	dot     uint32
+// lr0CoreEntry packs the retained LR(0) core down to 6 bytes instead of the
+// 8-byte uint32/uint32 pair. Large LALR builds keep hundreds of millions of
+// these entries live until lookahead materialization, so even a 2-byte saving
+// per entry materially lowers peak heap usage.
+type lr0CoreEntry [6]byte
+
+func packLR0CoreEntry(prodIdx, dot int) lr0CoreEntry {
+	if prodIdx < 0 || uint64(prodIdx) > uint64(^uint32(0)) {
+		panic(fmt.Sprintf("lr0 prodIdx out of range: %d", prodIdx))
+	}
+	if dot < 0 || dot > 0xFFFF {
+		panic(fmt.Sprintf("lr0 dot out of range: %d", dot))
+	}
+	return lr0CoreEntry{
+		byte(prodIdx),
+		byte(prodIdx >> 8),
+		byte(prodIdx >> 16),
+		byte(prodIdx >> 24),
+		byte(dot),
+		byte(dot >> 8),
+	}
+}
+
+func (ce lr0CoreEntry) prodIdx() uint32 {
+	return uint32(ce[0]) |
+		uint32(ce[1])<<8 |
+		uint32(ce[2])<<16 |
+		uint32(ce[3])<<24
+}
+
+func (ce lr0CoreEntry) dot() uint16 {
+	return uint16(ce[4]) | uint16(ce[5])<<8
 }
 
 // lrItemSet is a set of LR(1) items stored in core-based representation.
@@ -96,11 +125,13 @@ func (set *lrItemSet) coreLookup(prodIdx, dot int) (int, bool) {
 func (set *lr0ItemSet) coreLookup(prodIdx, dot int) (int, bool) {
 	lo, hi := 0, len(set.cores)
 	prodIdx32 := uint32(prodIdx)
-	dot32 := uint32(dot)
+	dot16 := uint16(dot)
 	for lo < hi {
 		mid := (lo + hi) / 2
 		ce := set.cores[mid]
-		if ce.prodIdx < prodIdx32 || (ce.prodIdx == prodIdx32 && ce.dot < dot32) {
+		ceProdIdx := ce.prodIdx()
+		ceDot := ce.dot()
+		if ceProdIdx < prodIdx32 || (ceProdIdx == prodIdx32 && ceDot < dot16) {
 			lo = mid + 1
 		} else {
 			hi = mid
@@ -108,7 +139,7 @@ func (set *lr0ItemSet) coreLookup(prodIdx, dot int) (int, bool) {
 	}
 	if lo < len(set.cores) {
 		ce := set.cores[lo]
-		if ce.prodIdx == prodIdx32 && ce.dot == dot32 {
+		if ce.prodIdx() == prodIdx32 && ce.dot() == dot16 {
 			return lo, true
 		}
 	}
@@ -152,7 +183,7 @@ func sameSortedLR0CoreEntries(a, b []lr0CoreEntry) bool {
 		return false
 	}
 	for i := range a {
-		if a[i].prodIdx != b[i].prodIdx || a[i].dot != b[i].dot {
+		if a[i] != b[i] {
 			return false
 		}
 	}
@@ -814,6 +845,9 @@ type lrContext struct {
 	// building successor states.
 	gotoSymbolsScratch  []int
 	gotoAdvancedScratch []coreEntry
+	lr0KernelScratch    []coreItem
+	lr0SymbolSeenGen    []uint32
+	lr0SymbolSeenEpoch  uint32
 
 	// Lookahead bitset scratch reuses word buffers for temporary closed sets that
 	// are discarded after exact-match or merge lookups.
@@ -947,9 +981,30 @@ func (ctx *lrContext) releaseScratch() {
 	ctx.boundaryLookaheads = bitset{}
 	ctx.gotoSymbolsScratch = nil
 	ctx.gotoAdvancedScratch = nil
+	ctx.lr0KernelScratch = nil
+	ctx.lr0SymbolSeenGen = nil
+	ctx.lr0SymbolSeenEpoch = 0
 	ctx.lookaheadWordPool = nil
 	ctx.repeatWrapperStateSymCache = nil
 	ctx.lalrNTTransitions = nil
+}
+
+func (ctx *lrContext) nextLR0SymbolSeenEpoch() uint32 {
+	ctx.lr0SymbolSeenEpoch++
+	if ctx.lr0SymbolSeenEpoch == 0 {
+		for i := range ctx.lr0SymbolSeenGen {
+			ctx.lr0SymbolSeenGen[i] = 0
+		}
+		ctx.lr0SymbolSeenEpoch = 1
+	}
+	return ctx.lr0SymbolSeenEpoch
+}
+
+func (ctx *lrContext) ensureLR0SymbolSeenCapacity(size int) {
+	if size <= len(ctx.lr0SymbolSeenGen) {
+		return
+	}
+	ctx.lr0SymbolSeenGen = append(ctx.lr0SymbolSeenGen, make([]uint32, size-len(ctx.lr0SymbolSeenGen))...)
 }
 
 func (ctx *lrContext) allocLookaheadBitset() bitset {
@@ -2025,7 +2080,7 @@ func (ctx *lrContext) isBracedTemplateFamilySetLR0(set *lr0ItemSet) bool {
 		return false
 	}
 	for _, ce := range set.cores {
-		switch ctx.ng.Productions[int(ce.prodIdx)].LHS {
+		switch ctx.ng.Productions[int(ce.prodIdx())].LHS {
 		case ctx.bracedTemplateBodySym, ctx.bracedTemplateBody1Sym, ctx.bracedTemplateBody2Sym:
 			return true
 		}
@@ -2088,7 +2143,7 @@ func (ctx *lrContext) isTemplateDefinitionCarrierSetLR0(set *lr0ItemSet) bool {
 		return false
 	}
 	for _, ce := range set.cores {
-		prod := ctx.ng.Productions[int(ce.prodIdx)]
+		prod := ctx.ng.Productions[int(ce.prodIdx())]
 		if prod.LHS >= 0 && prod.LHS < len(ctx.templateDefinitionCarrierLHS) && ctx.templateDefinitionCarrierLHS[prod.LHS] {
 			return true
 		}
@@ -2136,8 +2191,8 @@ func (ctx *lrContext) completedRepeatWrapperLHSAcrossTransitionsLR0(set *lr0Item
 		return -1
 	}
 	for _, ce := range set.cores {
-		prod := ctx.ng.Productions[int(ce.prodIdx)]
-		if int(ce.dot) != len(prod.RHS) || len(prod.RHS) != 1 || prod.RHS[0] != sym {
+		prod := ctx.ng.Productions[int(ce.prodIdx())]
+		if int(ce.dot()) != len(prod.RHS) || len(prod.RHS) != 1 || prod.RHS[0] != sym {
 			continue
 		}
 		if prod.LHS < 0 || prod.LHS >= len(ctx.ng.Symbols) {
@@ -2216,8 +2271,8 @@ func (ctx *lrContext) stateHasRecursiveRepeatSourceLR0(set *lr0ItemSet, lhs int)
 		return false
 	}
 	for _, ce := range set.cores {
-		prod := ctx.ng.Productions[int(ce.prodIdx)]
-		if prod.LHS != lhs || int(ce.dot) != len(prod.RHS) {
+		prod := ctx.ng.Productions[int(ce.prodIdx())]
+		if prod.LHS != lhs || int(ce.dot()) != len(prod.RHS) {
 			continue
 		}
 		for _, sym := range prod.RHS {
@@ -2281,7 +2336,7 @@ func (ctx *lrContext) isConditionalTypeCarrierSetLR0(set *lr0ItemSet) bool {
 		return false
 	}
 	for _, ce := range set.cores {
-		prod := ctx.ng.Productions[int(ce.prodIdx)]
+		prod := ctx.ng.Productions[int(ce.prodIdx())]
 		if prod.LHS >= 0 && prod.LHS < len(ctx.conditionalTypeCarrierLHS) && ctx.conditionalTypeCarrierLHS[prod.LHS] {
 			return true
 		}
@@ -2325,14 +2380,15 @@ func (ctx *lrContext) stateEntersConditionalTypeRHSLR0(state, sym int) bool {
 		return false
 	}
 	for _, ce := range ctx.lalrLR0ItemSets[state].cores {
-		prod := ctx.ng.Productions[int(ce.prodIdx)]
+		prod := ctx.ng.Productions[int(ce.prodIdx())]
 		if prod.LHS != ctx.conditionalTypeSym || len(prod.RHS) < 4 {
 			continue
 		}
 		if prod.RHS[1] != ctx.conditionalTypeExtendsSym || prod.RHS[3] != ctx.conditionalTypePlainQmarkSym {
 			continue
 		}
-		if ce.dot == 1 && int(ce.dot) < len(prod.RHS) && prod.RHS[ce.dot] == ctx.conditionalTypeExtendsSym && sym == ctx.conditionalTypeExtendsSym {
+		dot := int(ce.dot())
+		if dot == 1 && dot < len(prod.RHS) && prod.RHS[dot] == ctx.conditionalTypeExtendsSym && sym == ctx.conditionalTypeExtendsSym {
 			return true
 		}
 	}
