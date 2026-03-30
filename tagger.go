@@ -26,6 +26,8 @@ type Tagger struct {
 	query              *Query
 	lang               *Language
 	tokenSourceFactory func(source []byte) TokenSource
+	// matchesBuf is reused across Tag calls to eliminate per-call slice allocation.
+	matchesBuf []QueryMatch
 }
 
 // TaggerOption configures a Tagger.
@@ -100,13 +102,17 @@ func (tg *Tagger) parse(source []byte, oldTree *Tree) *Tree {
 }
 
 func (tg *Tagger) tagTree(tree *Tree) []Tag {
-	matches := tg.query.Execute(tree)
-	if len(matches) == 0 {
+	// Reuse the matches buffer across calls to eliminate the per-call
+	// []QueryMatch allocation. ExecuteInto appends into the pre-allocated slice.
+	tg.matchesBuf = tg.query.ExecuteInto(tree, tg.matchesBuf[:0])
+	if len(tg.matchesBuf) == 0 {
 		return nil
 	}
 
-	var tags []Tag
-	for _, m := range matches {
+	// Pre-size to match count. Tags queries emit at most one tag per match,
+	// so this is the tightest possible upper bound without a pre-pass.
+	tags := make([]Tag, 0, len(tg.matchesBuf))
+	for _, m := range tg.matchesBuf {
 		tag := tg.extractTag(m, tree.Source())
 		if tag.Kind != "" {
 			tags = append(tags, tag)

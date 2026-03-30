@@ -212,7 +212,7 @@ func (ip *InjectionParser) findAndParseInjections(source []byte, parentLang stri
 		return nil, err
 	}
 
-	var result []Injection
+	result := make([]Injection, 0, len(detected))
 	for _, det := range detected {
 		if det.Language == "" {
 			result = append(result, det)
@@ -227,8 +227,30 @@ func (ip *InjectionParser) findAndParseInjections(source []byte, parentLang stri
 		}
 
 		childParser := ip.getParser(det.Language, childLang)
-		childParser.SetIncludedRanges(det.Ranges)
-		childTree, err := childParser.Parse(source)
+
+		// For single-range injections (the common case), parse only the range
+		// bytes via ParseIncremental(rangeBytes, nil). This lets the parser use
+		// an incremental-class arena (16 KB slab vs 2 MB for full parse), which
+		// is orders of magnitude cheaper when there are many small injections.
+		// Multi-range injections fall back to the full-source path with
+		// SetIncludedRanges because the lexer needs non-contiguous byte ranges.
+		var childTree *Tree
+		var childSource []byte
+		if len(det.Ranges) == 1 {
+			r := det.Ranges[0]
+			if r.StartByte <= r.EndByte && int(r.EndByte) <= len(source) {
+				childSource = source[r.StartByte:r.EndByte]
+				childTree, err = childParser.ParseIncremental(childSource, nil)
+			} else {
+				childParser.SetIncludedRanges(det.Ranges)
+				childSource = source
+				childTree, err = childParser.Parse(source)
+			}
+		} else {
+			childParser.SetIncludedRanges(det.Ranges)
+			childSource = source
+			childTree, err = childParser.Parse(source)
+		}
 		if err != nil {
 			result = append(result, det)
 			continue
@@ -237,7 +259,7 @@ func (ip *InjectionParser) findAndParseInjections(source []byte, parentLang stri
 
 		// Recurse: check if this child language has injection queries too.
 		if _, hasQuery := ip.injectionQueries[det.Language]; hasQuery {
-			nested, err := ip.findAndParseInjections(source, det.Language, childTree, depth+1)
+			nested, err := ip.findAndParseInjections(childSource, det.Language, childTree, depth+1)
 			if err != nil {
 				return nil, err
 			}

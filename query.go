@@ -251,6 +251,24 @@ func (q *Query) Execute(tree *Tree) []QueryMatch {
 	return q.executeNode(tree.RootNode(), tree.Language(), tree.Source())
 }
 
+// ExecuteInto runs the query against a syntax tree, appending matches into
+// dst and returning the updated slice. Callers can pre-allocate or reuse dst
+// across calls to eliminate the per-call slice allocation from Execute.
+//
+// Example:
+//
+//	var buf []QueryMatch
+//	for _, tree := range trees {
+//	    buf = q.ExecuteInto(tree, buf[:0])
+//	    process(buf)
+//	}
+func (q *Query) ExecuteInto(tree *Tree, dst []QueryMatch) []QueryMatch {
+	if tree == nil {
+		return dst
+	}
+	return q.executeNodeInto(tree.RootNode(), tree.Language(), tree.Source(), dst)
+}
+
 // ExecuteNode runs the query starting from a specific node.
 //
 // source is required for text predicates (like #eq? / #match?); pass the
@@ -368,6 +386,22 @@ func (q *Query) executeNode(root *Node, lang *Language, source []byte) []QueryMa
 		matches = append(matches, m)
 	}
 	return matches
+}
+
+func (q *Query) executeNodeInto(root *Node, lang *Language, source []byte, dst []QueryMatch) []QueryMatch {
+	if root == nil || lang == nil {
+		return dst
+	}
+
+	cursor := q.Exec(root, lang, source)
+	for {
+		m, ok := cursor.NextMatch()
+		if !ok {
+			break
+		}
+		dst = append(dst, m)
+	}
+	return dst
 }
 
 func (q *Query) rootPatternCandidates(sym Symbol) []int {
