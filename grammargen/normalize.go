@@ -124,6 +124,12 @@ type symbolTable struct {
 	choiceLiftThreshold int  // if >0, lift inline CHOICE nodes exceeding this width
 }
 
+const inlinePatternSymbolPrefix = "\x00inline_pattern:"
+
+func inlinePatternSymbolKey(pattern string) string {
+	return inlinePatternSymbolPrefix + pattern
+}
+
 func newSymbolTable() *symbolTable {
 	st := &symbolTable{
 		byName:           make(map[string]int),
@@ -290,11 +296,11 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 	// expected path.
 	aliasedPatterns := collectAliasedPatterns(g)
 	for _, pat := range inlinePatterns {
-		name := pat // use pattern value as key for lookup
+		name := inlinePatternSymbolKey(pat)
 		if _, ok := st.lookup(name); ok {
 			continue // already registered
 		}
-		displayName := name
+		displayName := pat
 		visible := false
 		named := false
 		if ai, ok := aliasedPatterns[pat]; ok {
@@ -1919,7 +1925,7 @@ func extractTerminals(g *Grammar, st *symbolTable, stringLits []string, namedTok
 	// Inline patterns (regex appearing directly in non-terminal rules, not in token()).
 	// These have no explicit prec, so priority is 0.
 	for _, pat := range inlinePatterns {
-		id, ok := st.lookup(pat)
+		id, ok := st.lookup(inlinePatternSymbolKey(pat))
 		if !ok {
 			continue
 		}
@@ -2954,8 +2960,10 @@ func addRuleSymbol(r *Rule, st *symbolTable, rhs *[]int) {
 			*rhs = append(*rhs, id)
 		}
 	case RulePattern:
-		// Inline patterns are registered by their pattern value.
-		if id, ok := st.lookup(r.Value); ok {
+		// Inline patterns use a distinct internal symbol key so they do not
+		// collide with anonymous string terminals that share the same display
+		// text (for example SQL's literal ".*" and pg_command regex /.*/).
+		if id, ok := st.lookup(inlinePatternSymbolKey(r.Value)); ok {
 			*rhs = append(*rhs, id)
 		}
 	}

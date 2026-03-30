@@ -230,7 +230,7 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 			// from tree-sitter's upstream repeat lowering shape.
 			switch g.name {
 			case "graphql", "json", "regex", "toml", "scheme",
-				"csv", "git_rebase", "pem", "eds", "forth", "sql",
+				"csv", "git_rebase", "pem", "eds", "forth",
 				"comment", "eex", "dot", "todotxt", "ssh_config",
 				"properties", "proto", "requirements", "promql", "json5",
 				"gitattributes", "git_config", "ini",

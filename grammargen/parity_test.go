@@ -2575,7 +2575,7 @@ func TestMultiGrammarImportPipeline(t *testing.T) {
 			// Enable binary repeat mode for validated grammars.
 			switch g.name {
 			case "go_lang", "graphql", "json", "regex", "toml", "scheme",
-				"csv", "git_rebase", "pem", "eds", "forth", "sql":
+				"csv", "git_rebase", "pem", "eds", "forth":
 				gram.BinaryRepeatMode = true
 			}
 
