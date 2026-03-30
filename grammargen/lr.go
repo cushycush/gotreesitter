@@ -1007,7 +1007,23 @@ func (ctx *lrContext) ensureLR0SymbolSeenCapacity(size int) {
 	ctx.lr0SymbolSeenGen = append(ctx.lr0SymbolSeenGen, make([]uint32, size-len(ctx.lr0SymbolSeenGen))...)
 }
 
+func (ctx *lrContext) ensureLookaheadBitsetConfig() {
+	if ctx.lookaheadWordCount == 0 {
+		ctx.lookaheadWordCount = (ctx.tokenCount + 63) / 64
+		if ctx.lookaheadWordCount == 0 {
+			ctx.lookaheadWordCount = 1
+		}
+	}
+	if ctx.maxLookaheadPool == 0 {
+		ctx.maxLookaheadPool = 64
+		if ctx.ng != nil && len(ctx.ng.Productions) > ctx.maxLookaheadPool {
+			ctx.maxLookaheadPool = len(ctx.ng.Productions)
+		}
+	}
+}
+
 func (ctx *lrContext) allocLookaheadBitset() bitset {
+	ctx.ensureLookaheadBitsetConfig()
 	if n := len(ctx.lookaheadWordPool); n > 0 {
 		words := ctx.lookaheadWordPool[n-1]
 		ctx.lookaheadWordPool = ctx.lookaheadWordPool[:n-1]
@@ -1024,6 +1040,7 @@ func (ctx *lrContext) cloneLookaheadBitset(src *bitset) bitset {
 }
 
 func (ctx *lrContext) recycleLookaheadBitset(b *bitset) {
+	ctx.ensureLookaheadBitsetConfig()
 	if len(b.words) != ctx.lookaheadWordCount || len(ctx.lookaheadWordPool) >= ctx.maxLookaheadPool {
 		b.words = nil
 		return
