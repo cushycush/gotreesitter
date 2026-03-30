@@ -17,42 +17,34 @@ type coreEntry struct {
 	lookaheads bitset
 }
 
-// lr0CoreEntry packs the retained LR(0) core down to 5 bytes instead of the
-// 8-byte uint32/uint32 pair. Large LALR builds keep hundreds of millions of
-// these entries live until lookahead materialization, so even a 1-byte saving
-// per entry materially lowers peak heap usage at Fortran-scale core counts.
+// lr0CoreEntry packs the retained LR(0) core into 4 bytes by storing the
+// production index in 24 bits and the dot position in 8 bits. Large LALR
+// builds keep hundreds of millions of these entries live until lookahead
+// materialization, so shrinking from the old uint32/uint32 pair materially
+// lowers peak heap usage at Fortran-scale core counts.
 //
-// The LR(0) path only needs the production index and dot position. Production
-// indices can still use the full uint32 range; dot positions are stored in one
-// byte and guarded at pack time so oversize RHS lengths fail loudly instead of
-// silently corrupting state identity.
-type lr0CoreEntry [5]byte
+// The LR(0) path only needs the production index and dot position. Dot
+// positions are already guarded to one byte. Normalized grammars stay far below
+// 16M productions, but pack time still checks the 24-bit limit so an outlier
+// fails loudly instead of silently corrupting state identity.
+type lr0CoreEntry uint32
 
 func packLR0CoreEntry(prodIdx, dot int) lr0CoreEntry {
-	if prodIdx < 0 || uint64(prodIdx) > uint64(^uint32(0)) {
+	if prodIdx < 0 || prodIdx > 0x00FFFFFF {
 		panic(fmt.Sprintf("lr0 prodIdx out of range: %d", prodIdx))
 	}
 	if dot < 0 || dot > 0xFF {
 		panic(fmt.Sprintf("lr0 dot out of range: %d", dot))
 	}
-	return lr0CoreEntry{
-		byte(prodIdx),
-		byte(prodIdx >> 8),
-		byte(prodIdx >> 16),
-		byte(prodIdx >> 24),
-		byte(dot),
-	}
+	return lr0CoreEntry(uint32(prodIdx) | uint32(dot)<<24)
 }
 
 func (ce lr0CoreEntry) prodIdx() uint32 {
-	return uint32(ce[0]) |
-		uint32(ce[1])<<8 |
-		uint32(ce[2])<<16 |
-		uint32(ce[3])<<24
+	return uint32(ce) & 0x00FFFFFF
 }
 
-func (ce lr0CoreEntry) dot() uint16 {
-	return uint16(ce[4])
+func (ce lr0CoreEntry) dot() uint8 {
+	return uint8(uint32(ce) >> 24)
 }
 
 // lrItemSet is a set of LR(1) items stored in core-based representation.
@@ -88,6 +80,13 @@ type lr0ItemSet struct {
 	coreHash         uint64
 	annotationArgTag uint32
 }
+
+type lrTransition struct {
+	sym    uint32
+	target uint32
+}
+
+type lrTransitionRow []lrTransition
 
 const (
 	templateContextTagShift          = 16
@@ -129,13 +128,13 @@ func (set *lrItemSet) coreLookup(prodIdx, dot int) (int, bool) {
 func (set *lr0ItemSet) coreLookup(prodIdx, dot int) (int, bool) {
 	lo, hi := 0, len(set.cores)
 	prodIdx32 := uint32(prodIdx)
-	dot16 := uint16(dot)
+	dot8 := uint8(dot)
 	for lo < hi {
 		mid := (lo + hi) / 2
 		ce := set.cores[mid]
 		ceProdIdx := ce.prodIdx()
 		ceDot := ce.dot()
-		if ceProdIdx < prodIdx32 || (ceProdIdx == prodIdx32 && ceDot < dot16) {
+		if ceProdIdx < prodIdx32 || (ceProdIdx == prodIdx32 && ceDot < dot8) {
 			lo = mid + 1
 		} else {
 			hi = mid
@@ -143,7 +142,7 @@ func (set *lr0ItemSet) coreLookup(prodIdx, dot int) (int, bool) {
 	}
 	if lo < len(set.cores) {
 		ce := set.cores[lo]
-		if ce.prodIdx() == prodIdx32 && ce.dot() == dot16 {
+		if ce.prodIdx() == prodIdx32 && ce.dot() == dot8 {
 			return lo, true
 		}
 	}
@@ -600,16 +599,13 @@ func buildLRTablesInternal(bgCtx context.Context, ng *NormalizedGrammar, trackPr
 		tables.ActionTable[stateIdx] = make(map[int][]lrAction)
 		tables.GotoTable[stateIdx] = make(map[int]int)
 
-		// Use pre-computed transitions instead of recomputing gotoState.
-		trans := ctx.transitions[stateIdx]
-
 		for _, ce := range itemSet.cores {
 			prod := &ng.Productions[int(ce.prodIdx)]
 
 			if int(ce.dot) < len(prod.RHS) {
 				// Dot not at end → shift or goto
 				nextSym := prod.RHS[ce.dot]
-				targetState, ok := trans[nextSym]
+				targetState, ok := ctx.transitionTarget(stateIdx, nextSym)
 				if !ok {
 					continue
 				}
@@ -788,7 +784,7 @@ type lrContext struct {
 	// Item set management
 	itemSets        []lrItemSet
 	lalrLR0ItemSets []lr0ItemSet
-	transitions     map[int]map[int]int
+	transitions     []lrTransitionRow
 	// LALR transition follow sets are retained so local LR(1) splitting can
 	// reconstruct nonterminal predecessor partitions with meaningful lookaheads
 	// instead of the empty LR(0) kernels emitted by DeRemer/Pennello.
@@ -1009,6 +1005,53 @@ func (ctx *lrContext) ensureLR0SymbolSeenCapacity(size int) {
 		return
 	}
 	ctx.lr0SymbolSeenGen = append(ctx.lr0SymbolSeenGen, make([]uint32, size-len(ctx.lr0SymbolSeenGen))...)
+}
+
+func (ctx *lrContext) ensureTransitionState(state int) {
+	if state < len(ctx.transitions) {
+		return
+	}
+	ctx.transitions = append(ctx.transitions, make([]lrTransitionRow, state-len(ctx.transitions)+1)...)
+}
+
+func (ctx *lrContext) transitionRow(state int) lrTransitionRow {
+	if state < 0 || state >= len(ctx.transitions) {
+		return nil
+	}
+	return ctx.transitions[state]
+}
+
+func (ctx *lrContext) addTransition(state, sym, target int) {
+	ctx.ensureTransitionState(state)
+	ctx.transitions[state] = append(ctx.transitions[state], lrTransition{
+		sym:    uint32(sym),
+		target: uint32(target),
+	})
+}
+
+func (ctx *lrContext) sortStateTransitions(state int) {
+	if state < 0 || state >= len(ctx.transitions) || len(ctx.transitions[state]) < 2 {
+		return
+	}
+	row := ctx.transitions[state]
+	sort.Slice(row, func(i, j int) bool {
+		return row[i].sym < row[j].sym
+	})
+}
+
+func (ctx *lrContext) transitionTarget(state, sym int) (int, bool) {
+	row := ctx.transitionRow(state)
+	if len(row) == 0 {
+		return 0, false
+	}
+	want := uint32(sym)
+	idx := sort.Search(len(row), func(i int) bool {
+		return row[i].sym >= want
+	})
+	if idx < len(row) && row[idx].sym == want {
+		return int(row[idx].target), true
+	}
+	return 0, false
 }
 
 func (ctx *lrContext) ensureLookaheadBitsetConfig() {
@@ -2676,7 +2719,7 @@ type stateHashEntry struct {
 // Uses hash-based state deduplication and core-based item representation
 // with bitset lookaheads for performance on large grammars.
 func (ctx *lrContext) buildItemSets() []lrItemSet {
-	ctx.transitions = make(map[int]map[int]int)
+	ctx.transitions = nil
 	ctx.ensureProvenance()
 
 	tokenCount := ctx.tokenCount
@@ -2841,15 +2884,13 @@ func (ctx *lrContext) buildItemSets() []lrItemSet {
 			)
 
 			// Record transition for table construction.
-			if ctx.transitions[stateIdx] == nil {
-				ctx.transitions[stateIdx] = make(map[int]int, len(syms))
-			}
-			ctx.transitions[stateIdx][sym] = targetIdx
+			ctx.addTransition(stateIdx, sym, targetIdx)
 			if preciseStateBudget > 0 && len(ctx.itemSets) > preciseStateBudget {
 				ctx.preciseStateBudgetExceeded = true
 				return ctx.itemSets
 			}
 		}
+		ctx.sortStateTransitions(stateIdx)
 		ctx.gotoSymbolsScratch = syms[:0]
 	}
 

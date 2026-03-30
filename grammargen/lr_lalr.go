@@ -65,7 +65,7 @@ func (ctx *lrContext) buildItemSetsLALR() []lrItemSet {
 // This is much faster than the full LR(1) construction because there's no lookahead
 // propagation, merging, or worklist re-processing.
 func (ctx *lrContext) buildLR0() {
-	ctx.transitions = make(map[int]map[int]int)
+	ctx.transitions = nil
 	ctx.itemSets = nil
 	ctx.lalrLR0ItemSets = nil
 	ctx.ensureProvenance()
@@ -193,14 +193,12 @@ func (ctx *lrContext) buildLR0() {
 			}
 
 			// Record transition.
-			if ctx.transitions[stateIdx] == nil {
-				ctx.transitions[stateIdx] = make(map[int]int, len(syms))
-			}
-			ctx.transitions[stateIdx][sym] = targetIdx
+			ctx.addTransition(stateIdx, sym, targetIdx)
 
 			// After appending to itemSets, re-read pointer in case of slice realloc.
 			itemSet = &ctx.lalrLR0ItemSets[stateIdx]
 		}
+		ctx.sortStateTransitions(stateIdx)
 		ctx.gotoSymbolsScratch = syms[:0]
 
 		_ = tokenCount // used implicitly via lr0Closure
@@ -306,9 +304,10 @@ func (ctx *lrContext) computeLALRLookaheads() {
 	type stateSymPair struct{ state, sym, target int }
 	var ntPairs []stateSymPair
 	for state, trans := range ctx.transitions {
-		for sym, target := range trans {
+		for _, edge := range trans {
+			sym := int(edge.sym)
 			if sym >= tokenCount {
-				ntPairs = append(ntPairs, stateSymPair{state, sym, target})
+				ntPairs = append(ntPairs, stateSymPair{state, sym, int(edge.target)})
 			}
 		}
 	}
@@ -348,11 +347,10 @@ func (ctx *lrContext) computeLALRLookaheads() {
 	for i, nt := range ntTrans {
 		dr[i] = newBitset(tokenCount)
 		q := nt.target // target state
-		if trans, ok := ctx.transitions[q]; ok {
-			for sym := range trans {
-				if sym < tokenCount {
-					dr[i].add(sym)
-				}
+		for _, edge := range ctx.transitionRow(q) {
+			sym := int(edge.sym)
+			if sym < tokenCount {
+				dr[i].add(sym)
 			}
 		}
 	}
@@ -372,18 +370,17 @@ func (ctx *lrContext) computeLALRLookaheads() {
 	reads := make([][]uint32, numTrans)
 	for i, nt := range ntTrans {
 		q := nt.target
-		if trans, ok := ctx.transitions[q]; ok {
-			var nullableSyms []int
-			for sym := range trans {
-				if sym >= tokenCount && ctx.nullables[sym] {
-					nullableSyms = append(nullableSyms, sym)
-				}
+		var nullableSyms []int
+		for _, edge := range ctx.transitionRow(q) {
+			sym := int(edge.sym)
+			if sym >= tokenCount && ctx.nullables[sym] {
+				nullableSyms = append(nullableSyms, sym)
 			}
-			sort.Ints(nullableSyms)
-			for _, sym := range nullableSyms {
-				if j, ok := ntTransIndex[[2]int{q, sym}]; ok {
-					reads[i] = append(reads[i], uint32(j))
-				}
+		}
+		sort.Ints(nullableSyms)
+		for _, sym := range nullableSyms {
+			if j, ok := ntTransIndex[[2]int{q, sym}]; ok {
+				reads[i] = append(reads[i], uint32(j))
 			}
 		}
 	}
@@ -481,13 +478,8 @@ func (ctx *lrContext) computeLALRLookaheads() {
 					}
 					nextIncludeIdx++
 				}
-				if trans, ok := ctx.transitions[curState]; ok {
-					if next, ok := trans[sym]; ok {
-						curState = next
-					} else {
-						valid = false
-						break
-					}
+				if next, ok := ctx.transitionTarget(curState, sym); ok {
+					curState = next
 				} else {
 					valid = false
 					break
@@ -567,23 +559,21 @@ func (ctx *lrContext) computeLALRLookaheads() {
 	augProd := &ng.Productions[ng.AugmentProdID]
 	if len(augProd.RHS) > 0 {
 		// Find the state reached from state 0 via the start symbol.
-		if trans, ok := ctx.transitions[0]; ok {
-			if targetState, ok := trans[augProd.RHS[0]]; ok {
-				augSet := &ctx.lalrLR0ItemSets[targetState]
-				if idx, ok := augSet.coreLookup(ng.AugmentProdID, len(augProd.RHS)); ok {
-					laByCore := reduceLookaheads[targetState]
-					if laByCore == nil {
-						laByCore = make(map[int]bitset)
-						reduceLookaheads[targetState] = laByCore
-					}
-					if existing, ok := laByCore[idx]; ok {
-						existing.add(0)
-						laByCore[idx] = existing
-					} else {
-						la := ctx.allocLookaheadBitset()
-						la.add(0)
-						laByCore[idx] = la
-					}
+		if targetState, ok := ctx.transitionTarget(0, augProd.RHS[0]); ok {
+			augSet := &ctx.lalrLR0ItemSets[targetState]
+			if idx, ok := augSet.coreLookup(ng.AugmentProdID, len(augProd.RHS)); ok {
+				laByCore := reduceLookaheads[targetState]
+				if laByCore == nil {
+					laByCore = make(map[int]bitset)
+					reduceLookaheads[targetState] = laByCore
+				}
+				if existing, ok := laByCore[idx]; ok {
+					existing.add(0)
+					laByCore[idx] = existing
+				} else {
+					la := ctx.allocLookaheadBitset()
+					la.add(0)
+					laByCore[idx] = la
 				}
 			}
 		}
@@ -749,7 +739,7 @@ func countAdjacencyEdges(rel [][]uint32) int {
 	return total
 }
 
-func countTransitionEdges(transitions map[int]map[int]int) int {
+func countTransitionEdges(transitions []lrTransitionRow) int {
 	total := 0
 	for _, edges := range transitions {
 		total += len(edges)

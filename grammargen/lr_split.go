@@ -87,9 +87,9 @@ func localLR1Rebuild(
 		// predecessors (and particularly which ones survive the
 		// maxPredsPerCandidate cap) varies across runs.
 		for srcState, syms := range trans {
-			for sym, target := range syms {
-				if target == stateIdx {
-					preds = append(preds, predInfo{srcState, sym})
+			for _, edge := range syms {
+				if int(edge.target) == stateIdx {
+					preds = append(preds, predInfo{srcState, int(edge.sym)})
 				}
 			}
 		}
@@ -175,7 +175,7 @@ func localLR1Rebuild(
 					// Shift item — look up target from original transitions.
 					nextSym := prod.RHS[ce.dot]
 					if nextSym < tokenCount {
-						if target, ok := ctx.transitions[stateIdx][nextSym]; ok {
+						if target, ok := ctx.transitionTarget(stateIdx, nextSym); ok {
 							actions[nextSym] = append(actions[nextSym], lrAction{
 								kind:    lrShift,
 								state:   target,
