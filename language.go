@@ -224,6 +224,86 @@ type Language struct {
 
 	symbolMapOnce sync.Once
 	fieldMapOnce  sync.Once
+
+	// ASCII fast-path for the lexer DFA. lexAsciiTable[stateID][byte] encodes
+	// the result of the transition scan for ASCII input (bytes 0x00–0x7F).
+	// Bit 31 set = skip transition; bits 30–0 = next state (0x7FFF_FFFF = no match).
+	lexAsciiTable         [][128]int32
+	lexAsciiOnce          sync.Once
+	keywordLexAsciiTable  [][128]int32
+	keywordLexAsciiOnce   sync.Once
+}
+
+const lexAsciiNoMatch = int32(0x7FFF_FFFF)
+const lexAsciiSkipBit = int32(-1 << 31) // bit 31
+
+// LexAsciiTable returns the pre-built ASCII fast-path transition table for the
+// main lexer DFA. The table is built once per Language. Entry format:
+//
+//	bit 31 set  → skip transition (consume and reset token start)
+//	bits 0-30   → next state ID (lexAsciiNoMatch if no transition)
+func (l *Language) LexAsciiTable() [][128]int32 {
+	if l == nil {
+		return nil
+	}
+	l.lexAsciiOnce.Do(func() {
+		states := l.LexStates
+		tbl := make([][128]int32, len(states))
+		for si := range states {
+			for c := 0; c < 128; c++ {
+				tbl[si][c] = lexAsciiNoMatch
+			}
+			// Simulate the linear scan to find first-match for each ASCII char.
+			for c := 0; c < 128; c++ {
+				r := rune(c)
+				for ti := range states[si].Transitions {
+					tr := &states[si].Transitions[ti]
+					if r >= tr.Lo && r <= tr.Hi {
+						v := int32(tr.NextState)
+						if tr.Skip {
+							v |= lexAsciiSkipBit
+						}
+						tbl[si][c] = v
+						break
+					}
+				}
+			}
+		}
+		l.lexAsciiTable = tbl
+	})
+	return l.lexAsciiTable
+}
+
+// KeywordLexAsciiTable returns the ASCII fast-path table for the keyword lexer DFA.
+func (l *Language) KeywordLexAsciiTable() [][128]int32 {
+	if l == nil || len(l.KeywordLexStates) == 0 {
+		return nil
+	}
+	l.keywordLexAsciiOnce.Do(func() {
+		states := l.KeywordLexStates
+		tbl := make([][128]int32, len(states))
+		for si := range states {
+			for c := 0; c < 128; c++ {
+				tbl[si][c] = lexAsciiNoMatch
+			}
+			for c := 0; c < 128; c++ {
+				r := rune(c)
+				for ti := range states[si].Transitions {
+					tr := &states[si].Transitions[ti]
+					if r >= tr.Lo && r <= tr.Hi {
+						v := int32(tr.NextState)
+						if tr.Skip {
+							v |= lexAsciiSkipBit
+						}
+						tbl[si][c] = v
+						break
+					}
+				}
+			}
+		}
+		l.keywordLexAsciiTable = tbl
+	})
+	return l.keywordLexAsciiTable
 }
 
 // Version returns the tree-sitter language ABI version.

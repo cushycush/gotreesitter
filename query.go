@@ -267,7 +267,9 @@ func (q *Query) Exec(node *Node, lang *Language, source []byte) *QueryCursor {
 		source: source,
 	}
 	if node != nil {
-		c.worklist = append(c.worklist, queryCursorWorkItem{node: node, depth: 0})
+		// Pre-size the worklist for typical tree depth (avoids early growths).
+		c.worklist = make([]queryCursorWorkItem, 1, 32)
+		c.worklist[0] = queryCursorWorkItem{node: node, depth: 0}
 	}
 	return c
 }
@@ -354,7 +356,10 @@ func (q *Query) executeNode(root *Node, lang *Language, source []byte) []QueryMa
 	}
 
 	cursor := q.Exec(root, lang, source)
-	var matches []QueryMatch
+	// Pre-size based on source length: empirically ~1 match per 40 bytes for
+	// typical highlight queries. Underestimating is fine; we just grow once more.
+	initCap := len(source)/40 + 16
+	matches := make([]QueryMatch, 0, initCap)
 	for {
 		m, ok := cursor.NextMatch()
 		if !ok {

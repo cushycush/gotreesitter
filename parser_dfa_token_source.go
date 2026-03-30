@@ -77,6 +77,7 @@ func acquireDFATokenSource(lexer *Lexer, language *Language, lookupActionIndex f
 	if lexer != nil && language != nil {
 		ts.lexer.states = language.LexStates
 		ts.lexer.immediateTokens = language.ImmediateTokens
+		ts.lexer.asciiTable = language.LexAsciiTable()
 	}
 	if language != nil && language.ExternalScanner != nil {
 		ts.externalPayload = language.ExternalScanner.Create()
@@ -98,6 +99,7 @@ func (d *dfaTokenSource) Reset(source []byte) {
 	if d.language != nil {
 		d.lexer.states = d.language.LexStates
 		d.lexer.immediateTokens = d.language.ImmediateTokens
+		d.lexer.asciiTable = d.language.LexAsciiTable()
 	}
 	d.state = 0
 	d.glrStates = nil
@@ -1823,8 +1825,9 @@ func (d *dfaTokenSource) promoteKeyword(tok Token) Token {
 	}
 
 	kw := Lexer{
-		states: d.language.KeywordLexStates,
-		source: d.lexer.source[start:end],
+		states:     d.language.KeywordLexStates,
+		asciiTable: d.language.KeywordLexAsciiTable(),
+		source:     d.lexer.source[start:end],
 	}
 	kwTok := kw.Next(0)
 	if kwTok.Symbol == 0 {

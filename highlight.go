@@ -1,8 +1,9 @@
 package gotreesitter
 
 import (
+	"cmp"
 	"fmt"
-	"sort"
+	"slices"
 )
 
 // HighlightRange represents a styled range of source code, mapping a byte span
@@ -120,7 +121,9 @@ func (h *Highlighter) highlightTree(tree *Tree, source []byte) []HighlightRange 
 		return nil
 	}
 
-	var ranges []HighlightRange
+	// Most highlight patterns have exactly one capture per match, so pre-sizing
+	// to len(matches) avoids the repeated doublings during append.
+	ranges := make([]HighlightRange, 0, len(matches))
 	for _, m := range matches {
 		for _, c := range m.Captures {
 			node := c.Node
@@ -160,32 +163,39 @@ func resolveOverlaps(ranges []HighlightRange) []HighlightRange {
 		return nil
 	}
 
-	sorted := make([]HighlightRange, 0, len(ranges))
+	// Filter zero-byte ranges in-place (compact) to avoid an extra allocation.
+	// This mutates the input slice's backing array but not the caller's header.
+	n := 0
 	for i := range ranges {
-		r := ranges[i]
-		if r.EndByte > r.StartByte {
-			sorted = append(sorted, r)
+		if ranges[i].EndByte > ranges[i].StartByte {
+			ranges[n] = ranges[i]
+			n++
 		}
 	}
+	sorted := ranges[:n]
 	if len(sorted) == 0 {
 		return nil
 	}
 
-	sort.Slice(sorted, func(i, j int) bool {
-		if sorted[i].StartByte != sorted[j].StartByte {
-			return sorted[i].StartByte < sorted[j].StartByte
+	// slices.SortFunc uses pdqsort with a generic comparison; it avoids the
+	// interface-dispatch overhead that sort.Slice incurs via the closure.
+	slices.SortFunc(sorted, func(a, b HighlightRange) int {
+		if c := cmp.Compare(a.StartByte, b.StartByte); c != 0 {
+			return c
 		}
-		wi := sorted[i].EndByte - sorted[i].StartByte
-		wj := sorted[j].EndByte - sorted[j].StartByte
-		if wi != wj {
-			return wi > wj // wider (outer) ranges first
+		wa := a.EndByte - a.StartByte
+		wb := b.EndByte - b.StartByte
+		if c := cmp.Compare(wb, wa); c != 0 { // wider first
+			return c
 		}
-		// Identical ranges: later patterns override earlier (more specific wins).
-		return sorted[i].PatternIndex < sorted[j].PatternIndex
+		return cmp.Compare(a.PatternIndex, b.PatternIndex)
 	})
 
-	var stack []HighlightRange
-	var result []HighlightRange
+	// Pre-size both slices to avoid repeated grow-allocations in the hot loop.
+	// stack depth is bounded by the nesting depth (≤ len(sorted));
+	// result has at most one entry per input range.
+	stack := make([]HighlightRange, 0, 8)
+	result := make([]HighlightRange, 0, len(sorted))
 	emit := func(start, end uint32, capture string) {
 		if capture == "" || end <= start {
 			return

@@ -343,21 +343,38 @@ func (n *Node) SExpr(lang *Language) string {
 	if !n.IsNamed() {
 		return ""
 	}
+	var b strings.Builder
+	// S-expressions are typically ~5x the source byte count for named nodes.
+	// Pre-growing the builder avoids intermediate reallocations.
+	b.Grow((int(n.endByte-n.startByte) * 5) + 32)
+	sexprWrite(n, lang, &b)
+	return b.String()
+}
+
+// sexprWrite writes the S-expression for n into b, returning true if anything
+// was written. Using a shared builder avoids the per-node string allocation and
+// the intermediate []string slice that the previous implementation required.
+func sexprWrite(n *Node, lang *Language, b *strings.Builder) bool {
+	if n == nil || !n.IsNamed() {
+		return false
+	}
 	name := n.Type(lang)
-	if n.ChildCount() == 0 {
-		return "(" + name + ")"
-	}
-	parts := make([]string, 0, n.ChildCount())
+	b.WriteByte('(')
+	b.WriteString(name)
+
+	// Walk children, writing only named ones. Because a named child always
+	// produces at least "(type)", we can write a space before each one eagerly.
 	for i := 0; i < n.ChildCount(); i++ {
-		s := n.Child(i).SExpr(lang)
-		if s != "" {
-			parts = append(parts, s)
+		child := n.Child(i)
+		if child == nil || !child.IsNamed() {
+			continue
 		}
+		b.WriteByte(' ')
+		sexprWrite(child, lang, b)
 	}
-	if len(parts) == 0 {
-		return "(" + name + ")"
-	}
-	return "(" + name + " " + strings.Join(parts, " ") + ")"
+
+	b.WriteByte(')')
+	return true
 }
 
 // Text returns the source text covered by this node.

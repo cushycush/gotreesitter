@@ -35,6 +35,7 @@ func bytesToStringNoCopy(b []byte) string {
 // Lexer tokenizes source text using a table-driven DFA.
 type Lexer struct {
 	states          []LexState
+	asciiTable      [][128]int32 // ASCII fast-path transition table (nil = not available)
 	source          []byte
 	pos             int
 	row             uint32
@@ -155,15 +156,32 @@ func (l *Lexer) scan(startState uint16, startPos int, startRow, startCol uint32)
 		}
 		eofHops = 0
 
-		r, size := utf8.DecodeRune(l.source[scanPos:])
+		b := l.source[scanPos]
+		var r rune
+		var size int
+		if b < 0x80 {
+			r = rune(b)
+			size = 1
+		} else {
+			r, size = utf8.DecodeRune(l.source[scanPos:])
+		}
 		nextState := int32(-1)
 		skipTransition := false
-		for i := range st.Transitions {
-			tr := &st.Transitions[i]
-			if r >= tr.Lo && r <= tr.Hi {
-				nextState = int32(tr.NextState)
-				skipTransition = tr.Skip
-				break
+		if b < 0x80 && l.asciiTable != nil && int(curState) < len(l.asciiTable) {
+			// ASCII fast-path: O(1) lookup instead of linear scan.
+			v := l.asciiTable[curState][b]
+			if v != lexAsciiNoMatch {
+				nextState = v & ^lexAsciiSkipBit
+				skipTransition = v&lexAsciiSkipBit != 0
+			}
+		} else {
+			for i := range st.Transitions {
+				tr := &st.Transitions[i]
+				if r >= tr.Lo && r <= tr.Hi {
+					nextState = int32(tr.NextState)
+					skipTransition = tr.Skip
+					break
+				}
 			}
 		}
 		// Default transitions are treated as non-skipping.

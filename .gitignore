@@ -21,6 +21,9 @@ cgo_harness/reports/
 harness_out/
 parity_out/
 
+# Golden artifacts corpus
+.golden/
+
 # Generated real-corpus artifacts
 cgo_harness/corpus_real/
 cgo_harness/grammar_seed/
