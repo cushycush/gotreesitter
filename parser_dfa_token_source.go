@@ -30,6 +30,10 @@ type dfaTokenSource struct {
 	lastExternalTokenValid     bool
 	glrStates                  []StateID // all active GLR stack states
 
+	// maskedScratch is a reusable buffer for runExternalScannerWithRetry,
+	// avoiding a per-call heap allocation when masking already-tried symbols.
+	maskedScratch []bool
+
 	// Zero-width external token loop prevention.
 	// Tracks which external token indices have been produced as zero-width
 	// tokens at the current (position, state) pair, so they can be excluded
@@ -65,10 +69,14 @@ var dfaTokenSourcePool = sync.Pool{
 
 func acquireDFATokenSource(lexer *Lexer, language *Language, lookupActionIndex func(state StateID, sym Symbol) uint16, hasKeywordState []bool) *dfaTokenSource {
 	ts := dfaTokenSourcePool.Get().(*dfaTokenSource)
+	// Preserve pooled scratch slices across the struct reset below so they can
+	// be reused without reallocation on the next parse.
+	savedMasked := ts.maskedScratch
 	*ts = dfaTokenSource{
 		extZeroPos:   -1,
 		zeroWidthPos: -1,
 	}
+	ts.maskedScratch = savedMasked
 	ts.lexer = lexer
 	ts.language = language
 	ts.state = 0
@@ -1327,7 +1335,14 @@ func (d *dfaTokenSource) runExternalScannerWithRetry(el *ExternalLexer, valid []
 		d.restoreExternalScannerState(snapshot)
 		return false
 	}
-	masked := append([]bool(nil), valid...)
+	// Reuse maskedScratch to avoid a per-retry heap allocation.
+	if cap(d.maskedScratch) < len(valid) {
+		d.maskedScratch = make([]bool, len(valid))
+	} else {
+		d.maskedScratch = d.maskedScratch[:len(valid)]
+	}
+	copy(d.maskedScratch, valid)
+	masked := d.maskedScratch
 	for {
 		idx := d.externalSymbolIndex(el.resultSymbol)
 		if idx < 0 || idx >= len(masked) || !masked[idx] {
