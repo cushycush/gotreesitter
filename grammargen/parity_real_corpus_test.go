@@ -255,6 +255,47 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 				"genExternalScanner=%t refExternalScanner=%t",
 				genLang.ExternalScanner != nil, refLang.ExternalScanner != nil)
 
+			// Diagnostic: compare alias sequences between gen and ref.
+			genAliasCount, refAliasCount := 0, 0
+			for _, seq := range genLang.AliasSequences {
+				for _, s := range seq {
+					if s != 0 {
+						genAliasCount++
+					}
+				}
+			}
+			for _, seq := range refLang.AliasSequences {
+				for _, s := range seq {
+					if s != 0 {
+						refAliasCount++
+					}
+				}
+			}
+			t.Logf("alias-diag: gen_alias_seqs=%d gen_alias_entries=%d ref_alias_seqs=%d ref_alias_entries=%d",
+				len(genLang.AliasSequences), genAliasCount, len(refLang.AliasSequences), refAliasCount)
+			// Log first few alias differences
+			if genAliasCount != refAliasCount {
+				diffCount := 0
+				for pid := 0; pid < len(genLang.AliasSequences) || pid < len(refLang.AliasSequences); pid++ {
+					var genSeq, refSeq []gotreesitter.Symbol
+					if pid < len(genLang.AliasSequences) {
+						genSeq = genLang.AliasSequences[pid]
+					}
+					if pid < len(refLang.AliasSequences) {
+						refSeq = refLang.AliasSequences[pid]
+					}
+					if len(genSeq) != len(refSeq) || !aliasSeqEqual(genSeq, refSeq) {
+						diffCount++
+						if diffCount <= 10 {
+							genNames := aliasSeqNames(genSeq, genLang.SymbolNames)
+							refNames := aliasSeqNames(refSeq, refLang.SymbolNames)
+							t.Logf("alias-diag: prod=%d gen=%v ref=%v", pid, genNames, refNames)
+						}
+					}
+				}
+				t.Logf("alias-diag: total_different_prods=%d", diffCount)
+			}
+
 			genParser := gotreesitter.NewParser(genLang)
 			refParser := gotreesitter.NewParser(refLang)
 			logRealCorpusDiag("after_parser_init", g.name, "candidates=%d", len(candidates))
@@ -664,6 +705,35 @@ func defaultMaxSecondsPerGrammar(p realCorpusProfile) int {
 	// exploratory runs.
 	_ = p
 	return 0
+}
+
+func aliasSeqEqual(a, b []gotreesitter.Symbol) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func aliasSeqNames(seq []gotreesitter.Symbol, names []string) []string {
+	if len(seq) == 0 {
+		return nil
+	}
+	out := make([]string, len(seq))
+	for i, s := range seq {
+		if s == 0 {
+			out[i] = "-"
+		} else if int(s) < len(names) {
+			out[i] = names[s]
+		} else {
+			out[i] = fmt.Sprintf("sym%d", s)
+		}
+	}
+	return out
 }
 
 func logRealCorpusDiag(stage, grammar, format string, args ...any) {
