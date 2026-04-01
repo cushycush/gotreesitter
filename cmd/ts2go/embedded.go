@@ -201,7 +201,7 @@ func buildParseActions(groups []ActionGroup) []gotreesitter.ParseActionEntry {
 					Symbol:            gotreesitter.Symbol(a.Symbol),
 					ChildCount:        uint8(a.ChildCount),
 					DynamicPrecedence: int16(a.Precedence),
-					ProductionID:      uint16(a.ProductionID),
+					ProductionID:      uint32(a.ProductionID),
 					Extra:             a.Extra,
 					Repetition:        a.Repetition,
 				}

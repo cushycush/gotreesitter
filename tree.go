@@ -34,7 +34,7 @@ type Node struct {
 	isMissing    bool
 	hasError     bool
 	dirty        bool // set by Tree.Edit for nodes touched by edits
-	productionID uint16
+	productionID uint32
 	equivVersion uint32
 	parent       *Node
 	childIndex   int
@@ -662,7 +662,7 @@ func wireParentLinksWithScratch(root *Node, scratch *[]*Node) {
 	}
 }
 
-func newParentNode(arena *nodeArena, sym Symbol, named bool, children []*Node, fieldIDs []FieldID, productionID uint16) *Node {
+func newParentNode(arena *nodeArena, sym Symbol, named bool, children []*Node, fieldIDs []FieldID, productionID uint32) *Node {
 	var n *Node
 	if arena == nil {
 		n = &Node{}
@@ -686,7 +686,7 @@ func newParentNode(arena *nodeArena, sym Symbol, named bool, children []*Node, f
 // It sets parent pointers on all children and computes byte/point spans
 // from the first and last children. If any child has an error, the parent
 // is marked as having an error too.
-func NewParentNode(sym Symbol, named bool, children []*Node, fieldIDs []FieldID, productionID uint16) *Node {
+func NewParentNode(sym Symbol, named bool, children []*Node, fieldIDs []FieldID, productionID uint32) *Node {
 	return newParentNode(nil, sym, named, children, fieldIDs, productionID)
 }
 
@@ -718,11 +718,11 @@ func newLeafNodeInArena(arena *nodeArena, sym Symbol, named bool, startByte, end
 	return n
 }
 
-func newParentNodeInArena(arena *nodeArena, sym Symbol, named bool, children []*Node, fieldIDs []FieldID, productionID uint16) *Node {
+func newParentNodeInArena(arena *nodeArena, sym Symbol, named bool, children []*Node, fieldIDs []FieldID, productionID uint32) *Node {
 	return newParentNodeInArenaWithFieldSources(arena, sym, named, children, fieldIDs, nil, productionID)
 }
 
-func newParentNodeInArenaWithFieldSources(arena *nodeArena, sym Symbol, named bool, children []*Node, fieldIDs []FieldID, fieldSources []uint8, productionID uint16) *Node {
+func newParentNodeInArenaWithFieldSources(arena *nodeArena, sym Symbol, named bool, children []*Node, fieldIDs []FieldID, fieldSources []uint8, productionID uint32) *Node {
 	if arena == nil {
 		return newParentNode(nil, sym, named, children, fieldIDs, productionID)
 	}
@@ -750,11 +750,11 @@ func newParentNodeInArenaWithFieldSources(arena *nodeArena, sym Symbol, named bo
 	return n
 }
 
-func newParentNodeInArenaNoLinks(arena *nodeArena, sym Symbol, named bool, children []*Node, fieldIDs []FieldID, productionID uint16, trackChildErrors bool) *Node {
+func newParentNodeInArenaNoLinks(arena *nodeArena, sym Symbol, named bool, children []*Node, fieldIDs []FieldID, productionID uint32, trackChildErrors bool) *Node {
 	return newParentNodeInArenaNoLinksWithFieldSources(arena, sym, named, children, fieldIDs, nil, productionID, trackChildErrors)
 }
 
-func newParentNodeInArenaNoLinksWithFieldSources(arena *nodeArena, sym Symbol, named bool, children []*Node, fieldIDs []FieldID, fieldSources []uint8, productionID uint16, trackChildErrors bool) *Node {
+func newParentNodeInArenaNoLinksWithFieldSources(arena *nodeArena, sym Symbol, named bool, children []*Node, fieldIDs []FieldID, fieldSources []uint8, productionID uint32, trackChildErrors bool) *Node {
 	if arena == nil {
 		return newParentNode(nil, sym, named, children, fieldIDs, productionID)
 	}

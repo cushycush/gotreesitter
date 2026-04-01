@@ -57,7 +57,7 @@ func TestApplyReduceActionCollapsesUnarySelfReductionOnPrimaryStack(t *testing.T
 	if got, want := top.ParseState(), StateID(7); got != want {
 		t.Fatalf("ParseState = %d, want %d", got, want)
 	}
-	if got, want := top.productionID, uint16(23); got != want {
+	if got, want := top.productionID, uint32(23); got != want {
 		t.Fatalf("productionID = %d, want %d", got, want)
 	}
 }
@@ -119,7 +119,7 @@ func TestApplyReduceActionCollapsesUnarySelfReductionOnGSSStack(t *testing.T) {
 	if got, want := top.ParseState(), StateID(7); got != want {
 		t.Fatalf("ParseState = %d, want %d", got, want)
 	}
-	if got, want := top.productionID, uint16(23); got != want {
+	if got, want := top.productionID, uint32(23); got != want {
 		t.Fatalf("productionID = %d, want %d", got, want)
 	}
 }

@@ -307,7 +307,7 @@ func buildForkLanguage(precedences []int16, childCounts []uint8) *Language {
 			Type:              ParseActionReduce,
 			Symbol:            Symbol(2 + i),
 			ChildCount:        childCounts[i],
-			ProductionID:      uint16(i),
+			ProductionID:      uint32(i),
 			DynamicPrecedence: prec,
 		})
 	}

@@ -7,7 +7,7 @@ type reduceChainSignature struct {
 	depth        int
 	symbol       Symbol
 	childCount   uint8
-	productionID uint16
+	productionID uint32
 }
 
 const maxRepeatedReduceChainSignature = 32
@@ -70,7 +70,7 @@ func buildSingleTokenWrapperSymbols(lang *Language) []bool {
 		valid[i] = meta.Visible && meta.Named
 	}
 
-	seenBySymbol := make([]map[uint16]uint8, len(lang.SymbolMetadata))
+	seenBySymbol := make([]map[uint32]uint8, len(lang.SymbolMetadata))
 	any := false
 	for _, entry := range lang.ParseActions {
 		for _, act := range entry.Actions {
@@ -83,7 +83,7 @@ func buildSingleTokenWrapperSymbols(lang *Language) []bool {
 			}
 			seen := seenBySymbol[sym]
 			if seen == nil {
-				seen = map[uint16]uint8{}
+				seen = map[uint32]uint8{}
 				seenBySymbol[sym] = seen
 			}
 			if prev, ok := seen[act.ProductionID]; ok && prev != act.ChildCount {
@@ -1201,7 +1201,7 @@ func (p *Parser) buildReduceChildrenAllVisible(entries []stackEntry, start, end,
 	return children, fieldIDs, fieldSources, true
 }
 
-func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCount int, parentSymbol Symbol, productionID uint16, arena *nodeArena) ([]*Node, []FieldID, []uint8) {
+func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCount int, parentSymbol Symbol, productionID uint32, arena *nodeArena) ([]*Node, []FieldID, []uint8) {
 	lang := p.language
 	symbolMeta := lang.SymbolMetadata
 
@@ -2184,7 +2184,7 @@ func (p *Parser) findRecoverActionOnStack(s *glrStack, sym Symbol, timing *incre
 	return 0, ParseAction{}, false
 }
 
-func (p *Parser) aliasSymbolForChild(productionID uint16, childIndex int) Symbol {
+func (p *Parser) aliasSymbolForChild(productionID uint32, childIndex int) Symbol {
 	if p == nil || p.language == nil || childIndex < 0 {
 		return 0
 	}
@@ -2195,7 +2195,7 @@ func (p *Parser) aliasSymbolForChild(productionID uint16, childIndex int) Symbol
 	return seq[childIndex]
 }
 
-func (p *Parser) reduceAliasSequence(productionID uint16) []Symbol {
+func (p *Parser) reduceAliasSequence(productionID uint32) []Symbol {
 	if p == nil {
 		return nil
 	}
@@ -2206,7 +2206,7 @@ func (p *Parser) reduceAliasSequence(productionID uint16) []Symbol {
 	return p.reduceAliasSeq[pid]
 }
 
-func (p *Parser) reduceProductionHasFields(productionID uint16) bool {
+func (p *Parser) reduceProductionHasFields(productionID uint32) bool {
 	if p == nil {
 		return false
 	}
@@ -2380,7 +2380,7 @@ func (p *Parser) fieldFlagScratch(childCount int) ([]bool, []bool) {
 }
 
 // buildFieldIDs creates the field ID slice for a reduce action.
-func (p *Parser) buildFieldIDs(childCount int, productionID uint16, arena *nodeArena) ([]FieldID, []bool) {
+func (p *Parser) buildFieldIDs(childCount int, productionID uint32, arena *nodeArena) ([]FieldID, []bool) {
 	if childCount <= 0 || len(p.language.FieldMapEntries) == 0 {
 		return nil, nil
 	}

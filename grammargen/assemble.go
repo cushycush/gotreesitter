@@ -340,12 +340,12 @@ func buildParseTables(
 					}
 				}
 			case lrReduce:
-				prod := &ng.Productions[a.prodIdx]
+				prod := &ng.Productions[int(a.prodIdx)]
 				pa.Type = gotreesitter.ParseActionReduce
 				pa.Symbol = gotreesitter.Symbol(prod.LHS)
 				pa.ChildCount = uint8(len(prod.RHS))
 				pa.DynamicPrecedence = int16(prod.DynPrec)
-				pa.ProductionID = uint16(prod.ProductionID)
+				pa.ProductionID = uint32(prod.ProductionID)
 				pa.Extra = prod.IsExtra
 			case lrAccept:
 				pa.Type = gotreesitter.ParseActionAccept
@@ -468,12 +468,9 @@ func buildParseTables(
 		stateRemap[i] = i + 1 // shift everything up by 1
 	}
 
-	// Rebuild rawTable with remapped states.
-	newRawTable := make([][]uint16, newStateCount)
-	newRawTable[0] = make([]uint16, symbolCount) // state 0 = error recovery (empty)
-	for oldState, newState := range stateRemap {
+	remapRow := func(oldState int, src []uint16) ([]uint16, error) {
 		row := make([]uint16, symbolCount)
-		for sym, val := range rawTable[oldState] {
+		for sym, val := range src {
 			if val == 0 {
 				continue
 			}
@@ -483,12 +480,15 @@ func buildParseTables(
 			// For nonterminals: the value IS a state ID that needs remapping.
 			if sym >= tokenCount {
 				// GOTO: value is a state ID.
+				if int(val) >= len(stateRemap) {
+					return nil, fmt.Errorf("parse table remap: state %d goto on %q targets invalid state %d (state_count=%d)", oldState, ng.Symbols[sym].Name, val, tables.StateCount)
+				}
 				row[sym] = uint16(stateRemap[int(val)])
 			} else {
 				row[sym] = val
 			}
 		}
-		newRawTable[newState] = row
+		return row, nil
 	}
 
 	// Remap state IDs in ParseActions.
@@ -507,9 +507,11 @@ func buildParseTables(
 	largeStateCount := 0
 	for state := 0; state < newStateCount; state++ {
 		nz := 0
-		for _, v := range newRawTable[state] {
-			if v != 0 {
-				nz++
+		if state > 0 {
+			for _, v := range rawTable[state-1] {
+				if v != 0 {
+					nz++
+				}
 			}
 		}
 		if nz >= threshold {
@@ -528,8 +530,13 @@ func buildParseTables(
 
 	// Build dense parse table (first largeStateCount states).
 	lang.ParseTable = make([][]uint16, largeStateCount)
-	for i := 0; i < largeStateCount; i++ {
-		lang.ParseTable[i] = newRawTable[i]
+	lang.ParseTable[0] = make([]uint16, symbolCount)
+	for i := 1; i < largeStateCount; i++ {
+		row, err := remapRow(i-1, rawTable[i-1])
+		if err != nil {
+			return err
+		}
+		lang.ParseTable[i] = row
 	}
 
 	// Build sparse parse table for remaining states.
@@ -538,11 +545,15 @@ func buildParseTables(
 		var smallMap []uint32
 
 		for state := largeStateCount; state < newStateCount; state++ {
+			row, err := remapRow(state-1, rawTable[state-1])
+			if err != nil {
+				return err
+			}
 			smallMap = append(smallMap, uint32(len(smallTable)))
 
 			// Group non-zero entries by value.
 			groups := make(map[uint16][]uint16)
-			for sym, val := range newRawTable[state] {
+			for sym, val := range row {
 				if val != 0 {
 					groups[val] = append(groups[val], uint16(sym))
 				}
