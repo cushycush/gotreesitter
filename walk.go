@@ -38,6 +38,12 @@ func Walk(node *Node, fn func(node *Node, depth int) WalkAction) {
 
 	sp := walkPool.Get().(*[]walkEntry)
 	stack := (*sp)[:0]
+	// defer captures stack by reference so the pool receives the final
+	// (possibly grown) slice, and the stack is returned even if fn panics.
+	defer func() {
+		*sp = stack[:0]
+		walkPool.Put(sp)
+	}()
 
 	stack = append(stack, walkEntry{node: node, depth: 0})
 	for len(stack) > 0 {
@@ -61,7 +67,4 @@ func Walk(node *Node, fn func(node *Node, depth int) WalkAction) {
 			}
 		}
 	}
-
-	*sp = stack[:0]
-	walkPool.Put(sp)
 }
