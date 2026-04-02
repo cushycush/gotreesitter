@@ -33,7 +33,7 @@ func buildFollowTokensFunc(tables *LRTables, tokenCount int) func(int) []int {
 			for _, act := range actions {
 				if act.kind == lrShift && sym >= tokenCount {
 					// This is a GOTO entry (nonterminal shift)
-					gotoIndex[sym] = append(gotoIndex[sym], gotoTarget{act.state})
+					gotoIndex[sym] = append(gotoIndex[sym], gotoTarget{int(act.state)})
 				}
 			}
 		}
@@ -73,7 +73,7 @@ func buildFollowTokensFunc(tables *LRTables, tokenCount int) func(int) []int {
 				if act.kind != lrReduce {
 					continue
 				}
-				lhsSym := act.lhsSym
+				lhsSym := int(act.lhsSym)
 				if lhsSym <= 0 {
 					continue
 				}
@@ -146,7 +146,7 @@ func (d *ConflictDiag) String(ng *NormalizedGrammar) string {
 			case lrShift:
 				fmt.Fprintf(&b, "  Shift → state %d (prec %d)\n", a.state, a.prec)
 			case lrReduce:
-				p := &ng.Productions[a.prodIdx]
+				p := &ng.Productions[int(a.prodIdx)]
 				assocStr := ""
 				switch p.Assoc {
 				case AssocLeft:
@@ -154,15 +154,15 @@ func (d *ConflictDiag) String(ng *NormalizedGrammar) string {
 				case AssocRight:
 					assocStr = ", right-associative"
 				}
-				fmt.Fprintf(&b, "  Reduce: %s (prec %d%s)\n", prodStr(a.prodIdx), p.Prec, assocStr)
+				fmt.Fprintf(&b, "  Reduce: %s (prec %d%s)\n", prodStr(int(a.prodIdx)), p.Prec, assocStr)
 			}
 		}
 	case ReduceReduce:
 		fmt.Fprintf(&b, "Reduce/reduce conflict in state %d on %q:\n",
 			d.State, symName(d.LookaheadSym))
 		for _, a := range d.Actions {
-			p := &ng.Productions[a.prodIdx]
-			fmt.Fprintf(&b, "  Reduce: %s (prec %d)\n", prodStr(a.prodIdx), p.Prec)
+			p := &ng.Productions[int(a.prodIdx)]
+			fmt.Fprintf(&b, "  Reduce: %s (prec %d)\n", prodStr(int(a.prodIdx)), p.Prec)
 		}
 	}
 	fmt.Fprintf(&b, "  Resolution: %s", d.Resolution)

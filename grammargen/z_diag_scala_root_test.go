@@ -193,7 +193,7 @@ func TestDiagScalaRootRuntime(t *testing.T) {
 			if act.kind != lrShift {
 				continue
 			}
-			target := act.state
+			target := int(act.state)
 			mergeCount := 0
 			if target < len(ctx.itemSets) {
 				mergeCount = diagMergeCount(ctx, target)
@@ -212,7 +212,7 @@ func TestDiagScalaRootRuntime(t *testing.T) {
 					if closeAct.kind != lrShift {
 						continue
 					}
-					closeTarget := closeAct.state
+					closeTarget := int(closeAct.state)
 					t.Logf("scala-diag close-target-state=%d from state=%d on %s",
 						closeTarget, target, diagSymbolName(ng, closeCommentSyms[0]))
 					diagLogStateActions(t, "scala-diag close", ng, tables, closeTarget, eofSyms, slashStarSyms, slashSlashSyms, closeCommentSyms, autoSemiSyms)
@@ -255,7 +255,7 @@ func TestDiagScalaRootRuntime(t *testing.T) {
 					if nestedAct.kind != lrShift || !nestedAct.isExtra {
 						continue
 					}
-					nestedTarget := nestedAct.state
+					nestedTarget := int(nestedAct.state)
 					t.Logf("scala-diag nested-target-state=%d from state=%d on %s", nestedTarget, target, diagSymbolName(ng, slashStarSyms[0]))
 					diagLogStateActions(t, "scala-diag nested", ng, tables, nestedTarget, eofSyms, slashStarSyms, slashSlashSyms, closeCommentSyms, autoSemiSyms)
 				}
@@ -266,12 +266,12 @@ func TestDiagScalaRootRuntime(t *testing.T) {
 		for state := tables.ExtraChainStateStart; state < tables.StateCount; state++ {
 			acts := tables.ActionTable[state][closeCommentSyms[0]]
 			for _, act := range acts {
-				if act.kind != lrShift || act.lhsSym != blockCommentSyms[0] {
+				if act.kind != lrShift || int(act.lhsSym) != blockCommentSyms[0] {
 					continue
 				}
 				t.Logf("scala-diag block-comment-close state=%d on %s target=%d actions=%s",
-					state, diagSymbolName(ng, closeCommentSyms[0]), act.state, diagFormatActions(ng, acts))
-				diagLogStateActions(t, "scala-diag block-comment-close-target", ng, tables, act.state, eofSyms, slashStarSyms, slashSlashSyms, closeCommentSyms, autoSemiSyms)
+					state, diagSymbolName(ng, closeCommentSyms[0]), int(act.state), diagFormatActions(ng, acts))
+				diagLogStateActions(t, "scala-diag block-comment-close-target", ng, tables, int(act.state), eofSyms, slashStarSyms, slashSlashSyms, closeCommentSyms, autoSemiSyms)
 			}
 		}
 	}

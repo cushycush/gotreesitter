@@ -140,7 +140,7 @@ func TestDiagYAMLImplicitMapping(t *testing.T) {
 				if act.kind != lrShift {
 					continue
 				}
-				target := act.state
+				target := int(act.state)
 				if target < 0 || target >= len(ctx.itemSets) {
 					continue
 				}
@@ -237,9 +237,9 @@ func diagFormatActions(ng *NormalizedGrammar, acts []lrAction) string {
 	for _, act := range acts {
 		switch act.kind {
 		case lrShift:
-			parts = append(parts, fmt.Sprintf("shift(state=%d,lhs=%s)", act.state, diagSymbolName(ng, act.lhsSym)))
+			parts = append(parts, fmt.Sprintf("shift(state=%d,lhs=%s)", act.state, diagSymbolName(ng, int(act.lhsSym))))
 		case lrReduce:
-			parts = append(parts, fmt.Sprintf("reduce(prod=%d,%s)", act.prodIdx, diagFormatProd(ng, act.prodIdx, len(ng.Productions[act.prodIdx].RHS))))
+			parts = append(parts, fmt.Sprintf("reduce(prod=%d,%s)", act.prodIdx, diagFormatProd(ng, int(act.prodIdx), len(ng.Productions[int(act.prodIdx)].RHS))))
 		case lrAccept:
 			parts = append(parts, "accept")
 		default:

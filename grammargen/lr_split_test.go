@@ -53,6 +53,7 @@ func TestLocalLR1Rebuild(t *testing.T) {
 	g.Define("start", Choice(Sym("a_rule"), Sym("b_rule")))
 	g.Define("a_rule", Seq(Str("a"), Str("b"), Str("c"), Str("d")))
 	g.Define("b_rule", Seq(Str("a"), Str("b"), Str("c"), Str("e")))
+	g.EnableLRSplitting = true
 
 	ng, err := Normalize(g)
 	if err != nil {

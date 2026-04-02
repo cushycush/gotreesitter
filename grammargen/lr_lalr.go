@@ -3,6 +3,7 @@ package grammargen
 import (
 	"context"
 	"fmt"
+	"math/bits"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -25,9 +26,145 @@ import (
 // ntTransition identifies a nonterminal transition (p, A) in the LR(0) automaton,
 // meaning: in state p, reading nonterminal A, go to some state q.
 type ntTransition struct {
-	state   int // source state p
-	nonterm int // nonterminal symbol A
-	target  int // target state q = GOTO(p, A)
+	state   uint32 // source state p
+	nonterm uint32 // nonterminal symbol A
+	target  uint32 // target state q = GOTO(p, A)
+}
+
+type ntTransitionIndex struct {
+	nonterm uint32
+	idx     uint32
+}
+
+type ntTransitionIndexRow []ntTransitionIndex
+
+func ntTransitionIndexLookup(rows []ntTransitionIndexRow, state, sym int) (int, bool) {
+	if state < 0 || state >= len(rows) {
+		return 0, false
+	}
+	row := rows[state]
+	if len(row) == 0 {
+		return 0, false
+	}
+	want := uint32(sym)
+	idx := sort.Search(len(row), func(i int) bool {
+		return row[i].nonterm >= want
+	})
+	if idx < len(row) && row[idx].nonterm == want {
+		return int(row[idx].idx), true
+	}
+	return 0, false
+}
+
+type adjacencyRows struct {
+	offsets []uint32
+	edges   []uint32
+}
+
+type packedAdjacencyRows struct {
+	offsets     []uint32
+	words       []uint64
+	bitsPerEdge uint8
+	mask        uint64
+}
+
+func newAdjacencyRows(counts []uint32) adjacencyRows {
+	offsets := make([]uint32, len(counts)+1)
+	total := uint32(0)
+	for i, count := range counts {
+		offsets[i] = total
+		total += count
+	}
+	offsets[len(counts)] = total
+	return adjacencyRows{
+		offsets: offsets,
+		edges:   make([]uint32, int(total)),
+	}
+}
+
+func newPackedAdjacencyRows(counts []uint32) packedAdjacencyRows {
+	return newPackedAdjacencyRowsForMaxValue(counts, len(counts)-1)
+}
+
+func newPackedAdjacencyRowsForMaxValue(counts []uint32, maxValue int) packedAdjacencyRows {
+	offsets := make([]uint32, len(counts)+1)
+	total := uint32(0)
+	for i, count := range counts {
+		offsets[i] = total
+		total += count
+	}
+	offsets[len(counts)] = total
+	bitsPerEdge := bits.Len(uint(maxValue))
+	if bitsPerEdge == 0 {
+		bitsPerEdge = 1
+	}
+	totalBits := uint64(total) * uint64(bitsPerEdge)
+	return packedAdjacencyRows{
+		offsets:     offsets,
+		words:       make([]uint64, int((totalBits+63)/64)),
+		bitsPerEdge: uint8(bitsPerEdge),
+		mask:        (uint64(1) << bitsPerEdge) - 1,
+	}
+}
+
+func (rows adjacencyRows) row(i int) []uint32 {
+	if i < 0 || i+1 >= len(rows.offsets) {
+		return nil
+	}
+	start := rows.offsets[i]
+	end := rows.offsets[i+1]
+	return rows.edges[start:end]
+}
+
+func (rows packedAdjacencyRows) set(idx, value uint32) {
+	if uint64(value) > rows.mask {
+		panic(fmt.Sprintf("packed adjacency value out of range: %d", value))
+	}
+	bitOffset := uint64(idx) * uint64(rows.bitsPerEdge)
+	wordIdx := bitOffset / 64
+	shift := bitOffset % 64
+	raw := uint64(value) & rows.mask
+	rows.words[wordIdx] |= raw << shift
+	if shift+uint64(rows.bitsPerEdge) > 64 {
+		rows.words[wordIdx+1] |= raw >> (64 - shift)
+	}
+}
+
+func (rows packedAdjacencyRows) edgeAt(idx uint32) int {
+	bitOffset := uint64(idx) * uint64(rows.bitsPerEdge)
+	wordIdx := bitOffset / 64
+	shift := bitOffset % 64
+	raw := rows.words[wordIdx] >> shift
+	if shift+uint64(rows.bitsPerEdge) > 64 {
+		raw |= rows.words[wordIdx+1] << (64 - shift)
+	}
+	return int(raw & rows.mask)
+}
+
+func (rows packedAdjacencyRows) forEachRange(start, end uint32, fn func(int)) {
+	if start >= end {
+		return
+	}
+	step := uint64(rows.bitsPerEdge)
+	wordIdx := (uint64(start) * step) / 64
+	shift := (uint64(start) * step) % 64
+	for idx := start; idx < end; idx++ {
+		raw := rows.words[wordIdx] >> shift
+		if shift+step > 64 {
+			raw |= rows.words[wordIdx+1] << (64 - shift)
+		}
+		fn(int(raw & rows.mask))
+		shift += step
+		wordIdx += shift / 64
+		shift %= 64
+	}
+}
+
+func (rows packedAdjacencyRows) forEachRow(i int, fn func(int)) {
+	if i < 0 || i+1 >= len(rows.offsets) {
+		return
+	}
+	rows.forEachRange(rows.offsets[i], rows.offsets[i+1], fn)
 }
 
 // buildItemSetsLALR constructs LALR(1) item sets using the DeRemer/Pennello algorithm.
@@ -49,7 +186,7 @@ func (ctx *lrContext) buildItemSetsLALR() []lrItemSet {
 	if ctx.lalrLR0StateBudgetExceeded || ctx.lalrLR0CoreBudgetExceeded {
 		return ctx.itemSets
 	}
-	ctx.maybeGCForLargeLALR()
+	ctx.prepareLALRStatesForLookaheads()
 
 	// Phase 2: Compute LALR(1) lookaheads via DeRemer/Pennello.
 	t1 := time.Now()
@@ -74,6 +211,7 @@ func (ctx *lrContext) buildLR0() {
 	debugLALR := os.Getenv("GOT_DEBUG_LALR") == "1"
 	ctx.ensureLR0SymbolSeenCapacity(len(ng.Symbols))
 	ctx.ensureLR0SymbolBucketCapacity(len(ng.Symbols))
+	ctx.configureRetainedLR0Packing()
 	contextTagsEnabled := os.Getenv("GOT_LR_DISABLE_CONTEXT_TAGS") != "1" && len(ng.Productions) >= 2000
 	if contextTagsEnabled {
 		ctx.ensureRepeatWrapperLHS()
@@ -88,12 +226,12 @@ func (ctx *lrContext) buildLR0() {
 	ctx.lalrLR0ItemSets = []lr0ItemSet{initialSet}
 	addToHashMap(coreMap, initialSet.coreHash, 0)
 	ctx.recordFreshState(0)
-	totalCoreEntries := len(initialSet.cores)
+	totalCoreEntries := initialSet.coreLen()
 	ctx.lalrLR0CoreEntries = totalCoreEntries
 	if debugLALR {
 		debugLALRProgress("buildLR0_initial",
 			"states=%d initial_cores=%d productions=%d",
-			len(ctx.lalrLR0ItemSets), len(initialSet.cores), len(ng.Productions))
+			len(ctx.lalrLR0ItemSets), initialSet.coreLen(), len(ng.Productions))
 	}
 	if ctx.lalrLR0StateBudget > 0 && len(ctx.lalrLR0ItemSets) > ctx.lalrLR0StateBudget {
 		ctx.lalrLR0StateBudgetExceeded = true
@@ -118,7 +256,7 @@ func (ctx *lrContext) buildLR0() {
 		if debugLALR && stateIdx > 0 && stateIdx%128 == 0 {
 			debugLALRProgress("buildLR0_progress",
 				"state=%d states=%d total_core_entries=%d transitions=%d current_cores=%d",
-				stateIdx, len(ctx.lalrLR0ItemSets), totalCoreEntries, countTransitionEdges(ctx.transitions), len(itemSet.cores))
+				stateIdx, len(ctx.lalrLR0ItemSets), totalCoreEntries, countTransitionEdges(ctx.transitions), itemSet.coreLen())
 		}
 
 		// Collect all symbols after the dot.
@@ -133,7 +271,7 @@ func (ctx *lrContext) buildLR0() {
 		targetRepeatWrapperLHSBySym := ctx.lr0TargetRepeatWrapper
 		sourceTemplateCarrier := false
 		sourceConditionalTypeEntry := false
-		for _, ce := range itemSet.cores {
+		itemSet.forEachCore(func(ce lr0CoreEntry) {
 			prodIdx := int(ce.prodIdx())
 			dot := int(ce.dot())
 			prod := &ng.Productions[prodIdx]
@@ -164,7 +302,7 @@ func (ctx *lrContext) buildLR0() {
 				}
 			}
 			if !contextTagsEnabled {
-				continue
+				return
 			}
 			lhs := prod.LHS
 			if !sourceTemplateCarrier {
@@ -186,7 +324,7 @@ func (ctx *lrContext) buildLR0() {
 				sourceConditionalTypeEntry = true
 			}
 			if lhs < 0 || lhs >= len(ctx.repeatWrapperLHS) || !ctx.repeatWrapperLHS[lhs] || dot != len(prod.RHS) {
-				continue
+				return
 			}
 			for _, rhsSym := range prod.RHS {
 				if rhsSym == lhs {
@@ -194,7 +332,7 @@ func (ctx *lrContext) buildLR0() {
 					break
 				}
 			}
-		}
+		})
 
 		totalKernelItems := 0
 		for idx := range syms {
@@ -207,19 +345,19 @@ func (ctx *lrContext) buildLR0() {
 		}
 		kernelScratch := ctx.lr0KernelScratch[:totalKernelItems]
 		if totalKernelItems > 0 {
-			for _, ce := range itemSet.cores {
+			itemSet.forEachCore(func(ce lr0CoreEntry) {
 				prodIdx := int(ce.prodIdx())
 				dot := int(ce.dot())
 				prod := &ng.Productions[prodIdx]
 				if dot >= len(prod.RHS) {
-					continue
+					return
 				}
 				sym := prod.RHS[dot]
 				bucketIdx := ctx.lr0SymbolBucketIdx[sym]
 				writePos := bucketCounts[bucketIdx]
 				kernelScratch[writePos] = coreItem{prodIdx: prodIdx, dot: dot + 1}
 				bucketCounts[bucketIdx] = writePos + 1
-			}
+			})
 		}
 
 		for idx, sym := range syms {
@@ -288,7 +426,7 @@ func (ctx *lrContext) buildLR0() {
 			targetIdx := -1
 			for entry := coreMap[closedSet.coreHash]; entry != nil; entry = entry.next {
 				if sameAnnotationArgTagLR0(&ctx.lalrLR0ItemSets[entry.stateIdx], &closedSet) &&
-					sameSortedLR0CoreEntries(ctx.lalrLR0ItemSets[entry.stateIdx].cores, closedSet.cores) {
+					sameSortedLR0CoreEntriesSet(&ctx.lalrLR0ItemSets[entry.stateIdx], closedSet.cores) {
 					targetIdx = entry.stateIdx
 					ctx.recordMergedState(targetIdx, mergeOrigin{
 						kernelHash:  closedSet.coreHash,
@@ -301,7 +439,7 @@ func (ctx *lrContext) buildLR0() {
 				closedSet = ctx.retainLR0ItemSet(closedSet)
 				targetIdx = len(ctx.lalrLR0ItemSets)
 				ctx.lalrLR0ItemSets = append(ctx.lalrLR0ItemSets, closedSet)
-				totalCoreEntries += len(closedSet.cores)
+				totalCoreEntries += closedSet.coreLen()
 				ctx.lalrLR0CoreEntries = totalCoreEntries
 				addToHashMap(coreMap, closedSet.coreHash, targetIdx)
 				ctx.recordFreshState(targetIdx)
@@ -418,16 +556,180 @@ func (ctx *lrContext) lr0Closure(kernel []coreItem) lr0ItemSet {
 func (ctx *lrContext) retainLR0ItemSet(set lr0ItemSet) lr0ItemSet {
 	if len(set.cores) == 0 {
 		ctx.lr0ClosureScratch = set.cores[:0]
+		set.retainedChunk = -1
 		return set
 	}
-	tight := ctx.retainLR0Cores(set.cores)
+	if ctx.lr0PackedRetentionEnabled {
+		set.coreCount = len(set.cores)
+		set.packedCoreBits = ctx.lr0PackedCoreBits
+		set.packedProdBits = ctx.lr0PackedProdBits
+		set.packedCores = ctx.retainPackedLR0Cores(set.cores)
+		ctx.lr0ClosureScratch = set.cores[:0]
+		set.cores = nil
+		set.retainedChunk = -1
+		return set
+	}
+	tight, chunkIdx := ctx.retainLR0Cores(set.cores)
 	ctx.lr0ClosureScratch = set.cores[:0]
 	set.cores = tight
+	set.retainedChunk = chunkIdx
 	return set
+}
+
+func (ctx *lrContext) lalrStateCount() int {
+	if len(ctx.lalrLR0ItemSets) > 0 {
+		return len(ctx.lalrLR0ItemSets)
+	}
+	if len(ctx.lalrDot0Rows.offsets) > 0 {
+		return len(ctx.lalrDot0Rows.offsets) - 1
+	}
+	return 0
+}
+
+func (ctx *lrContext) forEachLALRDot0Prod(state int, fn func(int)) {
+	if state < 0 {
+		return
+	}
+	if len(ctx.lalrDot0Rows.offsets) > 0 {
+		ctx.lalrDot0Rows.forEachRow(state, fn)
+		return
+	}
+	itemSet := &ctx.lalrLR0ItemSets[state]
+	itemSet.forEachCore(func(ce lr0CoreEntry) {
+		if ce.dot() == 0 {
+			fn(int(ce.prodIdx()))
+		}
+	})
+}
+
+func (ctx *lrContext) hasLALRCompletedProd(state, prodIdx int) bool {
+	if state < 0 {
+		return false
+	}
+	if len(ctx.lalrCompletedRows.offsets) > 0 {
+		start := ctx.lalrCompletedRows.offsets[state]
+		end := ctx.lalrCompletedRows.offsets[state+1]
+		lo, hi := start, end
+		for lo < hi {
+			mid := lo + (hi-lo)/2
+			midProd := ctx.lalrCompletedRows.edgeAt(mid)
+			if midProd < prodIdx {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		return lo < end && ctx.lalrCompletedRows.edgeAt(lo) == prodIdx
+	}
+	_, ok := ctx.lalrLR0ItemSets[state].coreLookup(prodIdx, len(ctx.ng.Productions[prodIdx].RHS))
+	return ok
+}
+
+func isLALRKernelCore(stateIdx, prodIdx int, dot uint8, augmentProdID int) bool {
+	return dot > 0 || (stateIdx == 0 && prodIdx == augmentProdID && dot == 0)
+}
+
+func (ctx *lrContext) summarizeAndReleaseLALRStates() {
+	if ctx == nil || len(ctx.lalrLR0ItemSets) == 0 || ctx.lalrLR0CoreEntries < 50_000_000 {
+		return
+	}
+	stateCount := len(ctx.lalrLR0ItemSets)
+	kernelCounts := make([]uint32, stateCount)
+	dot0Counts := make([]uint32, stateCount)
+	completedCounts := make([]uint32, stateCount)
+	maxKernelCoreRaw := uint32(0)
+	for stateIdx := range ctx.lalrLR0ItemSets {
+		ctx.lalrLR0ItemSets[stateIdx].forEachCore(func(ce lr0CoreEntry) {
+			prodIdx := int(ce.prodIdx())
+			if isLALRKernelCore(stateIdx, prodIdx, ce.dot(), ctx.ng.AugmentProdID) {
+				kernelCounts[stateIdx]++
+				if raw := uint32(ce); raw > maxKernelCoreRaw {
+					maxKernelCoreRaw = raw
+				}
+			}
+			if ce.dot() == 0 {
+				dot0Counts[stateIdx]++
+			}
+			if int(ce.dot()) == len(ctx.ng.Productions[prodIdx].RHS) {
+				completedCounts[stateIdx]++
+			}
+		})
+	}
+	ctx.lalrKernelRows = newPackedAdjacencyRowsForMaxValue(kernelCounts, int(maxKernelCoreRaw))
+	ctx.lalrDot0Rows = newPackedAdjacencyRowsForMaxValue(dot0Counts, len(ctx.ng.Productions)-1)
+	ctx.lalrCompletedRows = newPackedAdjacencyRowsForMaxValue(completedCounts, len(ctx.ng.Productions)-1)
+	kernelWriteOffsets := append([]uint32(nil), ctx.lalrKernelRows.offsets[:stateCount]...)
+	dot0WriteOffsets := append([]uint32(nil), ctx.lalrDot0Rows.offsets[:stateCount]...)
+	completedWriteOffsets := append([]uint32(nil), ctx.lalrCompletedRows.offsets[:stateCount]...)
+	chunkRefs := make([]int, len(ctx.lr0RetainedChunks))
+	for i := range ctx.lalrLR0ItemSets {
+		if chunkIdx := ctx.lalrLR0ItemSets[i].retainedChunk; chunkIdx >= 0 && chunkIdx < len(chunkRefs) {
+			chunkRefs[chunkIdx]++
+		}
+	}
+	for stateIdx := range ctx.lalrLR0ItemSets {
+		set := &ctx.lalrLR0ItemSets[stateIdx]
+		set.forEachCore(func(ce lr0CoreEntry) {
+			prodIdx := int(ce.prodIdx())
+			if isLALRKernelCore(stateIdx, prodIdx, ce.dot(), ctx.ng.AugmentProdID) {
+				writeIdx := kernelWriteOffsets[stateIdx]
+				ctx.lalrKernelRows.set(writeIdx, uint32(ce))
+				kernelWriteOffsets[stateIdx] = writeIdx + 1
+			}
+			if ce.dot() == 0 {
+				writeIdx := dot0WriteOffsets[stateIdx]
+				ctx.lalrDot0Rows.set(writeIdx, uint32(prodIdx))
+				dot0WriteOffsets[stateIdx] = writeIdx + 1
+			}
+			if int(ce.dot()) == len(ctx.ng.Productions[prodIdx].RHS) {
+				writeIdx := completedWriteOffsets[stateIdx]
+				ctx.lalrCompletedRows.set(writeIdx, uint32(prodIdx))
+				completedWriteOffsets[stateIdx] = writeIdx + 1
+			}
+		})
+		oldChunk := set.retainedChunk
+		set.cores = nil
+		set.packedCores = nil
+		set.coreCount = 0
+		set.packedCoreBits = 0
+		set.packedProdBits = 0
+		set.retainedChunk = -1
+		if oldChunk >= 0 && oldChunk < len(chunkRefs) {
+			chunkRefs[oldChunk]--
+			if chunkRefs[oldChunk] == 0 {
+				ctx.lr0RetainedChunks[oldChunk] = nil
+			}
+		}
+		if stateIdx > 0 && stateIdx%4096 == 0 {
+			ctx.maybeGCForLargeLALR()
+		}
+	}
+	ctx.lr0RetainedChunks = nil
+	ctx.lr0RetainedChunkUsed = 0
+	ctx.lr0RetainedPackedChunks = nil
+	ctx.lr0RetainedPackedChunkUsed = 0
+	ctx.lalrLR0Released = true
+	ctx.maybeGCForLargeLALR()
+}
+
+func (ctx *lrContext) prepareLALRStatesForLookaheads() {
+	if ctx == nil {
+		return
+	}
+	ctx.packRetainedLR0ItemSets()
+	ctx.summarizeAndReleaseLALRStates()
+	ctx.maybeGCForLargeLALR()
 }
 
 func packCoreItemKey(prodIdx, dot int) uint64 {
 	return uint64(uint32(prodIdx))<<32 | uint64(uint32(dot))
+}
+
+type lalrIncludeGraph struct {
+	rows      adjacencyRows
+	packed    packedAdjacencyRows
+	usePacked bool
+	edgeCount int
 }
 
 // computeLALRLookaheads implements the DeRemer/Pennello algorithm to compute
@@ -438,103 +740,14 @@ func (ctx *lrContext) computeLALRLookaheads() {
 	debugLALR := os.Getenv("GOT_DEBUG_LALR") == "1"
 
 	// Step 1: Index all nonterminal transitions.
-	var ntTrans []ntTransition
-	ntTransIndex := make(map[[2]int]int) // (state, nonterm) → index in ntTrans
-
-	type stateSymPair struct{ state, sym, target int }
-	var ntPairs []stateSymPair
-	for state, trans := range ctx.transitions {
-		for _, edge := range trans {
-			sym := int(edge.sym)
-			if sym >= tokenCount {
-				ntPairs = append(ntPairs, stateSymPair{state, sym, int(edge.target)})
-			}
-		}
-	}
-	sort.Slice(ntPairs, func(i, j int) bool {
-		if ntPairs[i].state != ntPairs[j].state {
-			return ntPairs[i].state < ntPairs[j].state
-		}
-		return ntPairs[i].sym < ntPairs[j].sym
-	})
-	for _, p := range ntPairs {
-		idx := len(ntTrans)
-		ntTransIndex[[2]int{p.state, p.sym}] = idx
-		ntTrans = append(ntTrans, ntTransition{
-			state:   p.state,
-			nonterm: p.sym,
-			target:  p.target,
-		})
-	}
-	if debugLALR {
-		debugLALRProgress("lalr_nt_transitions",
-			"num_trans=%d transition_edges=%d",
-			len(ntTrans), countTransitionEdges(ctx.transitions))
-	}
-	if ctx.trackLookaheadContributors {
-		ctx.lalrNTTransitions = append(ctx.lalrNTTransitions[:0], ntTrans...)
-	}
-
-	numTrans := len(ntTrans)
+	ntTargets, ntTransRows := ctx.indexLALRNonterminalTransitions(tokenCount, debugLALR)
+	numTrans := len(ntTargets)
 	if numTrans == 0 {
 		return
 	}
 
-	// Step 2: Compute DR (Directly-Reads) sets.
-	// DR(p, A) = { t ∈ Terminals | GOTO(p, A) has a shift on t }
-	// i.e., terminals reachable in one step from the target state of (p, A).
-	dr := make([]bitset, numTrans)
-	for i, nt := range ntTrans {
-		dr[i] = newBitset(tokenCount)
-		q := nt.target // target state
-		for _, edge := range ctx.transitionRow(q) {
-			sym := int(edge.sym)
-			if sym < tokenCount {
-				dr[i].add(sym)
-			}
-		}
-	}
-
-	// Seed $end into DR(0, start_symbol). The accept state (GOTO(0, start_symbol))
-	// doesn't have a transition on $end, but $end is conceptually "readable" there
-	// since the augmented production S' → S reduces on $end.
-	startSym := ng.Productions[ng.AugmentProdID].RHS[0]
-	if idx, ok := ntTransIndex[[2]int{0, startSym}]; ok {
-		dr[idx].add(0) // $end = symbol 0
-	}
-
-	// Step 3: Compute READS relation.
-	// (p, A) reads (q, C) iff GOTO(p, A) = q and C is nullable.
-	// This means: from the target state of (p,A), if we can read a nullable
-	// nonterminal C, then whatever C reads also contributes to Read(p,A).
-	reads := make([][]uint32, numTrans)
-	for i, nt := range ntTrans {
-		q := nt.target
-		var nullableSyms []int
-		for _, edge := range ctx.transitionRow(q) {
-			sym := int(edge.sym)
-			if sym >= tokenCount && ctx.nullables[sym] {
-				nullableSyms = append(nullableSyms, sym)
-			}
-		}
-		sort.Ints(nullableSyms)
-		for _, sym := range nullableSyms {
-			if j, ok := ntTransIndex[[2]int{q, sym}]; ok {
-				reads[i] = append(reads[i], uint32(j))
-			}
-		}
-	}
-
-	// Step 4: Compute Read sets = Digraph(DR, READS).
-	// Read(p, A) = DR(p, A) ∪ ∪{ Read(q, C) | (p,A) reads (q,C) }
-	readSets := digraph(numTrans, dr, reads)
-	if debugLALR {
-		debugLALRProgress("lalr_reads",
-			"num_trans=%d read_edges=%d",
-			numTrans, countAdjacencyEdges(reads))
-	}
-	dr = nil
-	reads = nil
+	readSets := ctx.computeLALRReadSets(ng, tokenCount, ntTargets, ntTransRows, debugLALR)
+	ntTargets = nil
 	ctx.maybeGCForLargeLALR()
 
 	// Step 5: Compute INCLUDES relation.
@@ -547,17 +760,417 @@ func (ctx *lrContext) computeLALRLookaheads() {
 	// where Xₖ is a nonterminal A and Xₖ₊₁...Xₙ is nullable, add:
 	// (pₖ₋₁, A=Xₖ) includes (p', B).
 	//
-	// At the same time, compute LOOKBACK:
-	// (q, A → ω) lookback (p, A) iff p --ω--> q
-	// i.e., from state p, reading the entire RHS of production "A → ω" leads to q.
-	type lookbackEntry struct {
-		stateIdx uint32 // state q where reduce happens
-		coreIdx  uint32 // completed core entry for A → ω in state q
-		ntIdx    uint32 // index into ntTrans for (p, A)
+	includeGraph, canceled := ctx.buildLALRIncludeGraph(ng, tokenCount, ntTransRows, numTrans, debugLALR)
+	if canceled {
+		return
 	}
-	var lookbacks []lookbackEntry
+	if debugLALR {
+		debugLALRProgress("lalr_includes_lookbacks",
+			"includes_edges=%d productions=%d",
+			includeGraph.edgeCount, len(ng.Productions))
+	}
+	ctx.maybeGCForLargeLALR()
 
-	includes := make([][]uint32, numTrans)
+	// Step 6: Compute Follow sets = Digraph(Read, INCLUDES).
+	// Follow(p, A) = Read(p, A) ∪ ∪{ Follow(p', B) | (p,A) includes (p',B) }
+	followSets := readSets
+	if includeGraph.edgeCount > 0 {
+		if includeGraph.usePacked {
+			followSets = digraphPackedInPlace(numTrans, readSets, includeGraph.packed)
+		} else {
+			followSets = digraphInPlace(numTrans, readSets, includeGraph.rows)
+		}
+	}
+	if debugLALR {
+		debugLALRProgress("lalr_follow",
+			"num_trans=%d includes_edges=%d",
+			numTrans, includeGraph.edgeCount)
+	}
+	if ng.EnableLRSplitting {
+		ctx.lalrFollowSets = followSets
+		ctx.lalrNTTransitionRows = append(ctx.lalrNTTransitionRows[:0], ntTransRows...)
+	} else {
+		ctx.lalrFollowSets = nil
+		ctx.lalrNTTransitionRows = nil
+	}
+	ctx.lalrFollowByTransition = nil
+	includeGraph.rows = adjacencyRows{}
+	includeGraph.packed = packedAdjacencyRows{}
+	readSets = nil
+	ctx.maybeGCForLargeLALR()
+
+	// Step 7: Compute LA (lookahead) sets for reduce items via LOOKBACK.
+	// LA(q, A → ω) = ∪{ Follow(p, A) | (q, A → ω) lookback (p, A) }
+	//
+	// Run this as a second pass after Follow sets exist so we do not retain the
+	// full LOOKBACK relation in memory for large grammars.
+	stateCount := ctx.lalrStateCount()
+	reduceLookaheads := make([]map[int]bitset, stateCount)
+	trackLookaheadContributors := ctx.provenance != nil && ctx.trackLookaheadContributors
+	lookbackCount := 0
+	for stateIdx := 0; stateIdx < stateCount; stateIdx++ {
+		if ctx.bgCtx != nil && stateIdx&63 == 0 {
+			select {
+			case <-ctx.bgCtx.Done():
+				return
+			default:
+			}
+		}
+		if stateIdx > 0 && stateIdx%4096 == 0 {
+			ctx.maybeGCForLargeLALR()
+		}
+		ctx.forEachLALRDot0Prod(stateIdx, func(pi int) {
+			prod := &ng.Productions[pi]
+			lhs := prod.LHS
+			rhs := prod.RHS
+			srcIdx, ok := ntTransitionIndexLookup(ntTransRows, stateIdx, lhs)
+			if !ok {
+				return
+			}
+			curState := stateIdx
+			valid := true
+			for _, sym := range rhs {
+				if next, ok := ctx.transitionTarget(curState, sym); ok {
+					curState = next
+				} else {
+					valid = false
+					break
+				}
+			}
+			if !valid {
+				return
+			}
+			if !ctx.hasLALRCompletedProd(curState, pi) {
+				return
+			}
+			laByProd := reduceLookaheads[curState]
+			if laByProd == nil {
+				laByProd = make(map[int]bitset)
+				reduceLookaheads[curState] = laByProd
+			}
+			if existing, ok := laByProd[pi]; ok {
+				existing.unionWith(&followSets[srcIdx])
+				laByProd[pi] = existing
+			} else {
+				laByProd[pi] = ctx.cloneLookaheadBitset(&followSets[srcIdx])
+			}
+			if trackLookaheadContributors {
+				followSets[srcIdx].forEach(func(la int) {
+					ctx.recordLookaheadContributor(curState, la, srcIdx)
+				})
+			}
+			lookbackCount++
+		})
+		if debugLALR && stateIdx > 0 && stateIdx%256 == 0 {
+			debugLALRProgress("lalr_lookbacks_progress",
+				"state=%d states=%d lookbacks=%d",
+				stateIdx, stateCount, lookbackCount)
+		}
+	}
+	if debugLALR {
+		debugLALRProgress("lalr_lookbacks", "lookbacks=%d", lookbackCount)
+	}
+	ntTransRows = nil
+
+	// Step 8: Handle augmented start production: S' → S has lookahead {$end}.
+	// The augmented production reduces in the state reached after reading S.
+	augProd := &ng.Productions[ng.AugmentProdID]
+	if len(augProd.RHS) > 0 {
+		// Find the state reached from state 0 via the start symbol.
+		if targetState, ok := ctx.transitionTarget(0, augProd.RHS[0]); ok {
+			if ctx.hasLALRCompletedProd(targetState, ng.AugmentProdID) {
+				laByProd := reduceLookaheads[targetState]
+				if laByProd == nil {
+					laByProd = make(map[int]bitset)
+					reduceLookaheads[targetState] = laByProd
+				}
+				if existing, ok := laByProd[ng.AugmentProdID]; ok {
+					existing.add(0)
+					laByProd[ng.AugmentProdID] = existing
+				} else {
+					la := ctx.allocLookaheadBitset()
+					la.add(0)
+					laByProd[ng.AugmentProdID] = la
+				}
+			}
+		}
+	}
+	ctx.lalrDot0Rows = packedAdjacencyRows{}
+	ctx.lalrCompletedRows = packedAdjacencyRows{}
+	ctx.maybeGCForLargeLALR()
+
+	if !ng.EnableLRSplitting {
+		followSets = nil
+		ctx.maybeGCForLargeLALR()
+	}
+	if ctx.useCompactLALRTableBuild {
+		ctx.lalrReduceLookaheads = reduceLookaheads
+		if debugLALR {
+			debugLALRProgress("lalr_compact_ready", "states=%d", len(reduceLookaheads))
+		}
+		return
+	}
+	ctx.materializeLALRItemSets(reduceLookaheads)
+	reduceLookaheads = nil
+	ctx.maybeGCForLargeLALR()
+	ctx.pruneConditionalTypeQmarkLookaheads()
+
+	// Recompute hashes now that lookaheads are populated.
+	for i := range ctx.itemSets {
+		ctx.itemSets[i].computeHashes(ng.Productions, &ctx.boundaryLookaheads, false)
+	}
+	if debugLALR {
+		debugLALRProgress("lalr_hash_recompute", "states=%d", len(ctx.itemSets))
+	}
+}
+
+func (ctx *lrContext) builtStateCount() int {
+	if ctx == nil {
+		return 0
+	}
+	if len(ctx.itemSets) > 0 {
+		return len(ctx.itemSets)
+	}
+	if len(ctx.lalrReduceLookaheads) > 0 {
+		return len(ctx.lalrReduceLookaheads)
+	}
+	if n := ctx.lalrStateCount(); n > 0 {
+		return n
+	}
+	if len(ctx.transitions) > 0 {
+		return len(ctx.transitions)
+	}
+	return 0
+}
+
+func (ctx *lrContext) builtItemSet(stateIdx int) (lrItemSet, bool) {
+	if ctx == nil || stateIdx < 0 {
+		return lrItemSet{}, false
+	}
+	if stateIdx < len(ctx.itemSets) {
+		return ctx.itemSets[stateIdx], true
+	}
+	if !ctx.useCompactLALRTableBuild || stateIdx >= ctx.builtStateCount() {
+		return lrItemSet{}, false
+	}
+	return ctx.transientLALRItemSet(stateIdx)
+}
+
+func (ctx *lrContext) releaseBuiltItemSet(stateIdx int) {
+	if ctx == nil || !ctx.useCompactLALRTableBuild || stateIdx < 0 || stateIdx >= len(ctx.lalrReduceLookaheads) {
+		return
+	}
+	ctx.lalrReduceLookaheads[stateIdx] = nil
+	if ctx.transientLALRCoreScratchN > 0 {
+		clear(ctx.transientLALRCoreScratch[:ctx.transientLALRCoreScratchN])
+		ctx.transientLALRCoreScratch = ctx.transientLALRCoreScratch[:0]
+		ctx.transientLALRCoreScratchN = 0
+	}
+	if stateIdx > 0 && stateIdx%2048 == 0 {
+		ctx.maybeGCForLargeLALR()
+	}
+}
+
+func (ctx *lrContext) transientLALRItemSet(stateIdx int) (lrItemSet, bool) {
+	if ctx == nil || stateIdx < 0 || stateIdx >= ctx.lalrStateCount() {
+		return lrItemSet{}, false
+	}
+	if len(ctx.lalrKernelRows.offsets) > 0 {
+		kernelScratch := make([]coreItem, 0, 64)
+		ctx.lalrKernelRows.forEachRow(stateIdx, func(raw int) {
+			ce := lr0CoreEntry(uint32(raw))
+			kernelScratch = append(kernelScratch, coreItem{
+				prodIdx: int(ce.prodIdx()),
+				dot:     int(ce.dot()),
+			})
+		})
+		reconstructed := ctx.lr0Closure(kernelScratch)
+		set := ctx.transientLALRItemSetFromCoreIterator(
+			stateIdx,
+			reconstructed.coreLen(),
+			reconstructed.coreAt,
+			reconstructed.coreHash,
+		)
+		ctx.lr0ClosureScratch = reconstructed.cores[:0]
+		return set, true
+	}
+	if stateIdx >= len(ctx.lalrLR0ItemSets) {
+		return lrItemSet{}, false
+	}
+	lr0Set := &ctx.lalrLR0ItemSets[stateIdx]
+	return ctx.transientLALRItemSetFromCoreIterator(
+		stateIdx,
+		lr0Set.coreLen(),
+		lr0Set.coreAt,
+		lr0Set.coreHash,
+	), true
+}
+
+func (ctx *lrContext) transientLALRItemSetFromCoreIterator(
+	stateIdx int,
+	coreLen int,
+	coreAt func(int) lr0CoreEntry,
+	coreHash uint64,
+) lrItemSet {
+	var cores []coreEntry
+	if cap(ctx.transientLALRCoreScratch) >= coreLen {
+		cores = ctx.transientLALRCoreScratch[:coreLen]
+	} else {
+		cores = make([]coreEntry, coreLen)
+		ctx.transientLALRCoreScratch = cores
+	}
+	ctx.transientLALRCoreScratch = cores
+	ctx.transientLALRCoreScratchN = coreLen
+	var laByProd map[int]bitset
+	if stateIdx < len(ctx.lalrReduceLookaheads) {
+		laByProd = ctx.lalrReduceLookaheads[stateIdx]
+	}
+	annotationArgTag := uint32(0)
+	if stateIdx < len(ctx.lalrLR0ItemSets) {
+		coreHash = ctx.lalrLR0ItemSets[stateIdx].coreHash
+		annotationArgTag = ctx.lalrLR0ItemSets[stateIdx].annotationArgTag
+	}
+	for ci := range cores {
+		ce := coreAt(ci)
+		cores[ci] = coreEntry{
+			prodIdx: ce.prodIdx(),
+			dot:     uint32(ce.dot()),
+		}
+		if laByProd != nil && int(ce.dot()) == len(ctx.ng.Productions[ce.prodIdx()].RHS) {
+			if la, ok := laByProd[int(ce.prodIdx())]; ok {
+				cores[ci].lookaheads = la
+			}
+		}
+	}
+	set := lrItemSet{
+		cores:            cores,
+		coreHash:         coreHash,
+		fullHash:         coreHash,
+		completionLAHash: coreHash,
+		boundaryLAHash:   coreHash,
+		annotationArgTag: annotationArgTag,
+	}
+	ctx.pruneConditionalTypeQmarkLookaheadsInSet(&set)
+	return set
+}
+
+func (ctx *lrContext) indexLALRNonterminalTransitions(tokenCount int, debugLALR bool) ([]uint32, []ntTransitionIndexRow) {
+	var ntTargets []uint32
+	ntTransRows := make([]ntTransitionIndexRow, len(ctx.transitions))
+	for state, trans := range ctx.transitions {
+		for _, edge := range trans {
+			sym := int(edge.sym)
+			if sym < tokenCount {
+				continue
+			}
+			idx := len(ntTargets)
+			ntTargets = append(ntTargets, edge.target)
+			ntTransRows[state] = append(ntTransRows[state], ntTransitionIndex{
+				nonterm: edge.sym,
+				idx:     uint32(idx),
+			})
+		}
+	}
+	if debugLALR {
+		debugLALRProgress("lalr_nt_transitions",
+			"num_trans=%d transition_edges=%d",
+			len(ntTargets), countTransitionEdges(ctx.transitions))
+	}
+	return ntTargets, ntTransRows
+}
+
+func (ctx *lrContext) computeLALRReadSets(
+	ng *NormalizedGrammar,
+	tokenCount int,
+	ntTargets []uint32,
+	ntTransRows []ntTransitionIndexRow,
+	debugLALR bool,
+) []bitset {
+	numTrans := len(ntTargets)
+
+	// DR(p, A) = { t ∈ Terminals | GOTO(p, A) has a shift on t }.
+	dr := make([]bitset, numTrans)
+	for i, target := range ntTargets {
+		dr[i] = newBitset(tokenCount)
+		q := int(target)
+		for _, edge := range ctx.transitionRow(q) {
+			sym := int(edge.sym)
+			if sym < tokenCount {
+				dr[i].add(sym)
+			}
+		}
+	}
+
+	// Seed $end into DR(0, start_symbol). The accept state (GOTO(0, start_symbol))
+	// doesn't have a transition on $end, but $end is conceptually "readable" there
+	// since the augmented production S' → S reduces on $end.
+	startSym := ng.Productions[ng.AugmentProdID].RHS[0]
+	if idx, ok := ntTransitionIndexLookup(ntTransRows, 0, startSym); ok {
+		dr[idx].add(0)
+	}
+
+	readCounts := make([]uint32, numTrans)
+	readEdgeCount := 0
+	nullableScratch := make([]int, 0, 16)
+	for i, target := range ntTargets {
+		q := int(target)
+		nullableScratch = ctx.collectNullableTransitionNonterms(q, tokenCount, nullableScratch)
+		for _, sym := range nullableScratch {
+			if _, ok := ntTransitionIndexLookup(ntTransRows, q, sym); ok {
+				readCounts[i]++
+				readEdgeCount++
+			}
+		}
+	}
+
+	reads := adjacencyRows{}
+	if readEdgeCount > 0 {
+		reads = newAdjacencyRows(readCounts)
+		readWriteOffsets := append([]uint32(nil), reads.offsets[:numTrans]...)
+		for i, target := range ntTargets {
+			q := int(target)
+			nullableScratch = ctx.collectNullableTransitionNonterms(q, tokenCount, nullableScratch)
+			for _, sym := range nullableScratch {
+				if j, ok := ntTransitionIndexLookup(ntTransRows, q, sym); ok {
+					writeIdx := readWriteOffsets[i]
+					reads.edges[writeIdx] = uint32(j)
+					readWriteOffsets[i] = writeIdx + 1
+				}
+			}
+		}
+	}
+
+	readSets := dr
+	if readEdgeCount > 0 {
+		readSets = digraphInPlace(numTrans, dr, reads)
+	}
+	if debugLALR {
+		debugLALRProgress("lalr_reads",
+			"num_trans=%d read_edges=%d",
+			numTrans, readEdgeCount)
+	}
+	return readSets
+}
+
+func (ctx *lrContext) collectNullableTransitionNonterms(state, tokenCount int, scratch []int) []int {
+	scratch = scratch[:0]
+	for _, edge := range ctx.transitionRow(state) {
+		sym := int(edge.sym)
+		if sym >= tokenCount && ctx.nullables[sym] {
+			scratch = append(scratch, sym)
+		}
+	}
+	sort.Ints(scratch)
+	return scratch
+}
+
+func (ctx *lrContext) buildLALRIncludeGraph(
+	ng *NormalizedGrammar,
+	tokenCount int,
+	ntTransRows []ntTransitionIndexRow,
+	numTrans int,
+	debugLALR bool,
+) (lalrIncludeGraph, bool) {
 	includePositionsByProd := make([][]int, len(ng.Productions))
 	for pi := range ng.Productions {
 		rhs := ng.Productions[pi].RHS
@@ -583,22 +1196,169 @@ func (ctx *lrContext) computeLALRLookaheads() {
 		includePositionsByProd[pi] = positions
 	}
 
+	includeCounts := make([]uint32, numTrans)
+	includeEdgeCount, canceled := ctx.countLALRIncludeEdges(
+		ng,
+		tokenCount,
+		ntTransRows,
+		includePositionsByProd,
+		includeCounts,
+		debugLALR,
+		"lalr_includes_progress",
+	)
+	if canceled {
+		return lalrIncludeGraph{}, true
+	}
+
+	graph := lalrIncludeGraph{
+		usePacked: numTrans <= 0x00FFFFFF,
+		edgeCount: includeEdgeCount,
+	}
+	if includeEdgeCount == 0 {
+		return graph, false
+	}
+
+	if graph.usePacked {
+		graph.packed = newPackedAdjacencyRows(includeCounts)
+		includeWriteOffsets := append([]uint32(nil), graph.packed.offsets[:numTrans]...)
+		if ctx.fillLALRIncludeEdgesPacked(
+			ng,
+			tokenCount,
+			ntTransRows,
+			includePositionsByProd,
+			includeWriteOffsets,
+			graph.packed,
+		) {
+			return lalrIncludeGraph{}, true
+		}
+		return graph, false
+	}
+
+	graph.rows = newAdjacencyRows(includeCounts)
+	includeWriteOffsets := append([]uint32(nil), graph.rows.offsets[:numTrans]...)
+	if ctx.fillLALRIncludeEdges(
+		ng,
+		tokenCount,
+		ntTransRows,
+		includePositionsByProd,
+		includeWriteOffsets,
+		graph.rows.edges,
+	) {
+		return lalrIncludeGraph{}, true
+	}
+	return graph, false
+}
+
+func (ctx *lrContext) countLALRIncludeEdges(
+	ng *NormalizedGrammar,
+	tokenCount int,
+	ntTransRows []ntTransitionIndexRow,
+	includePositionsByProd [][]int,
+	counts []uint32,
+	debugLALR bool,
+	progressStage string,
+) (int, bool) {
+	return ctx.walkLALRIncludeEdges(
+		ng,
+		tokenCount,
+		ntTransRows,
+		includePositionsByProd,
+		len(counts),
+		debugLALR,
+		progressStage,
+		func(tgtIdx int, _ uint32) {
+			counts[tgtIdx]++
+		},
+	)
+}
+
+func (ctx *lrContext) fillLALRIncludeEdges(
+	ng *NormalizedGrammar,
+	tokenCount int,
+	ntTransRows []ntTransitionIndexRow,
+	includePositionsByProd [][]int,
+	writeOffsets []uint32,
+	edges []uint32,
+) bool {
+	_, canceled := ctx.walkLALRIncludeEdges(
+		ng,
+		tokenCount,
+		ntTransRows,
+		includePositionsByProd,
+		len(writeOffsets),
+		false,
+		"",
+		func(tgtIdx int, srcIdx uint32) {
+			writeIdx := writeOffsets[tgtIdx]
+			edges[writeIdx] = srcIdx
+			writeOffsets[tgtIdx] = writeIdx + 1
+		},
+	)
+	return canceled
+}
+
+func (ctx *lrContext) fillLALRIncludeEdgesPacked(
+	ng *NormalizedGrammar,
+	tokenCount int,
+	ntTransRows []ntTransitionIndexRow,
+	includePositionsByProd [][]int,
+	writeOffsets []uint32,
+	rows packedAdjacencyRows,
+) bool {
+	_, canceled := ctx.walkLALRIncludeEdges(
+		ng,
+		tokenCount,
+		ntTransRows,
+		includePositionsByProd,
+		len(writeOffsets),
+		false,
+		"",
+		func(tgtIdx int, srcIdx uint32) {
+			writeIdx := writeOffsets[tgtIdx]
+			rows.set(writeIdx, srcIdx)
+			writeOffsets[tgtIdx] = writeIdx + 1
+		},
+	)
+	return canceled
+}
+
+func (ctx *lrContext) walkLALRIncludeEdges(
+	ng *NormalizedGrammar,
+	tokenCount int,
+	ntTransRows []ntTransitionIndexRow,
+	includePositionsByProd [][]int,
+	numTrans int,
+	debugLALR bool,
+	progressStage string,
+	visit func(tgtIdx int, srcIdx uint32),
+) (int, bool) {
+	if numTrans == 0 {
+		return 0, false
+	}
+	includeSeenEpoch := make([]uint32, numTrans)
+	includeLastSrcIdx := make([]uint32, numTrans)
+	includeStateEpoch := uint32(0)
 	includeEdgeCount := 0
-	for stateIdx := range ctx.lalrLR0ItemSets {
-		// Check for cancellation every 64 states.
+	stateCount := ctx.lalrStateCount()
+	for stateIdx := 0; stateIdx < stateCount; stateIdx++ {
 		if ctx.bgCtx != nil && stateIdx&63 == 0 {
 			select {
 			case <-ctx.bgCtx.Done():
-				return
+				return includeEdgeCount, true
 			default:
 			}
 		}
-		itemSet := &ctx.lalrLR0ItemSets[stateIdx]
-		for _, ce := range itemSet.cores {
-			if ce.dot() != 0 {
-				continue
+		if stateIdx > 0 && stateIdx%4096 == 0 {
+			ctx.maybeGCForLargeLALR()
+		}
+		includeStateEpoch++
+		if includeStateEpoch == 0 {
+			for i := range includeSeenEpoch {
+				includeSeenEpoch[i] = 0
 			}
-			pi := int(ce.prodIdx())
+			includeStateEpoch = 1
+		}
+		ctx.forEachLALRDot0Prod(stateIdx, func(pi int) {
 			prod := &ng.Productions[pi]
 			lhs := prod.LHS
 			rhs := prod.RHS
@@ -608,12 +1368,15 @@ func (ctx *lrContext) computeLALRLookaheads() {
 			nextIncludeIdx := 0
 			for dot, sym := range rhs {
 				if nextIncludeIdx < len(includePos) && includePos[nextIncludeIdx] == dot {
-					srcKey := [2]int{stateIdx, lhs}
-					tgtKey := [2]int{curState, sym}
-					if srcIdx, ok := ntTransIndex[srcKey]; ok {
-						if tgtIdx, ok := ntTransIndex[tgtKey]; ok {
-							includes[tgtIdx] = append(includes[tgtIdx], uint32(srcIdx))
-							includeEdgeCount++
+					if srcIdx, ok := ntTransitionIndexLookup(ntTransRows, stateIdx, lhs); ok {
+						if tgtIdx, ok := ntTransitionIndexLookup(ntTransRows, curState, sym); ok {
+							srcIdx32 := uint32(srcIdx)
+							if includeSeenEpoch[tgtIdx] != includeStateEpoch || includeLastSrcIdx[tgtIdx] != srcIdx32 {
+								visit(tgtIdx, srcIdx32)
+								includeEdgeCount++
+								includeSeenEpoch[tgtIdx] = includeStateEpoch
+								includeLastSrcIdx[tgtIdx] = srcIdx32
+							}
 						}
 					}
 					nextIncludeIdx++
@@ -626,128 +1389,121 @@ func (ctx *lrContext) computeLALRLookaheads() {
 				}
 			}
 			if !valid {
-				continue
+				return
 			}
-			srcIdx, ok := ntTransIndex[[2]int{stateIdx, lhs}]
-			if !ok {
-				continue
-			}
-			if coreIdx, ok := ctx.lalrLR0ItemSets[curState].coreLookup(pi, len(rhs)); ok {
-				lookbacks = append(lookbacks, lookbackEntry{
-					stateIdx: uint32(curState),
-					coreIdx:  uint32(coreIdx),
-					ntIdx:    uint32(srcIdx),
-				})
-			}
-		}
-		if debugLALR && stateIdx > 0 && stateIdx%256 == 0 {
-			debugLALRProgress("lalr_includes_progress",
-				"state=%d states=%d includes_edges=%d lookbacks=%d",
-				stateIdx, len(ctx.lalrLR0ItemSets), includeEdgeCount, len(lookbacks))
-		}
-	}
-	if debugLALR {
-		debugLALRProgress("lalr_includes_lookbacks",
-			"includes_edges=%d lookbacks=%d productions=%d",
-			includeEdgeCount, len(lookbacks), len(ng.Productions))
-	}
-	includePositionsByProd = nil
-	ctx.maybeGCForLargeLALR()
-
-	// Step 6: Compute Follow sets = Digraph(Read, INCLUDES).
-	// Follow(p, A) = Read(p, A) ∪ ∪{ Follow(p', B) | (p,A) includes (p',B) }
-	followSets := digraph(numTrans, readSets, includes)
-	if debugLALR {
-		debugLALRProgress("lalr_follow",
-			"num_trans=%d includes_edges=%d",
-			numTrans, countAdjacencyEdges(includes))
-	}
-	ctx.lalrFollowByTransition = make(map[[2]int]bitset, numTrans)
-	for i, nt := range ntTrans {
-		ctx.lalrFollowByTransition[[2]int{nt.state, nt.nonterm}] = followSets[i]
-	}
-	includes = nil
-	readSets = nil
-	ctx.maybeGCForLargeLALR()
-
-	// Step 7: Compute LA (lookahead) sets for reduce items via LOOKBACK.
-	// LA(q, A → ω) = ∪{ Follow(p, A) | (q, A → ω) lookback (p, A) }
-	//
-	// Keep reduce lookaheads separate until the end so LR(0) item sets stay in
-	// their compact representation throughout phases 1 and 2.
-	reduceLookaheads := make([]map[int]bitset, len(ctx.lalrLR0ItemSets))
-	for _, lb := range lookbacks {
-		laByCore := reduceLookaheads[lb.stateIdx]
-		if laByCore == nil {
-			laByCore = make(map[int]bitset)
-			reduceLookaheads[lb.stateIdx] = laByCore
-		}
-		coreIdx := int(lb.coreIdx)
-		if existing, ok := laByCore[coreIdx]; ok {
-			existing.unionWith(&followSets[lb.ntIdx])
-			laByCore[coreIdx] = existing
-		} else {
-			laByCore[coreIdx] = ctx.cloneLookaheadBitset(&followSets[lb.ntIdx])
-		}
-		followSets[lb.ntIdx].forEach(func(la int) {
-			ctx.recordLookaheadContributor(int(lb.stateIdx), la, int(lb.ntIdx))
 		})
-	}
-
-	// Step 8: Handle augmented start production: S' → S has lookahead {$end}.
-	// The augmented production reduces in the state reached after reading S.
-	augProd := &ng.Productions[ng.AugmentProdID]
-	if len(augProd.RHS) > 0 {
-		// Find the state reached from state 0 via the start symbol.
-		if targetState, ok := ctx.transitionTarget(0, augProd.RHS[0]); ok {
-			augSet := &ctx.lalrLR0ItemSets[targetState]
-			if idx, ok := augSet.coreLookup(ng.AugmentProdID, len(augProd.RHS)); ok {
-				laByCore := reduceLookaheads[targetState]
-				if laByCore == nil {
-					laByCore = make(map[int]bitset)
-					reduceLookaheads[targetState] = laByCore
-				}
-				if existing, ok := laByCore[idx]; ok {
-					existing.add(0)
-					laByCore[idx] = existing
-				} else {
-					la := ctx.allocLookaheadBitset()
-					la.add(0)
-					laByCore[idx] = la
-				}
-			}
+		if debugLALR && progressStage != "" && stateIdx > 0 && stateIdx%256 == 0 {
+			debugLALRProgress(progressStage,
+				"state=%d states=%d includes_edges=%d",
+				stateIdx, stateCount, includeEdgeCount)
 		}
 	}
-
-	ctx.materializeLALRItemSets(reduceLookaheads)
-	lookbacks = nil
-	followSets = nil
-	reduceLookaheads = nil
-	ctx.maybeGCForLargeLALR()
-	ctx.pruneConditionalTypeQmarkLookaheads()
-
-	// Recompute hashes now that lookaheads are populated.
-	for i := range ctx.itemSets {
-		ctx.itemSets[i].computeHashes(ng.Productions, &ctx.boundaryLookaheads, false)
-	}
-	if debugLALR {
-		debugLALRProgress("lalr_hash_recompute", "states=%d", len(ctx.itemSets))
-	}
+	return includeEdgeCount, false
 }
 
 func (ctx *lrContext) materializeLALRItemSets(reduceLookaheads []map[int]bitset) {
+	debugLALR := os.Getenv("GOT_DEBUG_LALR") == "1"
+	if ctx.lalrLR0Released {
+		if len(ctx.lalrKernelRows.offsets) > 0 {
+			stateCount := ctx.lalrStateCount()
+			ctx.itemSets = make([]lrItemSet, stateCount)
+			kernelScratch := make([]coreItem, 0, 64)
+			for stateIdx := 0; stateIdx < stateCount; stateIdx++ {
+				if ctx.bgCtx != nil && stateIdx&63 == 0 {
+					select {
+					case <-ctx.bgCtx.Done():
+						ctx.itemSets = nil
+						return
+					default:
+					}
+				}
+				if stateIdx > 0 && stateIdx%4096 == 0 {
+					ctx.maybeGCForLargeLALR()
+				}
+				if debugLALR && stateIdx > 0 && stateIdx%256 == 0 {
+					debugLALRProgress("lalr_materialize_progress",
+						"state=%d states=%d",
+						stateIdx, stateCount)
+				}
+				kernelScratch = kernelScratch[:0]
+				ctx.lalrKernelRows.forEachRow(stateIdx, func(raw int) {
+					ce := lr0CoreEntry(uint32(raw))
+					kernelScratch = append(kernelScratch, coreItem{
+						prodIdx: int(ce.prodIdx()),
+						dot:     int(ce.dot()),
+					})
+				})
+				reconstructed := ctx.lr0Closure(kernelScratch)
+				cores := make([]coreEntry, reconstructed.coreLen())
+				laByProd := reduceLookaheads[stateIdx]
+				for ci := range cores {
+					ce := reconstructed.coreAt(ci)
+					cores[ci] = coreEntry{
+						prodIdx: ce.prodIdx(),
+						dot:     uint32(ce.dot()),
+					}
+					if laByProd != nil && int(ce.dot()) == len(ctx.ng.Productions[ce.prodIdx()].RHS) {
+						if la, ok := laByProd[int(ce.prodIdx())]; ok {
+							cores[ci].lookaheads = la
+						}
+					}
+				}
+				coreHash := reconstructed.coreHash
+				annotationArgTag := uint32(0)
+				if stateIdx < len(ctx.lalrLR0ItemSets) {
+					coreHash = ctx.lalrLR0ItemSets[stateIdx].coreHash
+					annotationArgTag = ctx.lalrLR0ItemSets[stateIdx].annotationArgTag
+				}
+				ctx.itemSets[stateIdx] = lrItemSet{
+					cores:            cores,
+					coreHash:         coreHash,
+					fullHash:         coreHash,
+					completionLAHash: coreHash,
+					boundaryLAHash:   coreHash,
+					annotationArgTag: annotationArgTag,
+				}
+				reduceLookaheads[stateIdx] = nil
+				ctx.lr0ClosureScratch = reconstructed.cores[:0]
+			}
+			ctx.lalrKernelRows = packedAdjacencyRows{}
+			ctx.lalrDot0Rows = packedAdjacencyRows{}
+			ctx.lalrCompletedRows = packedAdjacencyRows{}
+			ctx.lalrLR0Released = false
+			ctx.lalrLR0ItemSets = nil
+			if debugLALR {
+				debugLALRProgress("lalr_materialize", "states=%d", stateCount)
+			}
+			return
+		}
+		ctx.lalrDot0Rows = packedAdjacencyRows{}
+		ctx.lalrCompletedRows = packedAdjacencyRows{}
+		ctx.lalrLR0Released = false
+		ctx.buildLR0()
+		if ctx.lalrLR0StateBudgetExceeded || ctx.lalrLR0CoreBudgetExceeded || len(ctx.lalrLR0ItemSets) == 0 {
+			ctx.itemSets = nil
+			return
+		}
+		ctx.packRetainedLR0ItemSets()
+		ctx.maybeGCForLargeLALR()
+	}
 	ctx.itemSets = make([]lrItemSet, len(ctx.lalrLR0ItemSets))
 	for i := range ctx.lalrLR0ItemSets {
 		lr0Set := &ctx.lalrLR0ItemSets[i]
-		cores := make([]coreEntry, len(lr0Set.cores))
-		laByCore := reduceLookaheads[i]
-		for ci, ce := range lr0Set.cores {
+		if debugLALR && i > 0 && i%256 == 0 {
+			debugLALRProgress("lalr_materialize_progress",
+				"state=%d states=%d",
+				i, len(ctx.lalrLR0ItemSets))
+		}
+		cores := make([]coreEntry, lr0Set.coreLen())
+		laByProd := reduceLookaheads[i]
+		for ci := range cores {
+			ce := lr0Set.coreAt(ci)
 			cores[ci] = coreEntry{
 				prodIdx: ce.prodIdx(),
 				dot:     uint32(ce.dot()),
 			}
-			if laByCore != nil {
-				if la, ok := laByCore[ci]; ok {
+			if laByProd != nil && int(ce.dot()) == len(ctx.ng.Productions[ce.prodIdx()].RHS) {
+				if la, ok := laByProd[int(ce.prodIdx())]; ok {
 					cores[ci].lookaheads = la
 				}
 			}
@@ -760,31 +1516,47 @@ func (ctx *lrContext) materializeLALRItemSets(reduceLookaheads []map[int]bitset)
 			boundaryLAHash:   lr0Set.coreHash,
 			annotationArgTag: lr0Set.annotationArgTag,
 		}
+		reduceLookaheads[i] = nil
 		lr0Set.cores = nil
+		lr0Set.packedCores = nil
+		lr0Set.coreCount = 0
 	}
+	ctx.lalrKernelRows = packedAdjacencyRows{}
+	ctx.lalrDot0Rows = packedAdjacencyRows{}
+	ctx.lalrCompletedRows = packedAdjacencyRows{}
+	ctx.lalrLR0Released = false
 	ctx.lalrLR0ItemSets = nil
+	if debugLALR {
+		debugLALRProgress("lalr_materialize", "states=%d", len(ctx.itemSets))
+	}
 }
 
 func (ctx *lrContext) pruneConditionalTypeQmarkLookaheads() {
-	if ctx == nil || ctx.conditionalTypeExternalQmarkSym < 0 || ctx.conditionalTypePlainQmarkSym < 0 {
+	if ctx == nil {
 		return
 	}
 	for i := range ctx.itemSets {
-		set := &ctx.itemSets[i]
-		if set.annotationArgTag&conditionalTypeContextTag == 0 {
-			continue
-		}
-		for ci := range set.cores {
-			ce := &set.cores[ci]
-			if !ce.lookaheads.contains(ctx.conditionalTypeExternalQmarkSym) || !ce.lookaheads.contains(ctx.conditionalTypePlainQmarkSym) {
-				continue
-			}
-			ce.lookaheads.clear(ctx.conditionalTypeExternalQmarkSym)
-		}
+		ctx.pruneConditionalTypeQmarkLookaheadsInSet(&ctx.itemSets[i])
 	}
 }
 
-// digraph implements Tarjan's SCC-based algorithm for computing F(x) across a
+func (ctx *lrContext) pruneConditionalTypeQmarkLookaheadsInSet(set *lrItemSet) {
+	if ctx == nil || set == nil || ctx.conditionalTypeExternalQmarkSym < 0 || ctx.conditionalTypePlainQmarkSym < 0 {
+		return
+	}
+	if set.annotationArgTag&conditionalTypeContextTag == 0 {
+		return
+	}
+	for ci := range set.cores {
+		ce := &set.cores[ci]
+		if !ce.lookaheads.contains(ctx.conditionalTypeExternalQmarkSym) || !ce.lookaheads.contains(ctx.conditionalTypePlainQmarkSym) {
+			continue
+		}
+		ce.lookaheads.clear(ctx.conditionalTypeExternalQmarkSym)
+	}
+}
+
+// digraphInPlace implements Tarjan's SCC-based algorithm for computing F(x) across a
 // relation R, given initial values f(x):
 //
 //	F(x) = f(x) ∪ ∪{ F(y) | x R y }
@@ -793,16 +1565,13 @@ func (ctx *lrContext) pruneConditionalTypeQmarkLookaheads() {
 // node at most twice (push + pop), making it near-linear.
 //
 // n: number of nodes
-// f: initial values f(0..n-1), each a bitset
-// rel: adjacency list for relation R: rel[x] = list of y such that x R y
-// bitcap: capacity for new bitsets
+// values: initial values f(0..n-1), each a bitset
+// rel: compact adjacency rows for relation R: rel[x] = list of y such that x R y
 //
-// Returns F(0..n-1).
-func digraph(n int, f []bitset, rel [][]uint32) []bitset {
-	result := make([]bitset, n)
-	for i := 0; i < n; i++ {
-		result[i] = f[i].clone()
-	}
+// values is updated in place and returned to avoid cloning every bitset before
+// the SCC walk. Callers must not reuse the pre-digraph contents afterwards.
+func digraphInPlace(n int, values []bitset, rel adjacencyRows) []bitset {
+	result := values
 
 	// Tarjan's SCC stack and state.
 	const infinity = 0x7FFFFFFF
@@ -816,7 +1585,7 @@ func digraph(n int, f []bitset, rel [][]uint32) []bitset {
 		depth[x] = d
 		stack = append(stack, x)
 
-		for _, y32 := range rel[x] {
+		for _, y32 := range rel.row(x) {
 			y := int(y32)
 			if depth[y] == 0 {
 				traverse(y)
@@ -854,6 +1623,53 @@ func digraph(n int, f []bitset, rel [][]uint32) []bitset {
 	return result
 }
 
+func digraphPackedInPlace(n int, values []bitset, rel packedAdjacencyRows) []bitset {
+	result := values
+
+	const infinity = 0x7FFFFFFF
+	depth := make([]int, n)
+	stack := make([]int, 0, n)
+	d := 0
+
+	var traverse func(x int)
+	traverse = func(x int) {
+		d++
+		depth[x] = d
+		stack = append(stack, x)
+
+		rel.forEachRow(x, func(y int) {
+			if depth[y] == 0 {
+				traverse(y)
+			}
+			if depth[y] < depth[x] {
+				depth[x] = depth[y]
+			}
+			result[x].unionWith(&result[y])
+		})
+
+		if depth[x] == d {
+			for {
+				top := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				depth[top] = infinity
+				if top == x {
+					break
+				}
+				result[top] = result[x].clone()
+			}
+		}
+		d--
+	}
+
+	for i := 0; i < n; i++ {
+		if depth[i] == 0 {
+			traverse(i)
+		}
+	}
+
+	return result
+}
+
 func debugLALRProgress(stage, format string, args ...any) {
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
@@ -869,14 +1685,6 @@ func debugLALRProgress(stage, format string, args ...any) {
 		ms.NumGC,
 		msg,
 	)
-}
-
-func countAdjacencyEdges(rel [][]uint32) int {
-	total := 0
-	for _, edges := range rel {
-		total += len(edges)
-	}
-	return total
 }
 
 func countTransitionEdges(transitions []lrTransitionRow) int {

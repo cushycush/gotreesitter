@@ -103,6 +103,52 @@ func EmitGrammarGo(g *Grammar, pkgName, funcName string) ([]byte, error) {
 		fmt.Fprintf(&buf, "\tg.BinaryRepeatMode = true\n\n")
 	}
 
+	// Emit ChoiceLiftThreshold.
+	if g.ChoiceLiftThreshold > 0 {
+		fmt.Fprintf(&buf, "\tg.ChoiceLiftThreshold = %d\n\n", g.ChoiceLiftThreshold)
+	}
+
+	// Emit ChoiceLiftForce.
+	if len(g.ChoiceLiftForce) > 0 {
+		fmt.Fprintf(&buf, "\tg.ChoiceLiftForce = []string{")
+		for i, name := range g.ChoiceLiftForce {
+			if i > 0 {
+				fmt.Fprintf(&buf, ", ")
+			}
+			fmt.Fprintf(&buf, "%q", name)
+		}
+		fmt.Fprintf(&buf, "}\n\n")
+	}
+
+	// Emit SeqChoiceHelperThreshold.
+	if g.SeqChoiceHelperThreshold > 0 {
+		fmt.Fprintf(&buf, "\tg.SeqChoiceHelperThreshold = %d\n\n", g.SeqChoiceHelperThreshold)
+	}
+
+	// Emit SeqChoiceHelperExclude.
+	if len(g.SeqChoiceHelperExclude) > 0 {
+		fmt.Fprintf(&buf, "\tg.SeqChoiceHelperExclude = []string{")
+		for i, name := range g.SeqChoiceHelperExclude {
+			if i > 0 {
+				fmt.Fprintf(&buf, ", ")
+			}
+			fmt.Fprintf(&buf, "%s", goString(name))
+		}
+		fmt.Fprintf(&buf, "}\n\n")
+	}
+
+	// Emit SeqChoiceHelperForce.
+	if len(g.SeqChoiceHelperForce) > 0 {
+		fmt.Fprintf(&buf, "\tg.SeqChoiceHelperForce = []string{")
+		for i, name := range g.SeqChoiceHelperForce {
+			if i > 0 {
+				fmt.Fprintf(&buf, ", ")
+			}
+			fmt.Fprintf(&buf, "%q", name)
+		}
+		fmt.Fprintf(&buf, "}\n\n")
+	}
+
 	fmt.Fprintf(&buf, "\treturn g\n")
 	fmt.Fprintf(&buf, "}\n")
 

@@ -54,7 +54,7 @@ func TestResolveActionConflictExplicitNegativeShiftBeatsImplicitZeroReduce(t *te
 
 	actions := []lrAction{
 		{kind: lrReduce, prodIdx: 0, lhsSym: 1},
-		{kind: lrShift, state: 7, prec: -2, hasPrec: true, assoc: AssocRight, lhsSym: 2},
+		{kind: lrShift, state: 7, prec: -2, hasPrec: true, assoc: packLRActionAssoc(AssocRight), lhsSym: 2},
 	}
 
 	got, err := resolveActionConflict(0, actions, ng)
@@ -80,7 +80,7 @@ func TestResolveActionConflictExplicitZeroReduceStillBeatsNegativeShift(t *testi
 
 	actions := []lrAction{
 		{kind: lrReduce, prodIdx: 0, lhsSym: 1},
-		{kind: lrShift, state: 9, prec: -1, hasPrec: true, assoc: AssocRight, lhsSym: 2},
+		{kind: lrShift, state: 9, prec: -1, hasPrec: true, assoc: packLRActionAssoc(AssocRight), lhsSym: 2},
 	}
 
 	got, err := resolveActionConflict(0, actions, ng)
@@ -106,7 +106,7 @@ func TestResolveActionConflictNegativeShiftGuardIsAssignmentOnly(t *testing.T) {
 
 	actions := []lrAction{
 		{kind: lrReduce, prodIdx: 0, lhsSym: 1},
-		{kind: lrShift, state: 11, prec: -1, hasPrec: true, assoc: AssocRight, lhsSym: 2},
+		{kind: lrShift, state: 11, prec: -1, hasPrec: true, assoc: packLRActionAssoc(AssocRight), lhsSym: 2},
 	}
 
 	got, err := resolveActionConflict(0, actions, ng)

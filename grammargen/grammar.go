@@ -61,21 +61,25 @@ type ReservedWordSet struct {
 
 // Grammar is the top-level grammar definition.
 type Grammar struct {
-	Name                string
-	Rules               map[string]*Rule
-	RuleOrder           []string // order rules were defined (first = start rule)
-	Extras              []*Rule
-	Conflicts           [][]string
-	Externals           []*Rule
-	Inline              []string
-	Word                string
-	ReservedWordSets    []ReservedWordSet
-	Supertypes          []string
-	Tests               []TestCase    // embedded test cases
-	EnableLRSplitting   bool          // opt-in: attempt LR(1) state splitting for merge pathology
-	BinaryRepeatMode    bool          // use tree-sitter's binary repeat helper shape (aux→seq(aux,aux)|inner)
-	Precedences         [][]PrecEntry // ordered precedence levels (each level: earlier = higher prec)
-	ChoiceLiftThreshold int           // if >0, lift inline CHOICE nodes with more alternatives than this into auxiliary nonterminals to prevent production explosion
+	Name                     string
+	Rules                    map[string]*Rule
+	RuleOrder                []string // order rules were defined (first = start rule)
+	Extras                   []*Rule
+	Conflicts                [][]string
+	Externals                []*Rule
+	Inline                   []string
+	Word                     string
+	ReservedWordSets         []ReservedWordSet
+	Supertypes               []string
+	Tests                    []TestCase    // embedded test cases
+	EnableLRSplitting        bool          // opt-in: attempt LR(1) state splitting for merge pathology
+	BinaryRepeatMode         bool          // use tree-sitter's binary repeat helper shape (aux→seq(aux,aux)|inner)
+	Precedences              [][]PrecEntry // ordered precedence levels (each level: earlier = higher prec)
+	ChoiceLiftThreshold      int           // if >0, lift inline CHOICE nodes with more alternatives than this into auxiliary nonterminals to prevent production explosion
+	ChoiceLiftForce          []string      // if non-empty, restrict ChoiceLiftThreshold to these exact parent rule names
+	SeqChoiceHelperThreshold int           // if >0, lower wide SEQ children into helper nonterminals during production extraction until estimated SEQ alternatives fit within this threshold
+	SeqChoiceHelperExclude   []string      // exact parent rule names to exclude from flatten-time SEQ choice helper lowering
+	SeqChoiceHelperForce     []string      // exact parent rule names to force flatten-time SEQ choice helper lowering for direct wide choice children, even below the global threshold
 }
 
 // NewGrammar creates a new grammar with the given name.

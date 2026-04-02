@@ -3,7 +3,9 @@ package grammargen
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -124,8 +126,9 @@ type symbolTable struct {
 	nextID              int
 	fieldMap            map[string]int
 	fields              []string
-	binaryRepeatMode    bool           // use tree-sitter binary repeat helper shape
-	choiceLiftThreshold int            // if >0, lift inline CHOICE nodes exceeding this width
+	binaryRepeatMode    bool            // use tree-sitter binary repeat helper shape
+	choiceLiftThreshold int             // if >0, lift inline CHOICE nodes exceeding this width
+	choiceLiftForce     map[string]bool // if non-empty, restrict choice lifting to these exact parent rules
 	conflictGroupRules  map[string]bool // rules in declared conflict groups (skip lifting)
 }
 
@@ -271,6 +274,16 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 	st := newSymbolTable()
 	st.binaryRepeatMode = g.BinaryRepeatMode
 	st.choiceLiftThreshold = g.ChoiceLiftThreshold
+	if len(g.ChoiceLiftForce) > 0 {
+		st.choiceLiftForce = make(map[string]bool, len(g.ChoiceLiftForce))
+		for _, name := range g.ChoiceLiftForce {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			st.choiceLiftForce[name] = true
+		}
+	}
 	// Choice lifting for large grammars is available via ChoiceLiftThreshold
 	// but NOT auto-enabled: even selective lifting (skipping conflict group
 	// rules) changes the LALR automaton structure and causes regressions.
@@ -511,6 +524,12 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 	productions = append(productions, augProd)
 	prodIDCounter++
 
+	ruleOrderIdx := make(map[string]int, len(nonterminals))
+	for i, name := range nonterminals {
+		ruleOrderIdx[name] = i
+	}
+	buildCtx := newProductionBuildCtx(st, &prodIDCounter, auxRules, auxOrigin, g.SeqChoiceHelperThreshold, g.SeqChoiceHelperExclude, g.SeqChoiceHelperForce)
+
 	// Extract productions for each nonterminal rule.
 	for _, name := range nonterminals {
 		rule := processedRules[name]
@@ -518,35 +537,34 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 			continue
 		}
 		symID, _ := st.lookupNonterm(name)
-		prods := flattenRule2(rule, symID, st, &prodIDCounter)
+		prods := flattenRuleWithCtx(buildCtx, rule, symID, name)
 		productions = append(productions, prods...)
 	}
 
-	// Extract productions for auxiliary rules.
-	// Sort by originating grammar rule's definition order first, then by name.
-	// This ensures that auxiliary rules from earlier-defined grammar rules get
-	// lower production indices, matching tree-sitter's conflict resolution behavior.
-	ruleOrderIdx := make(map[string]int, len(nonterminals))
-	for i, name := range nonterminals {
-		ruleOrderIdx[name] = i
-	}
-	auxNames := make([]string, 0, len(auxRules))
-	for name := range auxRules {
-		auxNames = append(auxNames, name)
-	}
-	sort.Slice(auxNames, func(i, j int) bool {
-		oi := ruleOrderIdx[auxOrigin[auxNames[i]]]
-		oj := ruleOrderIdx[auxOrigin[auxNames[j]]]
-		if oi != oj {
-			return oi < oj
+	// Extract productions for auxiliary rules. Use a worklist rather than a
+	// one-shot snapshot so future flattening paths can register new helper
+	// nonterminals during production extraction and have them emitted in the
+	// same normalization pass.
+	processedAux := make(map[string]bool, len(auxRules))
+	for {
+		auxNames := pendingAuxNames(buildCtx.auxRules, buildCtx.auxOrigin, ruleOrderIdx, processedAux)
+		if len(auxNames) == 0 {
+			break
 		}
-		return auxNames[i] < auxNames[j]
-	})
-	for _, name := range auxNames {
-		rule := auxRules[name]
-		symID, _ := st.lookupNonterm(name)
-		prods := flattenRule2(rule, symID, st, &prodIDCounter)
-		productions = append(productions, prods...)
+		for _, name := range auxNames {
+			processedAux[name] = true
+			rule := buildCtx.auxRules[name]
+			if rule == nil {
+				continue
+			}
+			originName := buildCtx.auxOrigin[name]
+			if originName == "" {
+				originName = name
+			}
+			symID, _ := st.lookupNonterm(name)
+			prods := flattenRuleWithCtx(buildCtx, rule, symID, originName)
+			productions = append(productions, prods...)
+		}
 	}
 
 	// Phase 7b: Deduplicate productions.
@@ -554,6 +572,7 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 	// alternatives overlap after expansion. Tree-sitter deduplicates these.
 	// Extra duplicates cause spurious reduce-reduce conflicts.
 	productions = deduplicateProductions(productions)
+	logSeqChoiceHelperStats(buildCtx)
 
 	// Phase 8: Resolve conflicts.
 	var conflicts [][]int
@@ -646,6 +665,184 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 	_ = tokenCount
 
 	return ng, nil
+}
+
+type productionBuildCtx struct {
+	st                       *symbolTable
+	prodIDCounter            *int
+	auxRules                 map[string]*Rule
+	auxOrigin                map[string]string
+	auxCounter               int
+	seqChoiceHelperThreshold int
+	seqChoiceHelperExclude   map[string]bool
+	seqChoiceHelperForce     map[string]bool
+	seqChoiceHelperStats     map[string]*seqChoiceHelperStat
+	seqChoiceHelperCount     int
+}
+
+type seqChoiceHelperStat struct {
+	Helpers           int
+	TotalAlternatives int
+	MaxAlternatives   int
+}
+
+func newProductionBuildCtx(st *symbolTable, prodIDCounter *int, auxRules map[string]*Rule, auxOrigin map[string]string, seqChoiceHelperThreshold int, seqChoiceHelperExclude []string, seqChoiceHelperForce []string) *productionBuildCtx {
+	if auxRules == nil {
+		auxRules = make(map[string]*Rule)
+	}
+	if auxOrigin == nil {
+		auxOrigin = make(map[string]string)
+	}
+	excludeSet := make(map[string]bool, len(seqChoiceHelperExclude))
+	for _, name := range seqChoiceHelperExclude {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		excludeSet[name] = true
+	}
+	forceSet := make(map[string]bool, len(seqChoiceHelperForce))
+	for _, name := range seqChoiceHelperForce {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		forceSet[name] = true
+	}
+	return &productionBuildCtx{
+		st:                       st,
+		prodIDCounter:            prodIDCounter,
+		auxRules:                 auxRules,
+		auxOrigin:                auxOrigin,
+		seqChoiceHelperThreshold: seqChoiceHelperThreshold,
+		seqChoiceHelperExclude:   excludeSet,
+		seqChoiceHelperForce:     forceSet,
+		seqChoiceHelperStats:     make(map[string]*seqChoiceHelperStat),
+	}
+}
+
+func (ctx *productionBuildCtx) nextProductionID() int {
+	id := *ctx.prodIDCounter
+	*ctx.prodIDCounter = id + 1
+	return id
+}
+
+// createHelperNonterminal registers a hidden auxiliary rule during production
+// extraction. Flattening does not use this yet, but the helper exists so
+// enumerateAlternatives/flattenRule2 can lower wide inline choices into stable
+// symbols without another Normalize phase refactor.
+func (ctx *productionBuildCtx) createHelperNonterminal(parentName, kind string, rule *Rule) string {
+	if parentName == "" {
+		parentName = "aux"
+	}
+	if kind == "" {
+		kind = "helper"
+	}
+	base := fmt.Sprintf("_%s_%s", parentName, kind)
+	for {
+		ctx.auxCounter++
+		auxName := fmt.Sprintf("%s%d", base, ctx.auxCounter)
+		if _, exists := ctx.st.lookupNonterm(auxName); exists {
+			continue
+		}
+		ctx.st.addSymbol(auxName, SymbolInfo{
+			Name: auxName, Visible: false, Named: false, Kind: SymbolNonterminal,
+		})
+		ctx.auxRules[auxName] = cloneRule(rule)
+		ctx.auxOrigin[auxName] = parentName
+		ctx.recordSeqChoiceHelper(parentName, rule)
+		return auxName
+	}
+}
+
+func (ctx *productionBuildCtx) recordSeqChoiceHelper(parentName string, rule *Rule) {
+	if ctx == nil {
+		return
+	}
+	alts := estimateAlternativeCount(rule)
+	stat := ctx.seqChoiceHelperStats[parentName]
+	if stat == nil {
+		stat = &seqChoiceHelperStat{}
+		ctx.seqChoiceHelperStats[parentName] = stat
+	}
+	stat.Helpers++
+	stat.TotalAlternatives += alts
+	if alts > stat.MaxAlternatives {
+		stat.MaxAlternatives = alts
+	}
+	ctx.seqChoiceHelperCount++
+}
+
+func shouldLogSeqChoiceHelperStats() bool {
+	return os.Getenv("GTS_GRAMMARGEN_DIAG_SEQ_HELPERS") == "1"
+}
+
+func seqChoiceHelperDiagLimit() int {
+	raw := strings.TrimSpace(os.Getenv("GTS_GRAMMARGEN_DIAG_SEQ_HELPERS_LIMIT"))
+	if raw == "" {
+		return 20
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 20
+	}
+	return n
+}
+
+func logSeqChoiceHelperStats(ctx *productionBuildCtx) {
+	if ctx == nil || !shouldLogSeqChoiceHelperStats() {
+		return
+	}
+	type row struct {
+		parent string
+		stat   *seqChoiceHelperStat
+	}
+	rows := make([]row, 0, len(ctx.seqChoiceHelperStats))
+	for parent, stat := range ctx.seqChoiceHelperStats {
+		rows = append(rows, row{parent: parent, stat: stat})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].stat.Helpers != rows[j].stat.Helpers {
+			return rows[i].stat.Helpers > rows[j].stat.Helpers
+		}
+		if rows[i].stat.TotalAlternatives != rows[j].stat.TotalAlternatives {
+			return rows[i].stat.TotalAlternatives > rows[j].stat.TotalAlternatives
+		}
+		return rows[i].parent < rows[j].parent
+	})
+	fmt.Printf("seq-helper: threshold=%d total_helpers=%d unique_parents=%d excluded=%d\n",
+		ctx.seqChoiceHelperThreshold, ctx.seqChoiceHelperCount, len(rows), len(ctx.seqChoiceHelperExclude))
+	limit := seqChoiceHelperDiagLimit()
+	if limit > len(rows) {
+		limit = len(rows)
+	}
+	for i := 0; i < limit; i++ {
+		stat := rows[i].stat
+		fmt.Printf("seq-helper: rank=%d parent=%s helpers=%d total_alts=%d max_alts=%d\n",
+			i+1, rows[i].parent, stat.Helpers, stat.TotalAlternatives, stat.MaxAlternatives)
+	}
+}
+
+func pendingAuxNames(auxRules map[string]*Rule, auxOrigin map[string]string, ruleOrderIdx map[string]int, processed map[string]bool) []string {
+	auxNames := make([]string, 0, len(auxRules))
+	for name := range auxRules {
+		if processed[name] {
+			continue
+		}
+		auxNames = append(auxNames, name)
+	}
+	sort.Slice(auxNames, func(i, j int) bool {
+		oi, okI := ruleOrderIdx[auxOrigin[auxNames[i]]]
+		oj, okJ := ruleOrderIdx[auxOrigin[auxNames[j]]]
+		if okI != okJ {
+			return okI
+		}
+		if oi != oj {
+			return oi < oj
+		}
+		return auxNames[i] < auxNames[j]
+	})
+	return auxNames
 }
 
 func resolveReservedWordSets(sets []ReservedWordSet, st *symbolTable, terminals []TerminalPattern) ([][]int, error) {
@@ -1496,7 +1693,7 @@ func prepareRule(r *Rule, parentName string, st *symbolTable, auxRules map[strin
 	// children whose width exceeds the threshold into auxiliary nonterminals.
 	// This prevents Cartesian product explosion in production extraction.
 	// Only enabled for grammars that explicitly opt in (e.g. COBOL with 1071 rules).
-	if r.Kind == RuleSeq && st.choiceLiftThreshold > 0 {
+	if r.Kind == RuleSeq && choiceLiftEnabledForParent(st, parentName) {
 		r = liftLargeSeqChoices(r, parentName, st, auxRules, counter)
 	}
 
@@ -1513,7 +1710,10 @@ func prepareRule(r *Rule, parentName string, st *symbolTable, auxRules map[strin
 // nonterminal and returns a symbol reference. This prevents repeat helpers
 // from creating N² productions when their body is a wide CHOICE.
 func maybeExtractWideChoice(r *Rule, parentName string, st *symbolTable, auxRules map[string]*Rule, counter *int) *Rule {
-	if st.choiceLiftThreshold <= 0 || r == nil || r.Kind != RuleChoice {
+	if r == nil || r.Kind != RuleChoice {
+		return r
+	}
+	if !choiceLiftEnabledForParent(st, parentName) {
 		return r
 	}
 	if len(st.conflictGroupRules) > 0 && st.conflictGroupRules[parentName] {
@@ -1531,6 +1731,16 @@ func maybeExtractWideChoice(r *Rule, parentName string, st *symbolTable, auxRule
 		auxRules[auxName] = r
 	}
 	return Sym(auxName)
+}
+
+func choiceLiftEnabledForParent(st *symbolTable, parentName string) bool {
+	if st == nil || st.choiceLiftThreshold <= 0 || parentName == "" {
+		return false
+	}
+	if len(st.choiceLiftForce) == 0 {
+		return true
+	}
+	return st.choiceLiftForce[parentName]
 }
 
 // estimateAlternativeCount returns the number of flat alternatives that
@@ -1575,7 +1785,7 @@ func estimateAlternativeCount(r *Rule) int {
 // choiceLiftThreshold. Only active when st.choiceLiftThreshold > 0.
 func liftLargeSeqChoices(seq *Rule, parentName string, st *symbolTable, auxRules map[string]*Rule, counter *int) *Rule {
 	threshold := st.choiceLiftThreshold
-	if threshold <= 0 {
+	if threshold <= 0 || !choiceLiftEnabledForParent(st, parentName) {
 		return seq
 	}
 
@@ -2601,9 +2811,14 @@ func flattenTokenInner(r *Rule) (*Rule, error) {
 // flattenRule2 extracts all productions from a prepared rule tree.
 // It properly handles Choice at any level by enumerating all alternatives.
 func flattenRule2(r *Rule, lhsID int, st *symbolTable, prodIDCounter *int) []Production {
+	return flattenRuleWithCtx(newProductionBuildCtx(st, prodIDCounter, nil, nil, 0, nil, nil), r, lhsID, "")
+}
+
+func flattenRuleWithCtx(ctx *productionBuildCtx, r *Rule, lhsID int, parentName string) []Production {
 	if r == nil {
 		return nil
 	}
+	st := ctx.st
 
 	// Unwrap precedence/assoc wrappers at the top level.
 	prec, assoc, dynPrec, hasPrec, inner := unwrapPrec(r)
@@ -2634,7 +2849,7 @@ func flattenRule2(r *Rule, lhsID int, st *symbolTable, prodIDCounter *int) []Pro
 				altDyn = dynPrec
 			}
 			// Recursively flatten — alternatives may contain more choices.
-			altProds := flattenRule2(altInner, lhsID, st, prodIDCounter)
+			altProds := flattenRuleWithCtx(ctx, altInner, lhsID, parentName)
 			for i := range altProds {
 				suppressExplicitZeroWrapperAssoc := false
 				if altPrec == 0 && altHasPrec && altAssoc != AssocNone && altDyn == 0 &&
@@ -2704,15 +2919,14 @@ func flattenRule2(r *Rule, lhsID int, st *symbolTable, prodIDCounter *int) []Pro
 			HasExplicitPrec: hasPrec,
 			Assoc:           assoc,
 			DynPrec:         dynPrec,
-			ProductionID:    *prodIDCounter,
+			ProductionID:    ctx.nextProductionID(),
 		}
-		*prodIDCounter++
 		return []Production{prod}
 
 	default:
 		// Enumerate all alternatives from Choice-within-Seq by expanding
 		// the rule into a list of "flat" RHS sequences.
-		alternatives := enumerateAlternatives(inner)
+		alternatives := enumerateAlternatives(ctx, inner, parentName)
 		trailingAutoSemiOptional := hasTrailingAutomaticSemicolonOptional(inner)
 		var prods []Production
 		for _, alt := range alternatives {
@@ -2763,9 +2977,8 @@ func flattenRule2(r *Rule, lhsID int, st *symbolTable, prodIDCounter *int) []Pro
 				HasExplicitPrec: altHasPrec,
 				Assoc:           altAssoc,
 				DynPrec:         altDyn,
-				ProductionID:    *prodIDCounter,
+				ProductionID:    ctx.nextProductionID(),
 			}
-			*prodIDCounter++
 
 			var rhs []int
 			var fields []FieldAssign
@@ -2859,7 +3072,7 @@ type rhsElement struct {
 
 // enumerateAlternatives expands a rule containing inline Choice nodes
 // into multiple flat sequences (one per alternative combination).
-func enumerateAlternatives(r *Rule) [][]*rhsElement {
+func enumerateAlternatives(ctx *productionBuildCtx, r *Rule, parentName string) [][]*rhsElement {
 	if r == nil {
 		return [][]*rhsElement{{}}
 	}
@@ -2867,15 +3080,16 @@ func enumerateAlternatives(r *Rule) [][]*rhsElement {
 	case RuleChoice:
 		var all [][]*rhsElement
 		for _, child := range r.Children {
-			all = append(all, enumerateAlternatives(child)...)
+			all = append(all, enumerateAlternatives(ctx, child, parentName)...)
 		}
 		return all
 
 	case RuleSeq:
+		r = maybeLowerSeqChoicesForBuild(ctx, r, parentName)
 		// Start with one empty sequence.
 		result := [][]*rhsElement{{}}
 		for _, child := range r.Children {
-			childAlts := enumerateAlternatives(child)
+			childAlts := enumerateAlternatives(ctx, child, parentName)
 			var newResult [][]*rhsElement
 			for _, existing := range result {
 				for _, childAlt := range childAlts {
@@ -2894,7 +3108,7 @@ func enumerateAlternatives(r *Rule) [][]*rhsElement {
 			return [][]*rhsElement{{}}
 		}
 		// Enumerate alternatives inside the field, tagging each with the field name.
-		innerAlts := enumerateAlternatives(r.Children[0])
+		innerAlts := enumerateAlternatives(ctx, r.Children[0], parentName)
 		var result [][]*rhsElement
 		for _, alt := range innerAlts {
 			tagged := make([]*rhsElement, len(alt))
@@ -2918,7 +3132,7 @@ func enumerateAlternatives(r *Rule) [][]*rhsElement {
 		// alias forms like alias(_jsx_identifier, "property_identifier") let the
 		// inner alias on _jsx_identifier shadow the outer one and lose the
 		// intended surface node type after default-alias cleanup.
-		innerAlts := enumerateAlternatives(r.Children[0])
+		innerAlts := enumerateAlternatives(ctx, r.Children[0], parentName)
 		var result [][]*rhsElement
 		for _, alt := range innerAlts {
 			tagged := make([]*rhsElement, len(alt))
@@ -2934,7 +3148,7 @@ func enumerateAlternatives(r *Rule) [][]*rhsElement {
 
 	case RulePrec, RulePrecLeft, RulePrecRight, RulePrecDynamic:
 		if len(r.Children) > 0 {
-			innerAlts := enumerateAlternatives(r.Children[0])
+			innerAlts := enumerateAlternatives(ctx, r.Children[0], parentName)
 			// Tag all elements in each alternative with the prec info.
 			for _, alt := range innerAlts {
 				for _, elem := range alt {
@@ -2969,6 +3183,126 @@ func enumerateAlternatives(r *Rule) [][]*rhsElement {
 		// Leaf node (String, Symbol, etc.) — single element.
 		return [][]*rhsElement{{&rhsElement{rule: r}}}
 	}
+}
+
+type transparentRuleWrapper struct {
+	kind  RuleKind
+	value string
+	prec  int
+	named bool
+}
+
+func maybeLowerSeqChoicesForBuild(ctx *productionBuildCtx, seq *Rule, parentName string) *Rule {
+	if ctx == nil || seq == nil || seq.Kind != RuleSeq || parentName == "" {
+		return seq
+	}
+	forceParent := ctx.seqChoiceHelperForce[parentName]
+	if ctx.seqChoiceHelperThreshold <= 0 && !forceParent {
+		return seq
+	}
+	if ctx.seqChoiceHelperExclude[parentName] && !forceParent {
+		return seq
+	}
+
+	total := estimateAlternativeCount(seq)
+	if !forceParent && total <= ctx.seqChoiceHelperThreshold {
+		return seq
+	}
+
+	newChildren := make([]*Rule, len(seq.Children))
+	copy(newChildren, seq.Children)
+	changed := false
+
+	for forceParent || total > ctx.seqChoiceHelperThreshold {
+		bestIdx := -1
+		bestAlts := 1
+		var bestInner *Rule
+		var bestWrappers []transparentRuleWrapper
+
+		for i, child := range newChildren {
+			inner, wrappers, ok := unwrapTransparentRuleWrappers(child)
+			if !ok || inner == nil || inner.Kind != RuleChoice {
+				continue
+			}
+			if len(inner.Children) < 3 {
+				continue
+			}
+			alts := estimateAlternativeCount(inner)
+			if alts <= bestAlts {
+				continue
+			}
+			bestIdx = i
+			bestAlts = alts
+			bestInner = inner
+			bestWrappers = wrappers
+		}
+		if bestIdx < 0 || bestInner == nil {
+			break
+		}
+
+		auxName := ctx.createHelperNonterminal(parentName, "seq_choice", bestInner)
+		newChildren[bestIdx] = rewrapTransparentRuleWrappers(Sym(auxName), bestWrappers)
+		changed = true
+
+		candidate := *seq
+		candidate.Children = newChildren
+		total = estimateAlternativeCount(&candidate)
+	}
+
+	if !changed {
+		return seq
+	}
+	out := *seq
+	out.Children = newChildren
+	return &out
+}
+
+func unwrapTransparentRuleWrappers(r *Rule) (*Rule, []transparentRuleWrapper, bool) {
+	if r == nil {
+		return nil, nil, false
+	}
+	var wrappers []transparentRuleWrapper
+	cur := r
+	for cur != nil {
+		switch cur.Kind {
+		case RuleField, RuleAlias, RulePrec, RulePrecLeft, RulePrecRight, RulePrecDynamic:
+			if len(cur.Children) == 0 {
+				return nil, nil, false
+			}
+			wrappers = append(wrappers, transparentRuleWrapper{
+				kind:  cur.Kind,
+				value: cur.Value,
+				prec:  cur.Prec,
+				named: cur.Named,
+			})
+			cur = cur.Children[0]
+		default:
+			return cur, wrappers, true
+		}
+	}
+	return nil, nil, false
+}
+
+func rewrapTransparentRuleWrappers(inner *Rule, wrappers []transparentRuleWrapper) *Rule {
+	out := inner
+	for i := len(wrappers) - 1; i >= 0; i-- {
+		w := wrappers[i]
+		switch w.kind {
+		case RuleField:
+			out = Field(w.value, out)
+		case RuleAlias:
+			out = Alias(out, w.value, w.named)
+		case RulePrec:
+			out = Prec(w.prec, out)
+		case RulePrecLeft:
+			out = PrecLeft(w.prec, out)
+		case RulePrecRight:
+			out = PrecRight(w.prec, out)
+		case RulePrecDynamic:
+			out = PrecDynamic(w.prec, out)
+		}
+	}
+	return out
 }
 
 // collectLinearRHS converts a flat list of rhsElements into symbol IDs, field assignments, and alias info.
@@ -3725,6 +4059,10 @@ func expandInlineRules(g *Grammar) *Grammar {
 	out.BinaryRepeatMode = g.BinaryRepeatMode
 	out.EnableLRSplitting = g.EnableLRSplitting
 	out.ChoiceLiftThreshold = g.ChoiceLiftThreshold
+	out.ChoiceLiftForce = append([]string(nil), g.ChoiceLiftForce...)
+	out.SeqChoiceHelperThreshold = g.SeqChoiceHelperThreshold
+	out.SeqChoiceHelperExclude = append([]string(nil), g.SeqChoiceHelperExclude...)
+	out.SeqChoiceHelperForce = append([]string(nil), g.SeqChoiceHelperForce...)
 	// Don't propagate Inline — they've been expanded.
 
 	return out

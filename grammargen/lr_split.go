@@ -10,7 +10,18 @@ func (ctx *lrContext) splitKernelLookaheadsForTransition(predState, transSym int
 	if !inherited.empty() {
 		return inherited.clone()
 	}
-	if ctx == nil || transSym < ctx.tokenCount || len(ctx.lalrFollowByTransition) == 0 {
+	if ctx == nil || transSym < ctx.tokenCount {
+		return inherited.clone()
+	}
+	if len(ctx.lalrFollowSets) > 0 && len(ctx.lalrNTTransitionRows) > 0 {
+		if idx, ok := ntTransitionIndexLookup(ctx.lalrNTTransitionRows, predState, transSym); ok {
+			if follow := ctx.lalrFollowSets[idx]; !follow.empty() {
+				return follow.clone()
+			}
+		}
+		return inherited.clone()
+	}
+	if len(ctx.lalrFollowByTransition) == 0 {
 		return inherited.clone()
 	}
 	if follow, ok := ctx.lalrFollowByTransition[[2]int{predState, transSym}]; ok && !follow.empty() {
@@ -165,8 +176,8 @@ func localLR1Rebuild(
 						ce.lookaheads.forEach(func(la int) {
 							actions[la] = append(actions[la], lrAction{
 								kind:    lrReduce,
-								prodIdx: int(ce.prodIdx),
-								lhsSym:  prod.LHS,
+								prodIdx: int32(ce.prodIdx),
+								lhsSym:  packLRActionIndex(prod.LHS),
 								isExtra: prod.IsExtra,
 							})
 						})
@@ -178,11 +189,11 @@ func localLR1Rebuild(
 						if target, ok := ctx.transitionTarget(stateIdx, nextSym); ok {
 							actions[nextSym] = append(actions[nextSym], lrAction{
 								kind:    lrShift,
-								state:   target,
-								prec:    prod.Prec,
+								state:   packLRActionIndex(target),
+								prec:    int32(prod.Prec),
 								hasPrec: prod.HasExplicitPrec,
-								assoc:   prod.Assoc,
-								lhsSym:  prod.LHS,
+								assoc:   packLRActionAssoc(prod.Assoc),
+								lhsSym:  packLRActionIndex(prod.LHS),
 								isExtra: prod.IsExtra,
 							})
 						}
@@ -274,13 +285,13 @@ func localLR1Rebuild(
 			if p.pred.transSym < tokenCount {
 				predActs := tables.ActionTable[p.pred.predState][p.pred.transSym]
 				for j := range predActs {
-					if predActs[j].kind == lrShift && predActs[j].state == stateIdx {
+					if predActs[j].kind == lrShift && int(predActs[j].state) == stateIdx {
 						rewrites = append(rewrites, struct {
 							predState int
 							transSym  int
 							oldTarget int
 						}{p.pred.predState, p.pred.transSym, stateIdx})
-						predActs[j].state = newStateIdx
+						predActs[j].state = packLRActionIndex(newStateIdx)
 						break
 					}
 				}
@@ -332,8 +343,8 @@ func localLR1Rebuild(
 				if rw.transSym < tokenCount {
 					predActs := tables.ActionTable[rw.predState][rw.transSym]
 					for j := range predActs {
-						if predActs[j].kind == lrShift && predActs[j].state != rw.oldTarget {
-							predActs[j].state = rw.oldTarget
+						if predActs[j].kind == lrShift && int(predActs[j].state) != rw.oldTarget {
+							predActs[j].state = packLRActionIndex(rw.oldTarget)
 							break
 						}
 					}

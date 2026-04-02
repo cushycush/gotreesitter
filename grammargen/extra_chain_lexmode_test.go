@@ -44,7 +44,7 @@ func TestNonterminalExtraChainLexModesDoNotInheritTerminalExtras(t *testing.T) {
 	if len(acts) != 1 || acts[0].kind != lrShift {
 		t.Fatalf("expected synthetic extra-chain shift on /*, got %s", diagFormatActions(ng, acts))
 	}
-	target := acts[0].state
+	target := int(acts[0].state)
 	if target < tables.ExtraChainStateStart {
 		t.Fatalf("expected synthetic state >= %d, got %d", tables.ExtraChainStateStart, target)
 	}
@@ -261,7 +261,7 @@ func TestNonterminalExtraChainSyntheticStatesCanStartNestedExtras(t *testing.T) 
 	if len(rootActs) != 1 || rootActs[0].kind != lrShift {
 		t.Fatalf("expected synthetic extra-chain shift on /* from state 0, got %s", diagFormatActions(ng, rootActs))
 	}
-	outerState := rootActs[0].state
+	outerState := int(rootActs[0].state)
 	if outerState < tables.ExtraChainStateStart {
 		t.Fatalf("expected synthetic target >= %d, got %d", tables.ExtraChainStateStart, outerState)
 	}
@@ -312,7 +312,7 @@ func TestNonterminalExtraChainSyntheticStatesSkipNestedStartsWithoutStarterOverl
 	if len(rootActs) != 1 || rootActs[0].kind != lrShift {
 		t.Fatalf("expected synthetic extra-chain shift on #region from state 0, got %s", diagFormatActions(ng, rootActs))
 	}
-	outerState := rootActs[0].state
+	outerState := int(rootActs[0].state)
 	if outerState < tables.ExtraChainStateStart {
 		t.Fatalf("expected synthetic target >= %d, got %d", tables.ExtraChainStateStart, outerState)
 	}
@@ -362,7 +362,7 @@ func TestNonterminalExtraChainSyntheticStatesPreferStructuralTokensOverExtraInje
 	if len(rootActs) != 1 || rootActs[0].kind != lrShift {
 		t.Fatalf("expected synthetic extra-chain shift on /* from state 0, got %s", diagFormatActions(ng, rootActs))
 	}
-	outerState := rootActs[0].state
+	outerState := int(rootActs[0].state)
 	if outerState < tables.ExtraChainStateStart {
 		t.Fatalf("expected synthetic target >= %d, got %d", tables.ExtraChainStateStart, outerState)
 	}
@@ -509,7 +509,7 @@ func TestNonterminalExtraChainSyntheticReduceStatesDoNotInjectNestedExtraStarts(
 	if len(rootActs) != 1 || rootActs[0].kind != lrShift {
 		t.Fatalf("expected synthetic extra-chain shift on /* from state 0, got %s", diagFormatActions(ng, rootActs))
 	}
-	outerState := rootActs[0].state
+	outerState := int(rootActs[0].state)
 
 	closeActs := tables.ActionTable[outerState][closeCommentSyms[0]]
 	if len(closeActs) == 0 {
@@ -518,7 +518,7 @@ func TestNonterminalExtraChainSyntheticReduceStatesDoNotInjectNestedExtraStarts(
 	closeState := -1
 	for _, act := range closeActs {
 		if act.kind == lrShift {
-			closeState = act.state
+			closeState = int(act.state)
 			break
 		}
 	}

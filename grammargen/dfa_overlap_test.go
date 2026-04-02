@@ -70,3 +70,20 @@ func TestCollectTransitionMovesMatchesLegacyRanges(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildModeKeyOrderIndependent(t *testing.T) {
+	a := map[int]bool{2: true, 7: true, 65: true}
+	b := map[int]bool{65: true, 2: true, 7: true}
+
+	if gotA, gotB := buildModeKey(a, false), buildModeKey(b, false); gotA != gotB {
+		t.Fatalf("buildModeKey order mismatch: %q != %q", gotA, gotB)
+	}
+}
+
+func TestBuildModeKeyDistinguishesSkipWhitespace(t *testing.T) {
+	syms := map[int]bool{3: true, 9: true}
+
+	if gotSkip, gotNoSkip := buildModeKey(syms, true), buildModeKey(syms, false); gotSkip == gotNoSkip {
+		t.Fatal("expected skip flag to affect the mode key")
+	}
+}

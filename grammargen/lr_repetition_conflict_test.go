@@ -29,7 +29,7 @@ func TestResolveActionConflictKeepsRecursiveRepeatShiftReduce(t *testing.T) {
 	if got[0].kind != lrReduce {
 		t.Fatalf("resolved[0].kind=%v, want reduce", got[0].kind)
 	}
-	if got[1].kind != lrShift || got[1].state != 17 || !got[1].repeat {
+	if got[1].kind != lrShift || int(got[1].state) != 17 || !got[1].repeat {
 		t.Fatalf("resolved shift=%+v, want repetition-marked shift", got[1])
 	}
 }

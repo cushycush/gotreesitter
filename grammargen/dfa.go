@@ -1158,7 +1158,7 @@ func computeLexModes(
 				}
 			}
 		}
-
+		stateHasTerminalExtras := hasTerminalExtras && !isExtraChainState
 		for sym := range directValid {
 			validSyms[sym] = true
 			// Only add prefix extensions when the longer symbol is also
@@ -1183,7 +1183,6 @@ func computeLexModes(
 		// by the parser, not the lexer. But also include the first-set
 		// terminals of nonterminal extras so the lexer can recognize the
 		// start of nonterminal extra rules (like comment → [;#]...).
-		stateHasTerminalExtras := hasTerminalExtras && !isExtraChainState
 		for _, e := range extraSymbols {
 			if stateHasTerminalExtras && e > 0 && e < tokenCount {
 				validSyms[e] = true

@@ -3,6 +3,7 @@ package grammargen
 import (
 	"context"
 	"os"
+	"sort"
 	"testing"
 	"time"
 
@@ -16,30 +17,17 @@ func TestDiagFortranParse(t *testing.T) {
 	}
 
 	// Import and generate
-	pg := lookupParityGrammarByName("fortran")
-	if pg == nil {
-		t.Fatal("fortran not found")
-	}
-	gram, err := importParityGrammarSource(*pg)
-	if err != nil {
-		t.Fatalf("import: %v", err)
-	}
+	gram := loadFortranDiagGrammar(t)
 
-	// Optionally modify inlining for testing
-	if os.Getenv("DIAG_FORTRAN_NO_INLINE") == "1" {
-		gram.Inline = nil
-		t.Log("WARNING: all inline disabled")
-	} else if os.Getenv("DIAG_FORTRAN_PARTIAL_INLINE") == "1" {
-		// Keep _top_level_item inline but skip _statement
-		var filtered []string
-		for _, name := range gram.Inline {
-			if name != "_statement" {
-				filtered = append(filtered, name)
-			}
-		}
-		gram.Inline = filtered
-		t.Logf("WARNING: partial inline, kept: %v", gram.Inline)
+	sampleFilter := parseDiagCSVSet(os.Getenv("DIAG_FORTRAN_SAMPLES"))
+	if len(sampleFilter) > 0 {
+		t.Logf("WARNING: sample filter=%v", mapsKeysSorted(sampleFilter))
 	}
+	traceSampleFilter := parseDiagCSVSet(os.Getenv("DIAG_FORTRAN_TRACE_SAMPLES"))
+	if len(traceSampleFilter) > 0 {
+		t.Logf("WARNING: trace sample filter=%v", mapsKeysSorted(traceSampleFilter))
+	}
+	traceGLR := os.Getenv("DIAG_FORTRAN_GLR_TRACE") == "1"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
@@ -143,8 +131,12 @@ func TestDiagFortranParse(t *testing.T) {
 	}
 
 	for _, s := range samples {
-		genTree, _ := genParser.Parse([]byte(s.src))
-		refTree, _ := refParser.Parse([]byte(s.src))
+		if len(sampleFilter) > 0 && !sampleFilter[s.name] {
+			continue
+		}
+		srcBytes := []byte(s.src)
+		genTree, genParseLogs, genLexLogs := parseWithOptionalTrace(genParser, genLang, srcBytes, traceGLR && traceSampleFilter[s.name], traceSampleFilter[s.name])
+		refTree, refParseLogs, refLexLogs := parseWithOptionalTrace(refParser, refLang, srcBytes, false, traceSampleFilter[s.name])
 
 		genRoot := genTree.RootNode()
 		refRoot := refTree.RootNode()
@@ -172,8 +164,65 @@ func TestDiagFortranParse(t *testing.T) {
 			}
 			t.Logf("  gen: %s", genSexpr)
 			t.Logf("  ref: %s", refSexpr)
+			t.Logf("  gen-runtime: %s", genTree.ParseRuntime().Summary())
+			t.Logf("  ref-runtime: %s", refTree.ParseRuntime().Summary())
+		}
+		if traceSampleFilter[s.name] {
+			t.Logf("  trace-gen-runtime: %s", genTree.ParseRuntime().Summary())
+			t.Logf("  trace-ref-runtime: %s", refTree.ParseRuntime().Summary())
+			for i, msg := range genParseLogs {
+				t.Logf("  trace-gen-parse[%d]: %s", i, msg)
+			}
+			for i, msg := range genLexLogs {
+				t.Logf("  trace-gen-lex[%d]: %s", i, msg)
+			}
+			for i, msg := range refParseLogs {
+				t.Logf("  trace-ref-parse[%d]: %s", i, msg)
+			}
+			for i, msg := range refLexLogs {
+				t.Logf("  trace-ref-lex[%d]: %s", i, msg)
+			}
 		}
 	}
+}
+
+func mapsKeysSorted(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func parseWithOptionalTrace(parser *gotreesitter.Parser, lang *gotreesitter.Language, src []byte, enableGLRTrace bool, enableLogger bool) (*gotreesitter.Tree, []string, []string) {
+	if !enableGLRTrace && !enableLogger {
+		tree, _ := parser.Parse(src)
+		return tree, nil, nil
+	}
+
+	traceParser := gotreesitter.NewParser(lang)
+	traceParser.SetGLRTrace(enableGLRTrace)
+
+	var parseLogs []string
+	var lexLogs []string
+	if enableLogger {
+		traceParser.SetLogger(func(kind gotreesitter.ParserLogType, msg string) {
+			switch kind {
+			case gotreesitter.ParserLogParse:
+				if len(parseLogs) < 24 {
+					parseLogs = append(parseLogs, msg)
+				}
+			case gotreesitter.ParserLogLex:
+				if len(lexLogs) < 48 {
+					lexLogs = append(lexLogs, msg)
+				}
+			}
+		})
+	}
+
+	tree, _ := traceParser.Parse(src)
+	return tree, parseLogs, lexLogs
 }
 
 func lookupParityGrammarByName(name string) *importParityGrammar {

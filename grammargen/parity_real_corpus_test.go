@@ -212,6 +212,9 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 			if err != nil {
 				t.Fatalf("import failed: %v", err)
 			}
+			if g.name == "fortran" {
+				applyFortranDiagEnvOptions(t, gram)
+			}
 			logRealCorpusDiag("after_import", g.name,
 				"rules=%d extras=%d externals=%d conflicts=%d inline=%d supertypes=%d",
 				len(gram.Rules), len(gram.Extras), len(gram.Externals), len(gram.Conflicts), len(gram.Inline), len(gram.Supertypes))
