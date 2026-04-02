@@ -16,6 +16,13 @@ func applyImportGrammarShapeHints(g *Grammar) {
 		// shape. Keeping the upstream lowering avoids large state blowups and
 		// preserves upstream ambiguity handling for imported grammars.
 		g.BinaryRepeatMode = true
+	case "fortran":
+		// The imported Fortran grammar benefits from upstream-style repeat
+		// lowering, and aggressively extracting wide SEQ branches trims a large
+		// amount of avoidable state growth without changing the remaining known
+		// failure modes in the focused diagnostics.
+		g.BinaryRepeatMode = true
+		g.SeqChoiceHelperThreshold = 1
 	}
 }
 
