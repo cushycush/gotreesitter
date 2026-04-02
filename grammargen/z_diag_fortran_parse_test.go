@@ -60,8 +60,23 @@ func TestDiagFortranParse(t *testing.T) {
 			refSingleAction++
 		}
 	}
-	t.Logf("parse-table: gen_entries=%d gen_glr=%d gen_single=%d", len(genLang.ParseActions), genGLR, genSingleAction)
-	t.Logf("parse-table: ref_entries=%d ref_glr=%d ref_single=%d", len(refLang.ParseActions), refGLR, refSingleAction)
+	t.Logf("parse-table: gen_entries=%d gen_glr=%d gen_single=%d states=%d", len(genLang.ParseActions), genGLR, genSingleAction, genLang.StateCount)
+	t.Logf("parse-table: ref_entries=%d ref_glr=%d ref_single=%d states=%d", len(refLang.ParseActions), refGLR, refSingleAction, refLang.StateCount)
+	// Log GLR action distribution
+	genGLR2, genGLR3plus := 0, 0
+	for _, entry := range genLang.ParseActions {
+		switch len(entry.Actions) {
+		case 2:
+			genGLR2++
+		case 3:
+			genGLR3plus++
+		default:
+			if len(entry.Actions) > 3 {
+				genGLR3plus++
+			}
+		}
+	}
+	t.Logf("parse-table: gen_glr2=%d gen_glr3plus=%d", genGLR2, genGLR3plus)
 
 	// Log external symbol comparison
 	t.Logf("gen externals: %d, ref externals: %d", len(genLang.ExternalSymbols), len(refLang.ExternalSymbols))

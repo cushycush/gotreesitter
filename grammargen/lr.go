@@ -3,6 +3,7 @@ package grammargen
 import (
 	"context"
 	"fmt"
+	"math/bits"
 	"os"
 	"sort"
 	"strconv"
@@ -77,6 +78,11 @@ type lrItemSet struct {
 
 type lr0ItemSet struct {
 	cores            []lr0CoreEntry
+	packedCores      []byte
+	coreCount        int
+	packedCoreBits   uint8
+	packedProdBits   uint8
+	retainedChunk    int
 	coreHash         uint64
 	annotationArgTag uint32
 }
@@ -126,12 +132,12 @@ func (set *lrItemSet) coreLookup(prodIdx, dot int) (int, bool) {
 }
 
 func (set *lr0ItemSet) coreLookup(prodIdx, dot int) (int, bool) {
-	lo, hi := 0, len(set.cores)
+	lo, hi := 0, set.coreLen()
 	prodIdx32 := uint32(prodIdx)
 	dot8 := uint8(dot)
 	for lo < hi {
 		mid := (lo + hi) / 2
-		ce := set.cores[mid]
+		ce := set.coreAt(mid)
 		ceProdIdx := ce.prodIdx()
 		ceDot := ce.dot()
 		if ceProdIdx < prodIdx32 || (ceProdIdx == prodIdx32 && ceDot < dot8) {
@@ -140,13 +146,135 @@ func (set *lr0ItemSet) coreLookup(prodIdx, dot int) (int, bool) {
 			hi = mid
 		}
 	}
-	if lo < len(set.cores) {
-		ce := set.cores[lo]
+	if lo < set.coreLen() {
+		ce := set.coreAt(lo)
 		if ce.prodIdx() == prodIdx32 && ce.dot() == dot8 {
 			return lo, true
 		}
 	}
 	return 0, false
+}
+
+func (set *lr0ItemSet) coreLen() int {
+	if len(set.packedCores) > 0 {
+		return set.coreCount
+	}
+	return len(set.cores)
+}
+
+func (set *lr0ItemSet) coreAt(idx int) lr0CoreEntry {
+	if len(set.packedCores) == 0 {
+		return set.cores[idx]
+	}
+	bitOffset := idx * int(set.packedCoreBits)
+	base := bitOffset / 8
+	shift := uint(bitOffset % 8)
+	raw := uint32(set.packedCores[base])
+	if base+1 < len(set.packedCores) {
+		raw |= uint32(set.packedCores[base+1]) << 8
+	}
+	if base+2 < len(set.packedCores) {
+		raw |= uint32(set.packedCores[base+2]) << 16
+	}
+	if base+3 < len(set.packedCores) {
+		raw |= uint32(set.packedCores[base+3]) << 24
+	}
+	raw >>= shift
+	if set.packedCoreBits < 32 {
+		raw &= (uint32(1) << set.packedCoreBits) - 1
+	}
+	prodMask := uint32(0)
+	if set.packedProdBits > 0 {
+		prodMask = (uint32(1) << set.packedProdBits) - 1
+	}
+	prodIdx := int(raw & prodMask)
+	dot := int(raw >> set.packedProdBits)
+	return packLR0CoreEntry(prodIdx, dot)
+}
+
+func (set *lr0ItemSet) forEachCore(fn func(lr0CoreEntry)) {
+	if len(set.packedCores) == 0 {
+		for _, ce := range set.cores {
+			fn(ce)
+		}
+		return
+	}
+	for i := 0; i < set.coreCount; i++ {
+		fn(set.coreAt(i))
+	}
+}
+
+func sameSortedLR0CoreEntriesSet(a *lr0ItemSet, b []lr0CoreEntry) bool {
+	if a.coreLen() != len(b) {
+		return false
+	}
+	for i := range b {
+		if a.coreAt(i) != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (ctx *lrContext) packRetainedLR0ItemSets() {
+	if ctx == nil || len(ctx.lalrLR0ItemSets) == 0 || ctx.lalrLR0CoreEntries < 50_000_000 || ctx.lr0PackedRetentionEnabled || len(ctx.lr0RetainedChunks) == 0 {
+		return
+	}
+	maxDot := 0
+	for i := range ctx.ng.Productions {
+		if rhsLen := len(ctx.ng.Productions[i].RHS); rhsLen > maxDot {
+			maxDot = rhsLen
+		}
+	}
+	prodBits := bits.Len(uint(len(ctx.ng.Productions) - 1))
+	dotBits := bits.Len(uint(maxDot))
+	if prodBits+dotBits > 24 {
+		return
+	}
+	packedProdBits := uint8(prodBits)
+	chunkRefs := make([]int, len(ctx.lr0RetainedChunks))
+	for i := range ctx.lalrLR0ItemSets {
+		if chunkIdx := ctx.lalrLR0ItemSets[i].retainedChunk; chunkIdx >= 0 {
+			chunkRefs[chunkIdx]++
+		}
+	}
+	freedChunks := 0
+	for i := range ctx.lalrLR0ItemSets {
+		set := &ctx.lalrLR0ItemSets[i]
+		if len(set.cores) == 0 {
+			continue
+		}
+		packed := make([]byte, len(set.cores)*3)
+		for idx, ce := range set.cores {
+			raw := uint32(ce.dot())
+			if packedProdBits > 0 {
+				raw = (raw << packedProdBits) | ce.prodIdx()
+			}
+			base := idx * 3
+			packed[base] = byte(raw)
+			packed[base+1] = byte(raw >> 8)
+			packed[base+2] = byte(raw >> 16)
+		}
+		oldChunk := set.retainedChunk
+		set.packedCores = packed
+		set.coreCount = len(set.cores)
+		set.packedCoreBits = 24
+		set.packedProdBits = packedProdBits
+		set.cores = nil
+		set.retainedChunk = -1
+		if oldChunk >= 0 {
+			chunkRefs[oldChunk]--
+			if chunkRefs[oldChunk] == 0 {
+				ctx.lr0RetainedChunks[oldChunk] = nil
+				freedChunks++
+				if freedChunks%8 == 0 {
+					ctx.maybeGCForLargeLALR()
+				}
+			}
+		}
+	}
+	ctx.lr0RetainedChunks = nil
+	ctx.lr0RetainedChunkUsed = 0
 }
 
 func (set *lrItemSet) setCoreIndex(prodIdx, dot, idx int) {
@@ -195,25 +323,38 @@ func sameSortedLR0CoreEntries(a, b []lr0CoreEntry) bool {
 
 // lrAction is a parse table action.
 type lrAction struct {
-	kind    lrActionKind
-	state   int   // shift target / goto target
-	prodIdx int   // reduce production index
-	prec    int   // for shift: precedence of the item's production
-	hasPrec bool  // production had an explicit compile-time precedence wrapper
-	assoc   Assoc // for shift: associativity of the item's production
-	lhsSym  int   // LHS nonterminal of the production (for conflict detection)
-	lhsSyms []int // additional LHS symbols (when shifts from multiple rules merge)
-	isExtra bool  // true if this action comes from a nonterminal extra production
-	repeat  bool  // true if this shift continues a recursive repeat wrapper
+	lhsSyms []int32       // additional LHS symbols (when shifts from multiple rules merge)
+	state   int32         // shift target / goto target
+	prodIdx int32         // reduce production index
+	prec    int32         // for shift: precedence of the item's production
+	lhsSym  int32         // LHS nonterminal of the production (for conflict detection)
+	kind    lrActionKind  // parse action kind
+	assoc   lrActionAssoc // for shift: associativity of the item's production
+	hasPrec bool          // production had an explicit compile-time precedence wrapper
+	isExtra bool          // true if this action comes from a nonterminal extra production
+	repeat  bool          // true if this shift continues a recursive repeat wrapper
 }
 
-type lrActionKind int
+type lrActionKind uint8
+type lrActionAssoc int8
 
 const (
 	lrShift lrActionKind = iota
 	lrReduce
 	lrAccept
 )
+
+func packLRActionIndex(v int) int32 {
+	return int32(v)
+}
+
+func packLRActionAssoc(v Assoc) lrActionAssoc {
+	return lrActionAssoc(v)
+}
+
+func (a lrAction) assocValue() Assoc {
+	return Assoc(a.assoc)
+}
 
 // LRTables holds the generated parse tables.
 type LRTables struct {
@@ -222,6 +363,24 @@ type LRTables struct {
 	GotoTable            map[int]map[int]int // [state][nonterminal] → target state
 	StateCount           int
 	ExtraChainStateStart int // first synthetic nonterminal-extra state, or -1 if none
+}
+
+func (t *LRTables) ensureActionRow(state int) map[int][]lrAction {
+	row := t.ActionTable[state]
+	if row == nil {
+		row = make(map[int][]lrAction)
+		t.ActionTable[state] = row
+	}
+	return row
+}
+
+func (t *LRTables) ensureGotoRow(state int) map[int]int {
+	row := t.GotoTable[state]
+	if row == nil {
+		row = make(map[int]int)
+		t.GotoTable[state] = row
+	}
+	return row
 }
 
 // buildLRTables constructs LR(1) parse tables from a normalized grammar.
@@ -245,6 +404,16 @@ func buildLRTablesWithProvenanceCtx(bgCtx context.Context, ng *NormalizedGrammar
 }
 
 func buildLRTablesInternal(bgCtx context.Context, ng *NormalizedGrammar, trackProvenance bool) (*LRTables, *lrContext, error) {
+	configureCompactLALRTableBuild := func(ctx *lrContext) {
+		useCompact := !trackProvenance && !ng.EnableLRSplitting && len(ng.Productions) > 5000
+		switch os.Getenv("GOT_LALR_COMPACT_TABLE_BUILD") {
+		case "0":
+			useCompact = false
+		case "1":
+			useCompact = true
+		}
+		ctx.useCompactLALRTableBuild = useCompact
+	}
 	newCtx := func() *lrContext {
 		ctx := &lrContext{
 			bgCtx:           bgCtx,
@@ -526,7 +695,10 @@ func buildLRTablesInternal(bgCtx context.Context, ng *NormalizedGrammar, trackPr
 		return ctx
 	}
 	ctx := newCtx()
+	configureCompactLALRTableBuild(ctx)
 	tokenCount := ctx.tokenCount
+	debugLALR := os.Getenv("GOT_DEBUG_LALR") == "1"
+	resolveStateConflictsInline := !trackProvenance && !ng.EnableLRSplitting
 
 	// Build item sets. Use DeRemer/Pennello LALR for large grammars (>400 productions)
 	// which would otherwise be slow with the iterative LR(1) construction.
@@ -562,6 +734,7 @@ func buildLRTablesInternal(bgCtx context.Context, ng *NormalizedGrammar, trackPr
 		const maxRuntimeStateID = int(^uint16(0))
 		if usePreciseExternalBuilder && (ctx.preciseStateBudgetExceeded || len(itemSets) > maxRuntimeStateID) {
 			ctx = newCtx()
+			configureCompactLALRTableBuild(ctx)
 			itemSets = ctx.buildItemSetsLALR()
 		}
 	}
@@ -583,21 +756,30 @@ func buildLRTablesInternal(bgCtx context.Context, ng *NormalizedGrammar, trackPr
 	// StateID is uint32 in the runtime (expanded from uint16 to support large
 	// grammars like COBOL with 67K states). Cap at uint32 max.
 	const maxRuntimeStateID = int(^uint32(0))
-	if len(itemSets) > maxRuntimeStateID {
-		return nil, ctx, fmt.Errorf("parser state count %d exceeds max representable state id %d", len(itemSets), maxRuntimeStateID)
+	stateCount := len(itemSets)
+	if stateCount == 0 {
+		stateCount = ctx.builtStateCount()
+	}
+	if stateCount > maxRuntimeStateID {
+		return nil, ctx, fmt.Errorf("parser state count %d exceeds max representable state id %d", stateCount, maxRuntimeStateID)
 	}
 
 	// Build action and goto tables.
 	tables := &LRTables{
 		ActionTable:          make(map[int]map[int][]lrAction),
 		GotoTable:            make(map[int]map[int]int),
-		StateCount:           len(itemSets),
+		StateCount:           stateCount,
 		ExtraChainStateStart: -1,
 	}
 
-	for stateIdx, itemSet := range itemSets {
-		tables.ActionTable[stateIdx] = make(map[int][]lrAction)
-		tables.GotoTable[stateIdx] = make(map[int]int)
+	for stateIdx := 0; stateIdx < stateCount; stateIdx++ {
+		if debugLALR && stateIdx > 0 && stateIdx%256 == 0 {
+			debugLALRProgress("lalr_table_build_progress", "state=%d states=%d", stateIdx, stateCount)
+		}
+		itemSet, ok := ctx.builtItemSet(stateIdx)
+		if !ok {
+			return nil, ctx, fmt.Errorf("missing LR item set for state %d", stateIdx)
+		}
 
 		for _, ce := range itemSet.cores {
 			prod := &ng.Productions[int(ce.prodIdx)]
@@ -629,17 +811,17 @@ func buildLRTablesInternal(bgCtx context.Context, ng *NormalizedGrammar, trackPr
 					}
 					tables.addAction(stateIdx, nextSym, lrAction{
 						kind:    lrShift,
-						state:   targetState,
-						prec:    shiftPrec,
+						state:   packLRActionIndex(targetState),
+						prec:    int32(shiftPrec),
 						hasPrec: prod.HasExplicitPrec,
-						assoc:   shiftAssoc,
-						lhsSym:  prod.LHS,
+						assoc:   packLRActionAssoc(shiftAssoc),
+						lhsSym:  packLRActionIndex(prod.LHS),
 						isExtra: prod.IsExtra,
 						repeat:  ctx.isRepetitionShift(stateIdx, nextSym, targetState),
 					})
 				} else {
 					// Nonterminal → goto
-					tables.GotoTable[stateIdx][nextSym] = targetState
+					tables.ensureGotoRow(stateIdx)[nextSym] = targetState
 				}
 			} else {
 				// Dot at end → reduce or accept
@@ -651,19 +833,25 @@ func buildLRTablesInternal(bgCtx context.Context, ng *NormalizedGrammar, trackPr
 					ce.lookaheads.forEach(func(la int) {
 						tables.addAction(stateIdx, la, lrAction{
 							kind:    lrReduce,
-							prodIdx: int(ce.prodIdx),
-							prec:    prod.Prec,
+							prodIdx: int32(ce.prodIdx),
+							prec:    int32(prod.Prec),
 							hasPrec: prod.HasExplicitPrec,
-							assoc:   prod.Assoc,
-							lhsSym:  prod.LHS,
+							assoc:   packLRActionAssoc(prod.Assoc),
+							lhsSym:  packLRActionIndex(prod.LHS),
 							isExtra: prod.IsExtra,
 						})
 					})
 				}
 			}
 		}
+		propagateEntryShiftMetadataForState(tables, stateIdx, &itemSet, ctx, ng)
+		if resolveStateConflictsInline {
+			if err := resolveConflictsForState(tables, ng, stateIdx); err != nil {
+				return nil, ctx, err
+			}
+		}
+		ctx.releaseBuiltItemSet(stateIdx)
 	}
-	propagateEntryShiftMetadata(tables, itemSets, ctx, ng)
 
 	return tables, ctx, nil
 }
@@ -674,50 +862,48 @@ func buildLRTablesInternal(bgCtx context.Context, ng *NormalizedGrammar, trackPr
 // call-vs-unary can see the shift side as the precedence of the entry rule
 // (for example argument_list) instead of the higher-precedence enclosing rule
 // (for example call_expression).
-func propagateEntryShiftMetadata(tables *LRTables, itemSets []lrItemSet, ctx *lrContext, ng *NormalizedGrammar) {
-	if tables == nil || ctx == nil {
+func propagateEntryShiftMetadataForState(tables *LRTables, stateIdx int, itemSet *lrItemSet, ctx *lrContext, ng *NormalizedGrammar) {
+	if tables == nil || ctx == nil || itemSet == nil {
 		return
 	}
 	tokenCount := ctx.tokenCount
-	for stateIdx, itemSet := range itemSets {
-		for _, ce := range itemSet.cores {
-			prod := &ng.Productions[int(ce.prodIdx)]
-			if int(ce.dot) >= len(prod.RHS) {
-				continue
-			}
-			nextSym := prod.RHS[ce.dot]
-			if nextSym < tokenCount {
-				continue
-			}
-
-			ctx.firstSets[nextSym].forEach(func(la int) {
-				acts := tables.ActionTable[stateIdx][la]
-				for _, act := range acts {
-					if act.kind != lrShift || !shiftMatchesSymbol(act, nextSym) {
-						continue
-					}
-					tables.addAction(stateIdx, la, lrAction{
-						kind:    lrShift,
-						state:   act.state,
-						prec:    prod.Prec,
-						hasPrec: prod.HasExplicitPrec,
-						assoc:   prod.Assoc,
-						lhsSym:  prod.LHS,
-						isExtra: prod.IsExtra,
-						repeat:  act.repeat,
-					})
-				}
-			})
+	for _, ce := range itemSet.cores {
+		prod := &ng.Productions[int(ce.prodIdx)]
+		if int(ce.dot) >= len(prod.RHS) {
+			continue
 		}
+		nextSym := prod.RHS[ce.dot]
+		if nextSym < tokenCount {
+			continue
+		}
+
+		ctx.firstSets[nextSym].forEach(func(la int) {
+			acts := tables.ActionTable[stateIdx][la]
+			for _, act := range acts {
+				if act.kind != lrShift || !shiftMatchesSymbol(act, nextSym) {
+					continue
+				}
+				tables.addAction(stateIdx, la, lrAction{
+					kind:    lrShift,
+					state:   act.state,
+					prec:    int32(prod.Prec),
+					hasPrec: prod.HasExplicitPrec,
+					assoc:   packLRActionAssoc(prod.Assoc),
+					lhsSym:  packLRActionIndex(prod.LHS),
+					isExtra: prod.IsExtra,
+					repeat:  act.repeat,
+				})
+			}
+		})
 	}
 }
 
 func shiftMatchesSymbol(act lrAction, sym int) bool {
-	if act.lhsSym == sym {
+	if int(act.lhsSym) == sym {
 		return true
 	}
 	for _, lhs := range act.lhsSyms {
-		if lhs == sym {
+		if int(lhs) == sym {
 			return true
 		}
 	}
@@ -725,7 +911,8 @@ func shiftMatchesSymbol(act lrAction, sym int) bool {
 }
 
 func (t *LRTables) addAction(state, sym int, action lrAction) {
-	existing := t.ActionTable[state][sym]
+	row := t.ensureActionRow(state)
+	existing := row[sym]
 	// Avoid duplicates.
 	for i, a := range existing {
 		if a.kind == action.kind && a.state == action.state {
@@ -764,7 +951,7 @@ func (t *LRTables) addAction(state, sym int, action lrAction) {
 			}
 		}
 	}
-	t.ActionTable[state][sym] = append(existing, action)
+	row[sym] = append(existing, action)
 }
 
 // lrContext holds state during LR table construction.
@@ -785,11 +972,19 @@ type lrContext struct {
 	itemSets        []lrItemSet
 	lalrLR0ItemSets []lr0ItemSet
 	transitions     []lrTransitionRow
-	// LALR transition follow sets are retained so local LR(1) splitting can
-	// reconstruct nonterminal predecessor partitions with meaningful lookaheads
-	// instead of the empty LR(0) kernels emitted by DeRemer/Pennello.
-	lalrFollowByTransition map[[2]int]bitset
-	lalrNTTransitions      []ntTransition
+	// LALR transition follow sets are retained only when LR splitting is enabled
+	// so local LR(1) rebuild can recover predecessor-specific lookaheads without
+	// carrying a large transition-keyed map through normal generation.
+	lalrFollowSets           []bitset
+	lalrNTTransitionRows     []ntTransitionIndexRow
+	lalrFollowByTransition   map[[2]int]bitset
+	lalrNTTransitions        []ntTransition
+	lalrReduceLookaheads     []map[int]bitset
+	lalrKernelRows           packedAdjacencyRows
+	lalrDot0Rows             packedAdjacencyRows
+	lalrCompletedRows        packedAdjacencyRows
+	lalrLR0Released          bool
+	useCompactLALRTableBuild bool
 
 	// Merge provenance tracking (diagnostic metadata, does not affect construction)
 	provenance                 *mergeProvenance
@@ -843,20 +1038,25 @@ type lrContext struct {
 
 	// GOTO scratch reuses transient symbol and advanced-kernel slices while
 	// building successor states.
-	gotoSymbolsScratch     []int
-	gotoAdvancedScratch    []coreEntry
-	lr0KernelScratch       []coreItem
-	lr0ClosureScratch      []lr0CoreEntry
-	lr0RetainedChunks      [][]lr0CoreEntry
-	lr0RetainedChunkUsed   int
-	lr0SymbolBucketIdx     []int
-	lr0SymbolBucketCount   []int
-	lr0SymbolBucketOffset  []int
-	lr0TargetRepeatWrapper []int
-	lr0SymbolSeenGen       []uint32
-	lr0SymbolSeenEpoch     uint32
-	lr0RepeatSourceGen     []uint32
-	lr0RepeatSourceEpoch   uint32
+	gotoSymbolsScratch         []int
+	gotoAdvancedScratch        []coreEntry
+	lr0KernelScratch           []coreItem
+	lr0ClosureScratch          []lr0CoreEntry
+	lr0RetainedChunks          [][]lr0CoreEntry
+	lr0RetainedChunkUsed       int
+	lr0RetainedPackedChunks    [][]byte
+	lr0RetainedPackedChunkUsed int
+	lr0PackedRetentionEnabled  bool
+	lr0PackedCoreBits          uint8
+	lr0PackedProdBits          uint8
+	lr0SymbolBucketIdx         []int
+	lr0SymbolBucketCount       []int
+	lr0SymbolBucketOffset      []int
+	lr0TargetRepeatWrapper     []int
+	lr0SymbolSeenGen           []uint32
+	lr0SymbolSeenEpoch         uint32
+	lr0RepeatSourceGen         []uint32
+	lr0RepeatSourceEpoch       uint32
 
 	// Lookahead bitset scratch reuses word buffers for temporary closed sets that
 	// are discarded after exact-match or merge lookups.
@@ -865,6 +1065,8 @@ type lrContext struct {
 	maxLookaheadPool   int
 
 	repeatWrapperStateSymCache map[uint64]int
+	transientLALRCoreScratch   []coreEntry
+	transientLALRCoreScratchN  int
 
 	// preciseStateBudgetExceeded marks that the precise external-grammar LR(1)
 	// builder crossed its configured state budget and should be retried via the
@@ -994,6 +1196,11 @@ func (ctx *lrContext) releaseScratch() {
 	ctx.lr0ClosureScratch = nil
 	ctx.lr0RetainedChunks = nil
 	ctx.lr0RetainedChunkUsed = 0
+	ctx.lr0RetainedPackedChunks = nil
+	ctx.lr0RetainedPackedChunkUsed = 0
+	ctx.lr0PackedRetentionEnabled = false
+	ctx.lr0PackedCoreBits = 0
+	ctx.lr0PackedProdBits = 0
 	ctx.lr0SymbolBucketIdx = nil
 	ctx.lr0SymbolBucketCount = nil
 	ctx.lr0SymbolBucketOffset = nil
@@ -1004,7 +1211,16 @@ func (ctx *lrContext) releaseScratch() {
 	ctx.lr0RepeatSourceEpoch = 0
 	ctx.lookaheadWordPool = nil
 	ctx.repeatWrapperStateSymCache = nil
+	ctx.lalrFollowSets = nil
+	ctx.lalrNTTransitionRows = nil
+	ctx.lalrFollowByTransition = nil
 	ctx.lalrNTTransitions = nil
+	ctx.lalrReduceLookaheads = nil
+	ctx.lalrKernelRows = packedAdjacencyRows{}
+	ctx.lalrDot0Rows = packedAdjacencyRows{}
+	ctx.lalrCompletedRows = packedAdjacencyRows{}
+	ctx.lalrLR0Released = false
+	ctx.useCompactLALRTableBuild = false
 }
 
 func (ctx *lrContext) nextLR0SymbolSeenEpoch() uint32 {
@@ -1060,9 +1276,83 @@ func (ctx *lrContext) ensureLR0RepeatSourceCapacity(size int) {
 
 const defaultLR0RetainedChunkEntries = 1 << 20
 
-func (ctx *lrContext) retainLR0Cores(cores []lr0CoreEntry) []lr0CoreEntry {
+func (ctx *lrContext) configureRetainedLR0Packing() {
+	ctx.lr0PackedRetentionEnabled = false
+	ctx.lr0PackedCoreBits = 0
+	ctx.lr0PackedProdBits = 0
+	if ctx == nil || ctx.ng == nil || len(ctx.ng.Productions) == 0 {
+		return
+	}
+	maxDot := 0
+	for i := range ctx.ng.Productions {
+		if rhsLen := len(ctx.ng.Productions[i].RHS); rhsLen > maxDot {
+			maxDot = rhsLen
+		}
+	}
+	prodBits := bits.Len(uint(len(ctx.ng.Productions) - 1))
+	dotBits := bits.Len(uint(maxDot))
+	if prodBits+dotBits > 24 {
+		return
+	}
+	ctx.lr0PackedRetentionEnabled = true
+	ctx.lr0PackedCoreBits = uint8(prodBits + dotBits)
+	ctx.lr0PackedProdBits = uint8(prodBits)
+}
+
+func (ctx *lrContext) retainPackedLR0Cores(cores []lr0CoreEntry) []byte {
 	if len(cores) == 0 {
 		return nil
+	}
+	entryBits := int(ctx.lr0PackedCoreBits)
+	entryBytes := (len(cores)*entryBits + 7) / 8
+	if len(ctx.lr0RetainedPackedChunks) == 0 {
+		chunkCap := defaultLR0RetainedChunkEntries
+		if len(cores) > chunkCap {
+			chunkCap = len(cores)
+		}
+		ctx.lr0RetainedPackedChunks = append(ctx.lr0RetainedPackedChunks, make([]byte, (chunkCap*entryBits+7)/8))
+		ctx.lr0RetainedPackedChunkUsed = 0
+	}
+	chunk := ctx.lr0RetainedPackedChunks[len(ctx.lr0RetainedPackedChunks)-1]
+	if len(chunk)-ctx.lr0RetainedPackedChunkUsed < entryBytes {
+		chunkCap := defaultLR0RetainedChunkEntries
+		if len(cores) > chunkCap {
+			chunkCap = len(cores)
+		}
+		chunk = make([]byte, (chunkCap*entryBits+7)/8)
+		ctx.lr0RetainedPackedChunks = append(ctx.lr0RetainedPackedChunks, chunk)
+		ctx.lr0RetainedPackedChunkUsed = 0
+	}
+	start := ctx.lr0RetainedPackedChunkUsed
+	end := start + entryBytes
+	packedCoreBits := ctx.lr0PackedCoreBits
+	packedProdBits := ctx.lr0PackedProdBits
+	for idx, ce := range cores {
+		raw := uint32(ce.dot())
+		if packedProdBits > 0 {
+			raw = (raw << packedProdBits) | ce.prodIdx()
+		}
+		bitOffset := idx * int(packedCoreBits)
+		base := start + bitOffset/8
+		shift := uint(bitOffset % 8)
+		chunk[base] |= byte(raw << shift)
+		if base+1 < end {
+			chunk[base+1] |= byte(raw >> (8 - shift))
+		}
+		if base+2 < end {
+			chunk[base+2] |= byte(raw >> (16 - shift))
+		}
+		if base+3 < end {
+			chunk[base+3] |= byte(raw >> (24 - shift))
+		}
+	}
+	ctx.lr0RetainedPackedChunkUsed = end
+	return chunk[start:end:end]
+}
+
+func (ctx *lrContext) retainLR0Cores(cores []lr0CoreEntry) ([]lr0CoreEntry, int) {
+	if len(cores) == 0 {
+		return nil, -1
 	}
 	if len(ctx.lr0RetainedChunks) == 0 {
 		chunkCap := defaultLR0RetainedChunkEntries
@@ -1072,7 +1362,8 @@ func (ctx *lrContext) retainLR0Cores(cores []lr0CoreEntry) []lr0CoreEntry {
 		ctx.lr0RetainedChunks = append(ctx.lr0RetainedChunks, make([]lr0CoreEntry, chunkCap))
 		ctx.lr0RetainedChunkUsed = 0
 	}
-	chunk := ctx.lr0RetainedChunks[len(ctx.lr0RetainedChunks)-1]
+	chunkIdx := len(ctx.lr0RetainedChunks) - 1
+	chunk := ctx.lr0RetainedChunks[chunkIdx]
 	if len(chunk)-ctx.lr0RetainedChunkUsed < len(cores) {
 		chunkCap := defaultLR0RetainedChunkEntries
 		if len(cores) > chunkCap {
@@ -1081,12 +1372,13 @@ func (ctx *lrContext) retainLR0Cores(cores []lr0CoreEntry) []lr0CoreEntry {
 		chunk = make([]lr0CoreEntry, chunkCap)
 		ctx.lr0RetainedChunks = append(ctx.lr0RetainedChunks, chunk)
 		ctx.lr0RetainedChunkUsed = 0
+		chunkIdx = len(ctx.lr0RetainedChunks) - 1
 	}
 	start := ctx.lr0RetainedChunkUsed
 	end := start + len(cores)
 	copy(chunk[start:end], cores)
 	ctx.lr0RetainedChunkUsed = end
-	return chunk[start:end:end]
+	return chunk[start:end:end], chunkIdx
 }
 
 func (ctx *lrContext) ensureTransitionState(state int) {
@@ -1262,8 +1554,8 @@ func (b *extraChainBuilder) mergeSyntheticTerminalShift(stateIdx, sym int, actio
 		if act.state == action.state {
 			return
 		}
-		if act.state >= b.syntheticStart && action.state >= b.syntheticStart {
-			mergedTarget = b.unionSyntheticStates(act.state, mergedTarget)
+		if int(act.state) >= b.syntheticStart && int(action.state) >= b.syntheticStart {
+			mergedTarget = packLRActionIndex(b.unionSyntheticStates(int(act.state), int(mergedTarget)))
 			if mergeIdx < 0 {
 				mergeIdx = i
 			}
@@ -1374,11 +1666,11 @@ func (b *extraChainBuilder) addProdContinuation(stateIdx, prodIdx, pos int, foll
 		follow.forEach(func(la int) {
 			b.tables.addAction(stateIdx, la, lrAction{
 				kind:    lrReduce,
-				prodIdx: prodIdx,
-				prec:    prod.Prec,
+				prodIdx: packLRActionIndex(prodIdx),
+				prec:    int32(prod.Prec),
 				hasPrec: prod.HasExplicitPrec,
-				assoc:   prod.Assoc,
-				lhsSym:  prod.LHS,
+				assoc:   packLRActionAssoc(prod.Assoc),
+				lhsSym:  packLRActionIndex(prod.LHS),
 				isExtra: prod.IsExtra,
 			})
 		})
@@ -1390,11 +1682,11 @@ func (b *extraChainBuilder) addProdContinuation(stateIdx, prodIdx, pos int, foll
 		targetState := b.buildProdChain(prodIdx, pos+1, follow)
 		b.mergeSyntheticTerminalShift(stateIdx, nextSym, lrAction{
 			kind:    lrShift,
-			state:   targetState,
-			prec:    prod.Prec,
+			state:   packLRActionIndex(targetState),
+			prec:    int32(prod.Prec),
 			hasPrec: prod.HasExplicitPrec,
-			assoc:   prod.Assoc,
-			lhsSym:  prod.LHS,
+			assoc:   packLRActionAssoc(prod.Assoc),
+			lhsSym:  packLRActionIndex(prod.LHS),
 			isExtra: false,
 			repeat:  b.ctx.isRepetitionShift(stateIdx, nextSym, targetState),
 		})
@@ -1402,11 +1694,12 @@ func (b *extraChainBuilder) addProdContinuation(stateIdx, prodIdx, pos int, foll
 	}
 
 	targetState := b.buildProdChain(prodIdx, pos+1, follow)
-	existing, ok := b.tables.GotoTable[stateIdx][nextSym]
+	gotoRow := b.tables.ensureGotoRow(stateIdx)
+	existing, ok := gotoRow[nextSym]
 	if !ok || existing == targetState {
-		b.tables.GotoTable[stateIdx][nextSym] = targetState
+		gotoRow[nextSym] = targetState
 	} else if existing >= b.syntheticStart && targetState >= b.syntheticStart {
-		b.tables.GotoTable[stateIdx][nextSym] = b.unionSyntheticStates(existing, targetState)
+		gotoRow[nextSym] = b.unionSyntheticStates(existing, targetState)
 	} else if os.Getenv("GTS_TMP_EXTRA_CHAIN_GOTO_CONFLICTS") == "1" {
 		fmt.Printf("[extra-goto-conflict] prod-cont state=%d sym=%s existing=%d new=%d follow=%s\n",
 			stateIdx, b.ng.Symbols[nextSym].Name, existing, targetState, dumpExtraChainBitset(b.ng, &follow))
@@ -1428,11 +1721,11 @@ func (b *extraChainBuilder) addNonterminalEntries(stateIdx, sym int, follow bits
 			follow.forEach(func(la int) {
 				b.tables.addAction(stateIdx, la, lrAction{
 					kind:    lrReduce,
-					prodIdx: prodIdx,
-					prec:    prod.Prec,
+					prodIdx: packLRActionIndex(prodIdx),
+					prec:    int32(prod.Prec),
 					hasPrec: prod.HasExplicitPrec,
-					assoc:   prod.Assoc,
-					lhsSym:  prod.LHS,
+					assoc:   packLRActionAssoc(prod.Assoc),
+					lhsSym:  packLRActionIndex(prod.LHS),
 					isExtra: prod.IsExtra,
 				})
 			})
@@ -1444,11 +1737,11 @@ func (b *extraChainBuilder) addNonterminalEntries(stateIdx, sym int, follow bits
 			targetState := b.buildProdChain(prodIdx, 1, follow)
 			b.mergeSyntheticTerminalShift(stateIdx, firstSym, lrAction{
 				kind:    lrShift,
-				state:   targetState,
-				prec:    prod.Prec,
+				state:   packLRActionIndex(targetState),
+				prec:    int32(prod.Prec),
 				hasPrec: prod.HasExplicitPrec,
-				assoc:   prod.Assoc,
-				lhsSym:  prod.LHS,
+				assoc:   packLRActionAssoc(prod.Assoc),
+				lhsSym:  packLRActionIndex(prod.LHS),
 				isExtra: false,
 				repeat:  b.ctx.isRepetitionShift(stateIdx, firstSym, targetState),
 			})
@@ -1456,11 +1749,12 @@ func (b *extraChainBuilder) addNonterminalEntries(stateIdx, sym int, follow bits
 		}
 
 		targetState := b.buildProdChain(prodIdx, 1, follow)
-		existing, ok := b.tables.GotoTable[stateIdx][firstSym]
+		gotoRow := b.tables.ensureGotoRow(stateIdx)
+		existing, ok := gotoRow[firstSym]
 		if !ok || existing == targetState {
-			b.tables.GotoTable[stateIdx][firstSym] = targetState
+			gotoRow[firstSym] = targetState
 		} else if existing >= b.syntheticStart && targetState >= b.syntheticStart {
-			b.tables.GotoTable[stateIdx][firstSym] = b.unionSyntheticStates(existing, targetState)
+			gotoRow[firstSym] = b.unionSyntheticStates(existing, targetState)
 		} else if os.Getenv("GTS_TMP_EXTRA_CHAIN_GOTO_CONFLICTS") == "1" {
 			fmt.Printf("[extra-goto-conflict] nt-entry state=%d sym=%s existing=%d new=%d follow=%s\n",
 				stateIdx, b.ng.Symbols[firstSym].Name, existing, targetState, dumpExtraChainBitset(b.ng, &follow))
@@ -1673,10 +1967,10 @@ func addNonterminalExtraChains(tables *LRTables, ng *NormalizedGrammar, ctx *lrC
 				if act.kind != lrReduce || !act.isExtra {
 					return false
 				}
-				if act.prodIdx < 0 || act.prodIdx >= len(ng.Productions) {
+				if int(act.prodIdx) >= len(ng.Productions) {
 					return false
 				}
-				if _, ok := extraSymbolSet[ng.Productions[act.prodIdx].LHS]; !ok {
+				if _, ok := extraSymbolSet[ng.Productions[int(act.prodIdx)].LHS]; !ok {
 					return false
 				}
 				hasReduce = true
@@ -1751,7 +2045,7 @@ func addNonterminalExtraChains(tables *LRTables, ng *NormalizedGrammar, ctx *lrC
 			entryState := builder.buildEntryState(firstSym, prodIdxs, follow)
 			tables.addAction(state, firstSym, lrAction{
 				kind:    lrShift,
-				state:   entryState,
+				state:   packLRActionIndex(entryState),
 				lhsSym:  0,
 				isExtra: true,
 			})
@@ -2352,7 +2646,7 @@ func (ctx *lrContext) completedRepeatWrapperLHSAcrossTransitionsLR0(set *lr0Item
 }
 
 func (ctx *lrContext) completedRepeatWrapperStateLHS(state, sym int) int {
-	if ctx == nil || state < 0 || state >= len(ctx.itemSets) {
+	if ctx == nil || state < 0 || state >= ctx.builtStateCount() {
 		return -1
 	}
 	if ctx.repeatWrapperStateSymCache == nil {
@@ -2362,7 +2656,12 @@ func (ctx *lrContext) completedRepeatWrapperStateLHS(state, sym int) int {
 	if cached := ctx.repeatWrapperStateSymCache[key]; cached != 0 {
 		return cached - 2
 	}
-	lhs := ctx.completedRepeatWrapperLHSAcrossTransitions(&ctx.itemSets[state], sym, true)
+	lhs := -1
+	if state < len(ctx.itemSets) {
+		lhs = ctx.completedRepeatWrapperLHSAcrossTransitions(&ctx.itemSets[state], sym, true)
+	} else if state < len(ctx.lalrLR0ItemSets) {
+		lhs = ctx.completedRepeatWrapperStateLHSLR0(state, sym)
+	}
 	ctx.repeatWrapperStateSymCache[key] = lhs + 2
 	return lhs
 }
@@ -2384,14 +2683,20 @@ func (ctx *lrContext) completedRepeatWrapperStateLHSLR0(state, sym int) int {
 }
 
 func (ctx *lrContext) isRepetitionShift(sourceState, sym, targetState int) bool {
-	if ctx == nil || sourceState < 0 || targetState < 0 || sourceState >= len(ctx.itemSets) || targetState >= len(ctx.itemSets) {
+	if ctx == nil || sourceState < 0 || targetState < 0 || sourceState >= ctx.builtStateCount() || targetState >= ctx.builtStateCount() {
 		return false
 	}
 	lhs := ctx.completedRepeatWrapperStateLHS(targetState, sym)
 	if lhs < 0 {
 		return false
 	}
-	return ctx.stateHasRecursiveRepeatSource(&ctx.itemSets[sourceState], lhs)
+	if sourceState < len(ctx.itemSets) {
+		return ctx.stateHasRecursiveRepeatSource(&ctx.itemSets[sourceState], lhs)
+	}
+	if sourceState < len(ctx.lalrLR0ItemSets) {
+		return ctx.stateHasRecursiveRepeatSourceLR0(&ctx.lalrLR0ItemSets[sourceState], lhs)
+	}
+	return false
 }
 
 func (ctx *lrContext) stateHasRecursiveRepeatSource(set *lrItemSet, lhs int) bool {
@@ -3151,6 +3456,31 @@ func resolveConflicts(tables *LRTables, ng *NormalizedGrammar) error {
 	return nil
 }
 
+func resolveConflictsForState(tables *LRTables, ng *NormalizedGrammar, state int) error {
+	actions, ok := tables.ActionTable[state]
+	if !ok {
+		return nil
+	}
+	syms := make([]int, 0, len(actions))
+	for sym := range actions {
+		syms = append(syms, sym)
+	}
+	sort.Ints(syms)
+	for _, sym := range syms {
+		acts := actions[sym]
+		if len(acts) <= 1 {
+			continue
+		}
+
+		resolved, err := resolveActionConflict(sym, acts, ng)
+		if err != nil {
+			return fmt.Errorf("state %d, symbol %d: %w", state, sym, err)
+		}
+		actions[sym] = resolved
+	}
+	return nil
+}
+
 // resolveActionConflict resolves a conflict between multiple actions.
 func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedGrammar) ([]lrAction, error) {
 	if len(actions) <= 1 {
@@ -3217,9 +3547,10 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 			// would be kept as GLR, causing wrong associativity at runtime.
 			// Inter-symbol conflicts (different LHS) stay as GLR — those
 			// represent genuine ambiguities declared by the grammar author.
-			sameLHS := shift.lhsSym == prod.LHS
+			shiftLHSSym := int(shift.lhsSym)
+			sameLHS := shiftLHSSym == prod.LHS
 			if sameLHS {
-				shiftP := shift.prec
+				shiftP := int(shift.prec)
 				reduceP := prod.Prec
 				if (shiftP != 0 || reduceP != 0) && shiftP != reduceP {
 					if reduceP > shiftP {
@@ -3245,8 +3576,9 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 		// was too broad, generating thousands of unnecessary GLR entries
 		// for grammars like Swift where many symbols appear in conflict
 		// groups but have unambiguous precedence relationships.
+		//
 		if reduceLHSInAnyConflictGroup(reduces, ng, cache) {
-			shiftP := shift.prec
+			shiftP := int(shift.prec)
 			reduceP := prod.Prec
 			// Consult precedences table for SYMBOL-level ordering before
 			// falling through to numeric prec comparison. This ensures
@@ -3265,8 +3597,8 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 					}
 				}
 				// Case 2: shift LHS is SYMBOL (prec 0), reduce prec is named (> 0).
-				if shiftP == 0 && reduceP > 0 && shift.lhsSym < len(ng.Symbols) {
-					shiftLHSName := ng.Symbols[shift.lhsSym].Name
+				if shiftP == 0 && reduceP > 0 && int(shift.lhsSym) < len(ng.Symbols) {
+					shiftLHSName := ng.Symbols[int(shift.lhsSym)].Name
 					cmp := ng.PrecedenceOrder.resolveSymbolVsNamedPrec(shiftLHSName, reduceP)
 					if cmp > 0 {
 						return []lrAction{shift}, nil
@@ -3290,9 +3622,9 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 			// the ordering determines which binds tighter.
 			if shiftP == reduceP && ng.PrecedenceOrder != nil &&
 				prod.LHS >= 0 && prod.LHS < len(ng.Symbols) &&
-				shift.lhsSym >= 0 && shift.lhsSym < len(ng.Symbols) {
+				int(shift.lhsSym) >= 0 && int(shift.lhsSym) < len(ng.Symbols) {
 				reduceLHSName := ng.Symbols[prod.LHS].Name
-				shiftLHSName := ng.Symbols[shift.lhsSym].Name
+				shiftLHSName := ng.Symbols[int(shift.lhsSym)].Name
 				if reduceLHSName != shiftLHSName {
 					cmp := ng.PrecedenceOrder.resolveSymbolVsSymbol(shiftLHSName, reduceLHSName)
 					if cmp > 0 {
@@ -3316,9 +3648,9 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 			return actions, nil
 		}
 
-		shiftPrec := shift.prec
+		shiftPrec := int(shift.prec)
 		reducePrec := prod.Prec
-		shiftHasPrec := shift.hasPrec || shift.assoc != AssocNone
+		shiftHasPrec := shift.hasPrec || shift.assocValue() != AssocNone
 		reduceHasPrec := prod.HasExplicitPrec || prod.Assoc != AssocNone
 
 		// Consult the precedences table for SYMBOL-level ordering.
@@ -3340,8 +3672,8 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 			}
 		}
 		// Case 2: shift LHS is SYMBOL (prec 0), reduce prec is named STRING (> 0).
-		if ng.PrecedenceOrder != nil && shiftPrec == 0 && reducePrec > 0 && shift.lhsSym < len(ng.Symbols) {
-			shiftLHSName := ng.Symbols[shift.lhsSym].Name
+		if ng.PrecedenceOrder != nil && shiftPrec == 0 && reducePrec > 0 && int(shift.lhsSym) < len(ng.Symbols) {
+			shiftLHSName := ng.Symbols[int(shift.lhsSym)].Name
 			cmp := ng.PrecedenceOrder.resolveSymbolVsNamedPrec(shiftLHSName, reducePrec)
 			if cmp > 0 {
 				return []lrAction{shift}, nil
@@ -3351,8 +3683,8 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 			}
 		}
 		shiftLHSName := ""
-		if shift.lhsSym >= 0 && shift.lhsSym < len(ng.Symbols) {
-			shiftLHSName = ng.Symbols[shift.lhsSym].Name
+		if int(shift.lhsSym) >= 0 && int(shift.lhsSym) < len(ng.Symbols) {
+			shiftLHSName = ng.Symbols[int(shift.lhsSym)].Name
 		}
 		lookaheadName := ""
 		if lookaheadSym >= 0 && lookaheadSym < len(ng.Symbols) {
@@ -3388,9 +3720,9 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 			// tighter than function_type (lower pos), so shift wins.
 			if ng.PrecedenceOrder != nil &&
 				prod.LHS >= 0 && prod.LHS < len(ng.Symbols) &&
-				shift.lhsSym >= 0 && shift.lhsSym < len(ng.Symbols) {
+				int(shift.lhsSym) >= 0 && int(shift.lhsSym) < len(ng.Symbols) {
 				reduceLHSName := ng.Symbols[prod.LHS].Name
-				shiftLHSName := ng.Symbols[shift.lhsSym].Name
+				shiftLHSName := ng.Symbols[int(shift.lhsSym)].Name
 				if reduceLHSName != shiftLHSName {
 					cmp := ng.PrecedenceOrder.resolveSymbolVsSymbol(shiftLHSName, reduceLHSName)
 					if cmp > 0 {
@@ -3453,7 +3785,7 @@ func repetitionShiftActions(lookaheadSym int, shifts, reduces []lrAction, ng *No
 		}
 	}
 	shift := shifts[0]
-	if !shift.repeat && lookaheadSym != shift.lhsSym {
+	if !shift.repeat && lookaheadSym != int(shift.lhsSym) {
 		return nil, false
 	}
 	kept := make([]lrAction, 0, len(reduces)+1)
@@ -3464,10 +3796,10 @@ func repetitionShiftActions(lookaheadSym int, shifts, reduces []lrAction, ng *No
 }
 
 func isRecursiveRepeatReduce(action lrAction, ng *NormalizedGrammar) bool {
-	if action.kind != lrReduce || action.prodIdx < 0 || action.prodIdx >= len(ng.Productions) {
+	if action.kind != lrReduce || int(action.prodIdx) >= len(ng.Productions) {
 		return false
 	}
-	prod := &ng.Productions[action.prodIdx]
+	prod := &ng.Productions[int(action.prodIdx)]
 	if prod.LHS < 0 || prod.LHS >= len(ng.Symbols) {
 		return false
 	}
@@ -3483,10 +3815,10 @@ func isRecursiveRepeatReduce(action lrAction, ng *NormalizedGrammar) bool {
 }
 
 func isRepeatHelperReduce(action lrAction, ng *NormalizedGrammar) bool {
-	if action.kind != lrReduce || action.prodIdx < 0 || action.prodIdx >= len(ng.Productions) {
+	if action.kind != lrReduce || int(action.prodIdx) >= len(ng.Productions) {
 		return false
 	}
-	prod := &ng.Productions[action.prodIdx]
+	prod := &ng.Productions[int(action.prodIdx)]
 	if prod.LHS < 0 || prod.LHS >= len(ng.Symbols) {
 		return false
 	}
@@ -3548,10 +3880,10 @@ func shouldKeepTypeValueTokenReduces(lookaheadSym int, reduces []lrAction, ng *N
 	hasTypeLike := false
 	hasValueLike := false
 	for _, r := range reduces {
-		if r.prodIdx < 0 || r.prodIdx >= len(ng.Productions) {
+		if int(r.prodIdx) >= len(ng.Productions) {
 			return false
 		}
-		prod := ng.Productions[r.prodIdx]
+		prod := ng.Productions[int(r.prodIdx)]
 		if len(prod.RHS) != 1 {
 			return false
 		}
@@ -3813,12 +4145,12 @@ func shiftReduceInConflictGroup(shifts, reduces []lrAction, ng *NormalizedGramma
 	shiftLHSSet := make(map[int]bool)
 	for _, s := range shifts {
 		if s.lhsSym != 0 {
-			for _, parent := range resolveAuxToParents(s.lhsSym, ng, cache) {
+			for _, parent := range resolveAuxToParents(int(s.lhsSym), ng, cache) {
 				shiftLHSSet[parent] = true
 			}
 		}
 		for _, lhs := range s.lhsSyms {
-			for _, parent := range resolveAuxToParents(lhs, ng, cache) {
+			for _, parent := range resolveAuxToParents(int(lhs), ng, cache) {
 				shiftLHSSet[parent] = true
 			}
 		}

@@ -270,6 +270,15 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 	st := newSymbolTable()
 	st.binaryRepeatMode = g.BinaryRepeatMode
 	st.choiceLiftThreshold = g.ChoiceLiftThreshold
+	// Auto-enable choice lifting for large grammars to prevent Cartesian
+	// product explosion. Grammars with >200 rules (e.g. Fortran with 329)
+	// tend to produce hundreds of thousands of productions without lifting.
+	// DISABLED: aggressive choice lifting changes the grammar structure and
+	// breaks conflict group membership, causing parse regressions. Need a
+	// more targeted approach that preserves conflict group invariants.
+	// if st.choiceLiftThreshold == 0 && len(g.Rules) > 200 {
+	// 	st.choiceLiftThreshold = 16
+	// }
 	ng := &NormalizedGrammar{EnableLRSplitting: g.EnableLRSplitting}
 
 	// Phase 1: Collect all string literals and register terminal symbols.
@@ -1588,17 +1597,10 @@ func liftLargeSeqChoices(seq *Rule, parentName string, st *symbolTable, auxRules
 			}
 			alts := estimateAlternativeCount(c)
 			if alts > bestAlts && alts >= 2 {
-				inner := c
-				for inner != nil && (inner.Kind == RuleField || inner.Kind == RuleAlias ||
-					inner.Kind == RulePrec || inner.Kind == RulePrecLeft ||
-					inner.Kind == RulePrecRight || inner.Kind == RulePrecDynamic) {
-					if len(inner.Children) > 0 {
-						inner = inner.Children[0]
-					} else {
-						break
-					}
-				}
-				if inner != nil && inner.Kind == RuleChoice {
+				// Check if this child contains a liftable CHOICE (directly or
+				// wrapped in FIELD/ALIAS/PREC/REPEAT). Any child contributing
+				// multiple alternatives is a candidate for extraction.
+				if hasLiftableChoice(c) {
 					bestIdx = i
 					bestAlts = alts
 				}
@@ -1625,6 +1627,35 @@ func liftLargeSeqChoices(seq *Rule, parentName string, st *symbolTable, auxRules
 	result := *seq
 	result.Children = newChildren
 	return &result
+}
+
+// hasLiftableChoice returns true if r contains a CHOICE node that contributes
+// multiple alternatives, either directly or wrapped in transparent nodes
+// (Field, Alias, Prec*, Repeat, Repeat1).
+func hasLiftableChoice(r *Rule) bool {
+	if r == nil {
+		return false
+	}
+	switch r.Kind {
+	case RuleChoice:
+		return len(r.Children) >= 2
+	case RuleField, RuleAlias, RulePrec, RulePrecLeft, RulePrecRight, RulePrecDynamic,
+		RuleRepeat, RuleRepeat1:
+		if len(r.Children) > 0 {
+			return hasLiftableChoice(r.Children[0])
+		}
+		return false
+	case RuleSeq:
+		// A SEQ inside a SEQ child means nested alternatives — liftable
+		for _, c := range r.Children {
+			if hasLiftableChoice(c) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
 }
 
 func ensureRepeatAuxLinear(parentName string, inner *Rule, st *symbolTable, auxRules map[string]*Rule, counter *int) string {
