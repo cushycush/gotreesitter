@@ -3569,15 +3569,16 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 			}
 			return actions, nil
 		}
-		// Fallback: if the reduce LHS is in ANY conflict group, keep GLR —
-		// UNLESS explicit precedence clearly resolves the conflict.
-		// Tree-sitter C resolves S/R conflicts via precedence even when
-		// symbols are in conflict groups. The original all-GLR fallback
-		// was too broad, generating thousands of unnecessary GLR entries
-		// for grammars like Swift where many symbols appear in conflict
-		// groups but have unambiguous precedence relationships.
-		//
-		if reduceLHSInAnyConflictGroup(reduces, ng, cache) {
+		// Fallback: if the reduce LHS OR any shift LHS is in a declared
+		// conflict group, keep as GLR — UNLESS explicit precedence clearly
+		// resolves the conflict. The shift-side check is needed because
+		// large grammars (e.g. Fortran) split states so that the direct
+		// conflict (e.g. _inline_if_statement shift vs _block_if_statement
+		// reduce) never occurs in the same state. Instead, the conflict
+		// manifests as _inline_if_statement shift vs _specification_part
+		// reduce. Without checking the shift LHS, the conflict group
+		// membership of _inline_if_statement is missed.
+		if reduceLHSInAnyConflictGroup(reduces, ng, cache) || shiftLHSInAnyConflictGroup(shifts, ng, cache) {
 			shiftP := int(shift.prec)
 			reduceP := prod.Prec
 			// Consult precedences table for SYMBOL-level ordering before
@@ -4280,6 +4281,28 @@ func reduceLHSInAnyConflictGroup(reduces []lrAction, ng *NormalizedGrammar, cach
 	for _, parent := range resolveAuxToParents(lhs, ng, cache) {
 		if parent >= 0 && parent < len(cache.groupsBySymbol) && len(cache.groupsBySymbol[parent]) > 0 {
 			return true
+		}
+	}
+	return false
+}
+
+func shiftLHSInAnyConflictGroup(shifts []lrAction, ng *NormalizedGrammar, cache *conflictResolutionCache) bool {
+	if cache == nil || len(shifts) == 0 {
+		return false
+	}
+	for _, s := range shifts {
+		lhs := int(s.lhsSym)
+		for _, parent := range resolveAuxToParents(lhs, ng, cache) {
+			if parent >= 0 && parent < len(cache.groupsBySymbol) && len(cache.groupsBySymbol[parent]) > 0 {
+				return true
+			}
+		}
+		for _, extra := range s.lhsSyms {
+			for _, parent := range resolveAuxToParents(int(extra), ng, cache) {
+				if parent >= 0 && parent < len(cache.groupsBySymbol) && len(cache.groupsBySymbol[parent]) > 0 {
+					return true
+				}
+			}
 		}
 	}
 	return false
