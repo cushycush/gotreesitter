@@ -25,6 +25,12 @@ func TestDiagFortranParse(t *testing.T) {
 		t.Fatalf("import: %v", err)
 	}
 
+	// Optionally disable inlining for testing
+	if os.Getenv("DIAG_FORTRAN_NO_INLINE") == "1" {
+		gram.Inline = nil
+		t.Log("WARNING: inline disabled for testing")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 	genLang, err := GenerateLanguageWithContext(ctx, gram)
