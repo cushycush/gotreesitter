@@ -28,6 +28,8 @@ type Highlighter struct {
 	injectionResolver  HighlighterInjectionResolver
 	childQueries       map[string]*Query
 	execBuffer         queryExecBuffer
+	rangeBuffer        []HighlightRange
+	resolvedBuffer     []HighlightRange
 }
 
 // HighlighterOption configures a Highlighter.
@@ -122,9 +124,12 @@ func (h *Highlighter) highlightTree(tree *Tree, source []byte) []HighlightRange 
 		return nil
 	}
 
+	ranges := h.rangeBuffer[:0]
 	// Most highlight patterns have exactly one capture per match, so pre-sizing
-	// to len(matches) avoids the repeated doublings during append.
-	ranges := make([]HighlightRange, 0, len(matches))
+	// to len(matches) avoids early growth when reusing a smaller prior buffer.
+	if cap(ranges) < len(matches) {
+		ranges = make([]HighlightRange, 0, len(matches))
+	}
 	for _, m := range matches {
 		for _, c := range m.Captures {
 			node := c.Node
@@ -141,12 +146,18 @@ func (h *Highlighter) highlightTree(tree *Tree, source []byte) []HighlightRange 
 	}
 
 	ranges = h.appendInjectedRanges(tree, source, ranges)
+	h.rangeBuffer = ranges[:0]
 
 	if len(ranges) == 0 {
 		return nil
 	}
 
-	return resolveOverlaps(ranges)
+	resolved := resolveOverlapsInto(ranges, h.resolvedBuffer[:0])
+	h.resolvedBuffer = resolved[:0]
+
+	out := make([]HighlightRange, len(resolved))
+	copy(out, resolved)
+	return out
 }
 
 // resolveOverlaps takes a range list (in any order) and returns a sorted,
@@ -160,8 +171,12 @@ func (h *Highlighter) highlightTree(tree *Tree, source []byte) []HighlightRange 
 //
 // This avoids the previous second O(n log n) event sort.
 func resolveOverlaps(ranges []HighlightRange) []HighlightRange {
+	return resolveOverlapsInto(ranges, nil)
+}
+
+func resolveOverlapsInto(ranges []HighlightRange, dst []HighlightRange) []HighlightRange {
 	if len(ranges) == 0 {
-		return nil
+		return dst[:0]
 	}
 
 	// Filter zero-byte ranges in-place (compact) to avoid an extra allocation.
@@ -196,7 +211,10 @@ func resolveOverlaps(ranges []HighlightRange) []HighlightRange {
 	// stack depth is bounded by the nesting depth (≤ len(sorted));
 	// result has at most one entry per input range.
 	stack := make([]HighlightRange, 0, 8)
-	result := make([]HighlightRange, 0, len(sorted))
+	result := dst[:0]
+	if cap(result) < len(sorted) {
+		result = make([]HighlightRange, 0, len(sorted))
+	}
 	emit := func(start, end uint32, capture string) {
 		if capture == "" || end <= start {
 			return
