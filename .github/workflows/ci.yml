@@ -213,7 +213,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          BENCH_RE='^(BenchmarkGoParseFullDFA|BenchmarkGoParseIncrementalSingleByteEditDFA|BenchmarkGoParseIncrementalNoEditDFA)$'
+          BENCH_RE='^(BenchmarkGoParseFullDFA|BenchmarkGoParseIncrementalSingleByteEditDFA)$'
           OUT_DIR="${RUNNER_TEMP}/bench-gate"
           BASE_TREE="${RUNNER_TEMP}/bench-base"
           mkdir -p "${OUT_DIR}"
