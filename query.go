@@ -117,10 +117,10 @@ type QueryPredicate struct {
 	leftCapture  string
 	rightCapture string // optional for #eq? / #not-eq?
 	// optional property/name token for #is? / #is-not?.
-	property string
-	literal  string // literal or regex source
-	values   []string
-	regex    *regexp.Regexp
+	property   string
+	literal    string // literal or regex source
+	values     []string
+	regex      *regexp.Regexp
 	offset     [4]int // #offset! start_row start_col end_row end_col
 	countOp    string // for #count?: ">", "<", ">=", "<=", "==", "!="
 	countValue int    // for #count?
@@ -208,17 +208,6 @@ type QueryCursor struct {
 	pendingCaptures   []QueryCapture
 	pendingCaptureIdx int
 
-	// captureScratch is a reusable buffer for building captures during
-	// pattern matching. It is reset before each attempt and the result
-	// is committed to captureArena only on successful matches, avoiding
-	// heap allocations for every failed match attempt.
-	captureScratch []QueryCapture
-
-	// captureArena is a single backing array for all captures returned by
-	// this cursor. Each successful match gets a subslice, avoiding a separate
-	// heap allocation per match.
-	captureArena []QueryCapture
-
 	matchLimit        uint32
 	matchCount        uint32
 	limitProbePending bool
@@ -233,6 +222,12 @@ type QueryCursor struct {
 type queryCursorWorkItem struct {
 	node  *Node
 	depth uint32
+}
+
+type queryExecBuffer struct {
+	matches  []QueryMatch
+	captures []QueryCapture
+	worklist []queryCursorWorkItem
 }
 
 // NewQuery compiles query source (tree-sitter .scm format) against a language.
@@ -291,10 +286,9 @@ func (q *Query) ExecuteNode(node *Node, lang *Language, source []byte) []QueryMa
 // Exec creates a streaming cursor over matches rooted at node.
 func (q *Query) Exec(node *Node, lang *Language, source []byte) *QueryCursor {
 	c := &QueryCursor{
-		query:          q,
-		lang:           lang,
-		source:         source,
-		captureScratch: make([]QueryCapture, 0, 8),
+		query:  q,
+		lang:   lang,
+		source: source,
 	}
 	if node != nil {
 		// Pre-size the worklist for typical tree depth (avoids early growths).
@@ -302,20 +296,6 @@ func (q *Query) Exec(node *Node, lang *Language, source []byte) *QueryCursor {
 		c.worklist[0] = queryCursorWorkItem{node: node, depth: 0}
 	}
 	return c
-}
-
-// commitCapturesToArena appends src to the cursor's capture arena and returns
-// a subslice of the arena backed by the same allocation. This amortizes the
-// per-match heap allocation to a bulk doubling strategy.
-func (c *QueryCursor) commitCapturesToArena(src []QueryCapture) []QueryCapture {
-	if len(src) == 0 {
-		return nil
-	}
-	// Use append's built-in growth strategy, which is more memory-efficient
-	// than manual doubling because it accounts for Go's allocator size classes.
-	start := len(c.captureArena)
-	c.captureArena = append(c.captureArena, src...)
-	return c.captureArena[start : start+len(src) : start+len(src)]
 }
 
 // SetByteRange restricts matches to nodes that intersect [startByte, endByte).
@@ -428,6 +408,70 @@ func (q *Query) executeNodeInto(root *Node, lang *Language, source []byte, dst [
 		dst = append(dst, m)
 	}
 	return dst
+}
+
+func (q *Query) executeNodeIntoBuffer(root *Node, lang *Language, source []byte, buf *queryExecBuffer) []QueryMatch {
+	if root == nil || lang == nil {
+		if buf == nil {
+			return nil
+		}
+		buf.matches = buf.matches[:0]
+		buf.captures = buf.captures[:0]
+		buf.worklist = buf.worklist[:0]
+		return buf.matches
+	}
+	if buf == nil {
+		return q.executeNode(root, lang, source)
+	}
+	if q.rootCandidatesBySymbol == nil && q.rootFallbackCandidates == nil {
+		q.buildRootPatternIndex()
+	}
+
+	buf.matches = buf.matches[:0]
+	buf.captures = buf.captures[:0]
+	buf.worklist = append(buf.worklist[:0], queryCursorWorkItem{node: root, depth: 0})
+
+	for len(buf.worklist) > 0 {
+		last := len(buf.worklist) - 1
+		item := buf.worklist[last]
+		buf.worklist = buf.worklist[:last]
+
+		n := item.node
+		if n == nil {
+			continue
+		}
+
+		for i := n.ChildCount() - 1; i >= 0; i-- {
+			child := n.Child(i)
+			if child == nil {
+				continue
+			}
+			buf.worklist = append(buf.worklist, queryCursorWorkItem{
+				node:  child,
+				depth: item.depth + 1,
+			})
+		}
+
+		candidates := q.rootPatternCandidates(lang.PublicSymbol(n.Symbol()))
+		for _, pi := range candidates {
+			if q.isPatternDisabled(pi) {
+				continue
+			}
+			pat := q.patterns[pi]
+			nextCaptures, ok := q.matchPatternIntoBuffer(&pat, n, lang, source, buf.captures)
+			if !ok {
+				continue
+			}
+			start := len(buf.captures)
+			buf.captures = nextCaptures
+			buf.matches = append(buf.matches, QueryMatch{
+				PatternIndex: pi,
+				Captures:     buf.captures[start:len(buf.captures):len(buf.captures)],
+			})
+		}
+	}
+
+	return buf.matches
 }
 
 func (q *Query) rootPatternCandidates(sym Symbol) []int {
@@ -646,13 +690,10 @@ func (c *QueryCursor) nextMatchRaw() (QueryMatch, bool) {
 				continue
 			}
 			pat := q.patterns[pi]
-			if caps, ok := q.matchPatternWithScratch(&pat, c.currentNode, c.lang, c.source, &c.captureScratch); ok {
-				// Commit captures from the scratch buffer into the capture arena.
-				// This amortizes individual match allocs into bulk arena growths.
-				committed := c.commitCapturesToArena(caps)
+			if caps, ok := q.matchPattern(&pat, c.currentNode, c.lang, c.source); ok {
 				return QueryMatch{
 					PatternIndex: pi,
-					Captures:     committed,
+					Captures:     caps,
 				}, true
 			}
 		}
@@ -692,33 +733,13 @@ func (c *QueryCursor) NextCapture() (QueryCapture, bool) {
 // matchPattern tries to match a pattern against the given node.
 // The pattern's steps describe a nested structure; step depth 0 matches
 // the given node, depth 1 matches its children, etc.
-//
-// scratch, if non-nil, is used as the working buffer during matching to avoid
-// per-attempt heap allocations. On a successful match, captures are copied to
-// a fresh slice. The scratch is reset to [:0] before use; callers must not
-// assume its contents after the call.
 func (q *Query) matchPattern(pat *Pattern, node *Node, lang *Language, source []byte) ([]QueryCapture, bool) {
-	return q.matchPatternWithScratch(pat, node, lang, source, nil)
-}
-
-// matchPatternWithScratch is the hot path called from nextMatchRaw.
-// scratch is used as a temporary buffer during matching; on success, the
-// caller is responsible for committing scratch contents to a stable arena
-// before resetting it for the next attempt.
-func (q *Query) matchPatternWithScratch(pat *Pattern, node *Node, lang *Language, source []byte, scratch *[]QueryCapture) ([]QueryCapture, bool) {
 	if len(pat.steps) == 0 {
 		return nil, false
 	}
 
 	var captures []QueryCapture
-	if scratch != nil {
-		*scratch = (*scratch)[:0]
-		captures = *scratch
-	}
 	ok := q.matchSteps(pat.steps, 0, node, lang, source, &captures)
-	if scratch != nil {
-		*scratch = captures
-	}
 	if !ok {
 		return nil, false
 	}
@@ -726,10 +747,26 @@ func (q *Query) matchPatternWithScratch(pat *Pattern, node *Node, lang *Language
 		return nil, false
 	}
 	captures = q.applyDirectives(pat.predicates, captures, source)
-	if scratch != nil {
-		*scratch = captures
-	}
 	return captures, true
+}
+
+func (q *Query) matchPatternIntoBuffer(pat *Pattern, node *Node, lang *Language, source []byte, captures []QueryCapture) ([]QueryCapture, bool) {
+	if len(pat.steps) == 0 {
+		return captures, false
+	}
+
+	start := len(captures)
+	if !q.matchSteps(pat.steps, 0, node, lang, source, &captures) {
+		return captures[:start], false
+	}
+
+	matchCaptures := captures[start:]
+	if !q.matchesPredicates(pat.predicates, matchCaptures, lang, source) {
+		return captures[:start], false
+	}
+
+	matchCaptures = q.applyDirectives(pat.predicates, matchCaptures, source)
+	return captures[:start+len(matchCaptures)], true
 }
 
 func (q *Query) matchStepWithRollback(steps []QueryStep, stepIdx int, node *Node, lang *Language, source []byte, captures *[]QueryCapture) bool {

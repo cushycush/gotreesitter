@@ -27,7 +27,7 @@ type Highlighter struct {
 	injectionQuery     *Query
 	injectionResolver  HighlighterInjectionResolver
 	childQueries       map[string]*Query
-	matchBuffer        []QueryMatch // reused across Highlight calls to avoid per-call heap allocs
+	execBuffer         queryExecBuffer
 }
 
 // HighlighterOption configures a Highlighter.
@@ -117,8 +117,7 @@ func (h *Highlighter) parse(source []byte, oldTree *Tree) *Tree {
 }
 
 func (h *Highlighter) highlightTree(tree *Tree, source []byte) []HighlightRange {
-	h.matchBuffer = h.query.ExecuteInto(tree, h.matchBuffer[:0])
-	matches := h.matchBuffer
+	matches := h.query.executeNodeIntoBuffer(tree.RootNode(), tree.Language(), source, &h.execBuffer)
 	if len(matches) == 0 && h.injectionQuery == nil {
 		return nil
 	}
