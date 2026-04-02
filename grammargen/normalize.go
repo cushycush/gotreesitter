@@ -124,8 +124,9 @@ type symbolTable struct {
 	nextID              int
 	fieldMap            map[string]int
 	fields              []string
-	binaryRepeatMode    bool // use tree-sitter binary repeat helper shape
-	choiceLiftThreshold int  // if >0, lift inline CHOICE nodes exceeding this width
+	binaryRepeatMode    bool           // use tree-sitter binary repeat helper shape
+	choiceLiftThreshold int            // if >0, lift inline CHOICE nodes exceeding this width
+	conflictGroupRules  map[string]bool // rules in declared conflict groups (skip lifting)
 }
 
 const inlinePatternSymbolPrefix = "\x00inline_pattern:"
@@ -270,15 +271,11 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 	st := newSymbolTable()
 	st.binaryRepeatMode = g.BinaryRepeatMode
 	st.choiceLiftThreshold = g.ChoiceLiftThreshold
-	// Auto-enable choice lifting for large grammars to prevent Cartesian
-	// product explosion. Grammars with >200 rules (e.g. Fortran with 329)
-	// tend to produce hundreds of thousands of productions without lifting.
-	// DISABLED: aggressive choice lifting changes the grammar structure and
-	// breaks conflict group membership, causing parse regressions. Need a
-	// more targeted approach that preserves conflict group invariants.
-	// if st.choiceLiftThreshold == 0 && len(g.Rules) > 200 {
-	// 	st.choiceLiftThreshold = 16
-	// }
+	// Choice lifting for large grammars is available via ChoiceLiftThreshold
+	// but NOT auto-enabled: even selective lifting (skipping conflict group
+	// rules) changes the LALR automaton structure and causes regressions.
+	// The production explosion must be solved by reducing normalization
+	// expansion, not by post-hoc grammar restructuring.
 	ng := &NormalizedGrammar{EnableLRSplitting: g.EnableLRSplitting}
 
 	// Phase 1: Collect all string literals and register terminal symbols.
@@ -1519,6 +1516,9 @@ func maybeExtractWideChoice(r *Rule, parentName string, st *symbolTable, auxRule
 	if st.choiceLiftThreshold <= 0 || r == nil || r.Kind != RuleChoice {
 		return r
 	}
+	if len(st.conflictGroupRules) > 0 && st.conflictGroupRules[parentName] {
+		return r
+	}
 	if len(r.Children) <= st.choiceLiftThreshold {
 		return r
 	}
@@ -1579,6 +1579,12 @@ func liftLargeSeqChoices(seq *Rule, parentName string, st *symbolTable, auxRules
 		return seq
 	}
 
+	// Skip lifting for rules in declared conflict groups — changing their
+	// internal structure breaks LALR conflict resolution.
+	if len(st.conflictGroupRules) > 0 && st.conflictGroupRules[parentName] {
+		return seq
+	}
+
 	total := estimateAlternativeCount(seq)
 	if total <= threshold {
 		return seq
@@ -1627,6 +1633,20 @@ func liftLargeSeqChoices(seq *Rule, parentName string, st *symbolTable, auxRules
 	result := *seq
 	result.Children = newChildren
 	return &result
+}
+
+// collectConflictGroupRules returns the set of rule names that appear in any
+// declared conflict group. These rules must not have their internal choices
+// lifted into auxiliary nonterminals because doing so changes the conflict
+// group membership and breaks LALR conflict resolution.
+func collectConflictGroupRules(g *Grammar) map[string]bool {
+	rules := make(map[string]bool)
+	for _, group := range g.Conflicts {
+		for _, name := range group {
+			rules[name] = true
+		}
+	}
+	return rules
 }
 
 // hasLiftableChoice returns true if r contains a CHOICE node that contributes
@@ -3590,9 +3610,25 @@ func expandInlineRules(g *Grammar) *Grammar {
 	// For inline rules too wide to expand, rename them to be hidden (prefix '_')
 	// so they don't create visible nodes in the parse tree.
 	hiddenRenames := make(map[string]string)
+	// Count how many times each inline rule is referenced to estimate total
+	// expansion cost. An inline rule with 8 alternatives referenced 50 times
+	// creates 400 additional productions — but if each alternative has 10
+	// sub-alternatives, that becomes 4000.
+	inlineRefCounts := countInlineReferences(g)
 	for _, name := range g.Inline {
 		if rule, ok := g.Rules[name]; ok {
-			if choiceWidth(rule) <= 16 {
+			alts := estimateAlternativeCount(rule)
+			refs := inlineRefCounts[name]
+			if refs == 0 {
+				refs = 1
+			}
+			// Skip inlining if the total expansion cost exceeds a budget.
+			// The budget accounts for both the rule's internal expansion and
+			// how many times it's referenced. This prevents Fortran-style
+			// explosion where _statement (8 alts) × 50 refs = 400 extra
+			// productions that cross-product with other choices.
+			expansionCost := alts * refs
+			if alts <= 16 && expansionCost <= 100 {
 				inlineBodies[name] = rule
 			} else if !strings.HasPrefix(name, "_") {
 				// Too wide to inline but currently visible — make hidden.
@@ -3696,6 +3732,32 @@ func expandInlineRules(g *Grammar) *Grammar {
 
 // choiceWidth returns the number of top-level Choice alternatives in a rule.
 // For non-Choice rules, returns 1.
+// countInlineReferences counts how many times each inline rule name is
+// referenced across all grammar rules (including within inline rule bodies).
+func countInlineReferences(g *Grammar) map[string]int {
+	inlineSet := make(map[string]bool, len(g.Inline))
+	for _, name := range g.Inline {
+		inlineSet[name] = true
+	}
+	counts := make(map[string]int)
+	for _, name := range g.RuleOrder {
+		countSymbolRefs(g.Rules[name], inlineSet, counts)
+	}
+	return counts
+}
+
+func countSymbolRefs(r *Rule, targets map[string]bool, counts map[string]int) {
+	if r == nil {
+		return
+	}
+	if r.Kind == RuleSymbol && targets[r.Value] {
+		counts[r.Value]++
+	}
+	for _, c := range r.Children {
+		countSymbolRefs(c, targets, counts)
+	}
+}
+
 func choiceWidth(r *Rule) int {
 	if r == nil {
 		return 1

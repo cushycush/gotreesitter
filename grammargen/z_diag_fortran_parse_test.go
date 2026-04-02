@@ -25,10 +25,20 @@ func TestDiagFortranParse(t *testing.T) {
 		t.Fatalf("import: %v", err)
 	}
 
-	// Optionally disable inlining for testing
+	// Optionally modify inlining for testing
 	if os.Getenv("DIAG_FORTRAN_NO_INLINE") == "1" {
 		gram.Inline = nil
-		t.Log("WARNING: inline disabled for testing")
+		t.Log("WARNING: all inline disabled")
+	} else if os.Getenv("DIAG_FORTRAN_PARTIAL_INLINE") == "1" {
+		// Keep _top_level_item inline but skip _statement
+		var filtered []string
+		for _, name := range gram.Inline {
+			if name != "_statement" {
+				filtered = append(filtered, name)
+			}
+		}
+		gram.Inline = filtered
+		t.Logf("WARNING: partial inline, kept: %v", gram.Inline)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
