@@ -109,6 +109,10 @@ type NormalizedGrammar struct {
 	// conflictCache is built lazily by LR conflict resolution so repeated
 	// resolveActionConflict calls can reuse the same reverse indexes.
 	conflictCache *conflictResolutionCache
+
+	// EnableLRSplitting carries the opt-in split setting through normalization so
+	// later LR construction can retain split-only metadata only when needed.
+	EnableLRSplitting bool
 }
 
 // symbolTable is used during normalization.
@@ -266,7 +270,7 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 	st := newSymbolTable()
 	st.binaryRepeatMode = g.BinaryRepeatMode
 	st.choiceLiftThreshold = g.ChoiceLiftThreshold
-	ng := &NormalizedGrammar{}
+	ng := &NormalizedGrammar{EnableLRSplitting: g.EnableLRSplitting}
 
 	// Phase 1: Collect all string literals and register terminal symbols.
 	// Walk all rules to find string literals (anonymous terminals).
@@ -3003,11 +3007,76 @@ func deduplicateProductions(prods []Production) []Production {
 		result = append(result, p)
 	}
 
-	// Reassign contiguous production IDs.
-	for i := range result {
-		result[i].ProductionID = i
-	}
+	// Assign compact production IDs: productions with the same reduce shape
+	// (child count + alias pattern + field pattern) share a ProductionID.
+	// Tree-sitter C deduplicates production IDs this way — reduce actions only
+	// need to distinguish alias/field behavior, not individual productions.
+	compactProductionIDs(result)
 	return result
+}
+
+// compactProductionIDs assigns shared ProductionIDs to productions that have
+// identical reduce shapes: same child count (len(RHS)), same alias pattern,
+// and same field pattern. This matches tree-sitter C's behavior where the
+// runtime only uses ProductionID for alias sequence and field map lookups —
+// productions with identical lookup behavior share an ID.
+func compactProductionIDs(productions []Production) {
+	type shapeKey struct {
+		childCount int
+		aliases    string
+		fields     string
+	}
+
+	shapeToID := make(map[shapeKey]int)
+	nextID := 0
+
+	for i := range productions {
+		key := shapeKey{
+			childCount: len(productions[i].RHS),
+			aliases:    aliasShapeKey(productions[i].Aliases),
+			fields:     fieldShapeKey(productions[i].Fields),
+		}
+		id, ok := shapeToID[key]
+		if !ok {
+			id = nextID
+			shapeToID[key] = id
+			nextID++
+		}
+		productions[i].ProductionID = id
+	}
+}
+
+func aliasShapeKey(aliases []AliasInfo) string {
+	if len(aliases) == 0 {
+		return ""
+	}
+	// Build a deterministic string key from alias entries.
+	// Sort by child index for stability.
+	buf := make([]byte, 0, len(aliases)*20)
+	for _, a := range aliases {
+		buf = append(buf, byte(a.ChildIndex>>8), byte(a.ChildIndex))
+		buf = append(buf, a.Name...)
+		if a.Named {
+			buf = append(buf, 1)
+		} else {
+			buf = append(buf, 0)
+		}
+		buf = append(buf, '|')
+	}
+	return string(buf)
+}
+
+func fieldShapeKey(fields []FieldAssign) string {
+	if len(fields) == 0 {
+		return ""
+	}
+	buf := make([]byte, 0, len(fields)*20)
+	for _, f := range fields {
+		buf = append(buf, byte(f.ChildIndex>>8), byte(f.ChildIndex))
+		buf = append(buf, f.FieldName...)
+		buf = append(buf, '|')
+	}
+	return string(buf)
 }
 
 // flattenHiddenChoiceAlts inlines single-symbol (pass-through) alternatives
