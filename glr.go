@@ -352,7 +352,7 @@ func stackHash(s glrStack) uint64 {
 	return h
 }
 
-const glrNodeEquivCacheSize = 32768
+const glrNodeEquivCacheSize = 131072
 
 func (s *glrMergeScratch) beginEquivEpoch() {
 	if s == nil {
@@ -409,6 +409,8 @@ func nodeEquivCacheIndex(a, b *Node, depth int) int {
 	x := uint64(uintptr(unsafe.Pointer(a)))
 	y := uint64(uintptr(unsafe.Pointer(b)))
 	h := x ^ (y + 0x9e3779b97f4a7c15 + (x << 6) + (x >> 2))
+	// Mix in symbol to improve distribution for arena-sequential pointers.
+	h ^= (uint64(a.symbol) | uint64(b.symbol)<<16) * 0x85ebca6b
 	h ^= uint64(depth) * 0x517cc1b727220a95
 	return int(h & uint64(glrNodeEquivCacheSize-1))
 }
@@ -669,33 +671,30 @@ func stackEntryNodesEquivalentFrontier(a, b *Node, depth int) bool {
 }
 
 func stackEntryNodesEquivalentFrontierWithScratch(scratch *glrMergeScratch, a, b *Node, depth int) bool {
-	if a != nil && b != nil {
-		if hit, ok := lookupNodeEquivCache(scratch, a, b, depth); ok {
-			return hit
-		}
-	}
+	// Cheap checks first — skip cache for trivial cases.
 	if a == b {
-		storeNodeEquivCache(scratch, a, b, depth, true)
 		return true
 	}
 	if a == nil || b == nil {
-		storeNodeEquivCache(scratch, a, b, depth, false)
 		return false
 	}
-	if a.symbol != b.symbol {
-		storeNodeEquivCache(scratch, a, b, depth, false)
-		return false
-	}
-	if a.startByte != b.startByte ||
+	if a.symbol != b.symbol ||
+		a.startByte != b.startByte ||
 		a.endByte != b.endByte ||
-		a.isExtra != b.isExtra ||
+		len(a.children) != len(b.children) {
+		return false
+	}
+	// Cache lookup only for non-trivial comparisons.
+	if hit, ok := lookupNodeEquivCache(scratch, a, b, depth); ok {
+		return hit
+	}
+	if a.isExtra != b.isExtra ||
 		a.isNamed != b.isNamed ||
 		a.isMissing != b.isMissing ||
 		a.hasError != b.hasError ||
 		a.parseState != b.parseState ||
 		a.preGotoState != b.preGotoState ||
-		a.productionID != b.productionID ||
-		len(a.children) != len(b.children) {
+		a.productionID != b.productionID {
 		storeNodeEquivCache(scratch, a, b, depth, false)
 		return false
 	}
