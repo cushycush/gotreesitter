@@ -10,3 +10,19 @@ func (b grammarBlob) close() {
 		b.release()
 	}
 }
+
+// BlobByName returns the raw compressed grammar blob for the named language
+// (e.g. "go", "python"). Returns nil if the language blob is not found.
+// The returned bytes are the gzip+gob encoded grammar data suitable for
+// serving to browser-side WASM modules that decode grammars on demand.
+func BlobByName(name string) []byte {
+	blob, err := readGrammarBlob(name + ".bin")
+	if err != nil {
+		return nil
+	}
+	// Copy the data so the caller owns it and we can release the blob.
+	data := make([]byte, len(blob.data))
+	copy(data, blob.data)
+	blob.close()
+	return data
+}
