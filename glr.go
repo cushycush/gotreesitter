@@ -681,22 +681,19 @@ func stackEntryNodesEquivalentFrontierWithScratch(scratch *glrMergeScratch, a, b
 	if a.symbol != b.symbol ||
 		a.startByte != b.startByte ||
 		a.endByte != b.endByte ||
-		len(a.children) != len(b.children) {
-		return false
-	}
-	// Cache lookup only for non-trivial comparisons.
-	if hit, ok := lookupNodeEquivCache(scratch, a, b, depth); ok {
-		return hit
-	}
-	if a.isExtra != b.isExtra ||
+		len(a.children) != len(b.children) ||
+		a.isExtra != b.isExtra ||
 		a.isNamed != b.isNamed ||
 		a.isMissing != b.isMissing ||
 		a.hasError != b.hasError ||
 		a.parseState != b.parseState ||
 		a.preGotoState != b.preGotoState ||
 		a.productionID != b.productionID {
-		storeNodeEquivCache(scratch, a, b, depth, false)
 		return false
+	}
+	// Cache lookup only for recursive children comparison.
+	if hit, ok := lookupNodeEquivCache(scratch, a, b, depth); ok {
+		return hit
 	}
 	if a.hasError && b.hasError {
 		storeNodeEquivCache(scratch, a, b, depth, true)
