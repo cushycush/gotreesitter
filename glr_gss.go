@@ -229,6 +229,31 @@ func (s *gssScratch) allocNode(entry stackEntry, prev *gssNode, depth int) *gssN
 	if s == nil {
 		return &gssNode{entry: entry, prev: prev, depth: depth, hash: hash}
 	}
+
+	// Fast path: current slab has space. Kept small for inlining.
+	if cur := s.slabCursor; cur >= 0 && cur < len(s.slabs) {
+		slab := &s.slabs[cur]
+		if slab.used < len(slab.data) {
+			idx := slab.used
+			slab.used++
+			s.usedTotal++
+			if s.singleStackMode {
+				s.singleStackAllocs++
+			} else {
+				s.multiStackAllocs++
+			}
+			n := &slab.data[idx]
+			n.entry = entry
+			n.prev = prev
+			n.depth = depth
+			n.hash = hash
+			return n
+		}
+	}
+	return s.allocNodeSlow(entry, prev, depth, hash)
+}
+
+func (s *gssScratch) allocNodeSlow(entry stackEntry, prev *gssNode, depth int, hash uint64) *gssNode {
 	if len(s.slabs) == 0 {
 		capacity := defaultGSSNodeSlabCap
 		if s.initialCap > capacity {
