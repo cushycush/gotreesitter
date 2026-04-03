@@ -426,7 +426,7 @@ func (a *nodeArena) allocNodeFast() *Node {
 	if a.used < len(a.nodes) {
 		n := &a.nodes[a.used]
 		a.used++
-		*n = Node{}
+		// Node is already zeroed: fresh slabs by make(), reused slabs by reset().
 		return n
 	}
 	return a.allocNodeSlow()
@@ -459,7 +459,7 @@ func (a *nodeArena) allocNodeSlow() *Node {
 		a.nodeSlabCursor = i
 		a.used++
 		n := &slab.data[idx]
-		*n = Node{}
+		// Node is already zeroed: fresh slabs by make(), reused slabs by reset().
 		return n
 	}
 }
