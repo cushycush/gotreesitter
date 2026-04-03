@@ -40,6 +40,7 @@ var (
 )
 
 const (
+	minNsOpFloor     = 1.0 // sub-nanosecond jitter on fast benchmarks is CI noise, not regression
 	minBytesOpFloor  = 256.0
 	minAllocsOpFloor = 1.0
 )
@@ -107,8 +108,8 @@ func main() {
 	base := aggregate(baseRaw)
 	head := aggregate(headRaw)
 
-	fmt.Printf("benchgate thresholds: ns<=+%.2f%% B<=+%.2f%% allocs<=+%.2f%% (min +%.0f B/op, +%.0f alloc/op floors)\n",
-		maxNsRegression*100.0, maxBytesRegression*100.0, maxAllocsRegression*100.0, minBytesOpFloor, minAllocsOpFloor)
+	fmt.Printf("benchgate thresholds: ns<=+%.2f%% B<=+%.2f%% allocs<=+%.2f%% (min +%.0fns, +%.0f B/op, +%.0f alloc/op floors)\n",
+		maxNsRegression*100.0, maxBytesRegression*100.0, maxAllocsRegression*100.0, minNsOpFloor, minBytesOpFloor, minAllocsOpFloor)
 	fmt.Println("benchmark\tmetric\tbase\thead\tdelta\tstatus")
 
 	failed := false
@@ -335,7 +336,14 @@ func evaluateMetric(name, metric string, base, head, maxRegression float64) metr
 		}
 		return ev
 	}
-	if ev.Delta > maxRegression {
+	// For very fast benchmarks (e.g. ~8ns), percentage-only gates are too
+	// sensitive to CI noise. Apply a minimum absolute ns slack so sub-ns
+	// jitter doesn't trip the gate.
+	allowedAbsNs := base * maxRegression
+	if allowedAbsNs < minNsOpFloor {
+		allowedAbsNs = minNsOpFloor
+	}
+	if (head - base) > allowedAbsNs {
 		ev.Failed = true
 	}
 	return ev
