@@ -1,5 +1,7 @@
 package gotreesitter
 
+import "slices"
+
 type queryChildStepInfo struct {
 	stepIdx int
 	field   FieldID
@@ -66,6 +68,19 @@ func (q *Query) matchStepsWithParent(steps []QueryStep, stepIdx int, node *Node,
 
 func (q *Query) appendCaptureIDs(ids []int, legacyID int, node *Node, captures *[]QueryCapture) {
 	if len(ids) > 0 {
+		if len(q.disabledCaptureName) == 0 {
+			start := len(*captures)
+			*captures = slices.Grow(*captures, len(ids))
+			expanded := (*captures)[:start+len(ids)]
+			for i, captureID := range ids {
+				expanded[start+i] = QueryCapture{
+					Name: q.captures[captureID],
+					Node: node,
+				}
+			}
+			*captures = expanded
+			return
+		}
 		for _, captureID := range ids {
 			if q.isCaptureDisabled(q.captures[captureID]) {
 				continue
@@ -78,6 +93,13 @@ func (q *Query) appendCaptureIDs(ids []int, legacyID int, node *Node, captures *
 		return
 	}
 	if legacyID >= 0 {
+		if len(q.disabledCaptureName) == 0 {
+			*captures = append(*captures, QueryCapture{
+				Name: q.captures[legacyID],
+				Node: node,
+			})
+			return
+		}
 		if q.isCaptureDisabled(q.captures[legacyID]) {
 			return
 		}

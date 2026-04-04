@@ -41,6 +41,16 @@ type LangEntry struct {
 var registry []LangEntry
 var highlightInheritanceResolved bool
 
+// registryMu guards registry, highlightInheritanceResolved, extIndex, and
+// extensionAliases. Writers hold Lock(); readers hold RLock(). Never acquire
+// registryMu while calling ensureBuiltinLanguagesRegistered — Register itself
+// acquires the write lock, which would cause a deadlock.
+var registryMu sync.RWMutex
+
+// extIndex caches a suffix→LangEntry map for O(1) extension lookups in DetectLanguage.
+// Invalidated (set to nil) whenever Register is called.
+var extIndex map[string]*LangEntry
+
 var (
 	builtinRegistryOnce sync.Once
 	builtinRegistryBusy atomic.Bool
@@ -54,6 +64,32 @@ func ensureBuiltinLanguagesRegistered() {
 		}()
 		registerBuiltinLanguages()
 	})
+}
+
+// ensureReady guarantees that builtin languages are registered and the lazy
+// metadata (highlight inheritance, extIndex) are up to date. Callers MUST NOT
+// hold registryMu when calling this — ensureBuiltinLanguagesRegistered calls
+// Register, which acquires the write lock.
+func ensureReady() {
+	ensureBuiltinLanguagesRegistered()
+
+	registryMu.RLock()
+	ready := highlightInheritanceResolved && extIndex != nil
+	registryMu.RUnlock()
+
+	if ready {
+		return
+	}
+
+	// Slow path: acquire write lock and (re-)check before doing the work.
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	if !highlightInheritanceResolved {
+		resolveHighlightInheritance()
+	}
+	if extIndex == nil {
+		buildExtIndex()
+	}
 }
 
 // Register adds a language to the registry. If an entry with the same name
@@ -71,15 +107,20 @@ func Register(entry LangEntry) {
 	if entry.TokenSourceFactory == nil {
 		entry.TokenSourceFactory = defaultTokenSourceFactory(entry.Name)
 	}
+
+	registryMu.Lock()
+	defer registryMu.Unlock()
 	for i := range registry {
 		if registry[i].Name == entry.Name {
 			registry[i] = entry
 			highlightInheritanceResolved = false
+			extIndex = nil
 			return
 		}
 	}
 	registry = append(registry, entry)
 	highlightInheritanceResolved = false
+	extIndex = nil
 }
 
 // RegisterExtension registers a grammargen-based grammar extension with the
@@ -134,21 +175,27 @@ func RegisterExtension(ext ExtensionEntry) {
 		InheritHighlights: ext.InheritHighlights,
 	})
 
-	// Register aliases for markdown fence resolution
-	for _, alias := range ext.Aliases {
-		if alias != ext.Name {
-			extensionAliases[alias] = ext.Name
+	// Register aliases for markdown fence resolution under the write lock so
+	// readers in DetectLanguageByName see a consistent extensionAliases state.
+	if len(ext.Aliases) > 0 {
+		registryMu.Lock()
+		for _, alias := range ext.Aliases {
+			if alias != ext.Name {
+				extensionAliases[alias] = ext.Name
+			}
 		}
+		registryMu.Unlock()
 	}
 }
 
 // extensionAliases maps markdown fence aliases to canonical names.
+// Protected by registryMu.
 var extensionAliases = map[string]string{}
 
 // resolveHighlightInheritance composes highlight queries for languages that
-// inherit from a parent. Called lazily on first access.
+// inherit from a parent. MUST be called with registryMu.Lock() held.
+// Callers are responsible for ensuring builtins are registered first.
 func resolveHighlightInheritance() {
-	ensureBuiltinLanguagesRegistered()
 	if highlightInheritanceResolved {
 		return
 	}
@@ -168,13 +215,31 @@ func resolveHighlightInheritance() {
 	}
 }
 
+// buildExtIndex builds a suffix→LangEntry map from the current registry.
+// MUST be called with registryMu.Lock() held.
+func buildExtIndex() {
+	idx := make(map[string]*LangEntry, len(registry)*2)
+	for i := range registry {
+		for _, ext := range registry[i].Extensions {
+			// First registration wins; mirrors the O(n²) loop behaviour.
+			if _, exists := idx[ext]; !exists {
+				idx[ext] = &registry[i]
+			}
+		}
+	}
+	extIndex = idx
+}
+
 // DetectLanguage returns the LangEntry for a filename, or nil if unknown.
 // Checks in order: exact filename match (linguist), registry extensions,
 // then linguist extended extensions. Exact filenames take priority over
 // suffix matching so that e.g. ".tmux.conf" resolves to bash rather than
 // matching the generic ".conf" extension.
 func DetectLanguage(filename string) *LangEntry {
-	resolveHighlightInheritance()
+	ensureReady()
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+
 	// 1. Exact filename match (e.g., "Makefile", "Dockerfile", ".bashrc",
 	//    "nginx.conf"). Most specific, so checked first.
 	base := path.Base(filename)
@@ -182,12 +247,21 @@ func DetectLanguage(filename string) *LangEntry {
 		return lookupByName(grammarName)
 	}
 
-	// 2. Match by registry extensions (from languages.manifest).
-	for i := range registry {
-		for _, ext := range registry[i].Extensions {
-			if strings.HasSuffix(filename, ext) {
-				return &registry[i]
-			}
+	// 2. Match by registry extensions — O(1) map lookup.
+	// Collect up to 4 dot-suffixes from longest to shortest using a stack
+	// array to avoid heap allocation (e.g. ".blade.php" before ".php").
+	var suffixes [4]string
+	nsuf := 0
+	for i := len(base) - 1; i > 0 && nsuf < len(suffixes); i-- {
+		if base[i] == '.' {
+			suffixes[nsuf] = base[i:]
+			nsuf++
+		}
+	}
+	// suffixes[0] is shortest; check longest (highest index) first.
+	for i := nsuf - 1; i >= 0; i-- {
+		if entry, ok := extIndex[suffixes[i]]; ok {
+			return entry
 		}
 	}
 
@@ -205,6 +279,10 @@ func DetectLanguage(filename string) *LangEntry {
 // DetectLanguageByShebang checks the first line of content for shebang matches.
 // Handles both "#!/usr/bin/env python3" and "#!/usr/bin/python3" forms.
 func DetectLanguageByShebang(firstLine string) *LangEntry {
+	ensureReady()
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+
 	// 1. Registry shebangs (exact prefix match).
 	for i := range registry {
 		for _, shebang := range registry[i].Shebangs {
@@ -266,7 +344,9 @@ func extractInterpreter(line string) string {
 // Languages that lack an explicit TagsQuery will have an empty TagsQuery
 // field; call [ResolveTagsQuery] when you actually need the inferred query.
 func AllLanguages() []LangEntry {
-	resolveHighlightInheritance()
+	ensureReady()
+	registryMu.RLock()
+	defer registryMu.RUnlock()
 	out := make([]LangEntry, len(registry))
 	copy(out, registry)
 	return out
@@ -284,8 +364,8 @@ func ResolveTagsQuery(entry LangEntry) string {
 }
 
 // lookupByName returns the LangEntry with the given grammar name, or nil.
+// MUST be called with registryMu.RLock() or Lock() held.
 func lookupByName(name string) *LangEntry {
-	resolveHighlightInheritance()
 	for i := range registry {
 		if registry[i].Name == name {
 			return &registry[i]
@@ -307,7 +387,12 @@ func normalizeLinguistKey(name string) string {
 // Direct grammar names always take priority over linguist aliases to prevent
 // shadowing (e.g., "eex" resolves to the eex grammar, not heex via alias).
 func DetectLanguageByName(name string) *LangEntry {
+	ensureReady()
 	key := normalizeLinguistKey(name)
+
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+
 	// Direct grammar name takes priority over alias mapping.
 	if entry := lookupByName(key); entry != nil {
 		return entry
