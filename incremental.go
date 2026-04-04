@@ -189,6 +189,13 @@ func (c *reuseCursor) reusableIndexedNode(cur *Node) bool {
 	if cur == nil {
 		return false
 	}
+	// Top-level candidates are children of root which is always dirty when
+	// edits are present. Only reuse them when their byte content is identical
+	// in old and new source — shifted positions may differ.
+	if c.hasEdits && !nodeBytesEqual(cur.startByte, cur.endByte, c.oldSource, c.newSource) {
+		c.rejectDirty++
+		return false
+	}
 	dirtyHere := cur.dirty
 	if dirtyHere && nodeBytesEqual(cur.startByte, cur.endByte, c.oldSource, c.newSource) {
 		cur.dirty = false
@@ -265,7 +272,8 @@ func (c *reuseCursor) advance() *Node {
 			})
 		}
 
-		if frame.underDirty && c.hasEdits && cur.endByte <= c.minEditAt {
+		if frame.underDirty && c.hasEdits &&
+			!nodeBytesEqual(cur.startByte, cur.endByte, c.oldSource, c.newSource) {
 			c.rejectAncestorDirtyBeforeEdit++
 			continue
 		}
