@@ -352,6 +352,8 @@ func stackHash(s glrStack) uint64 {
 	return h
 }
 
+// 4x previous size (32768) to reduce direct-mapped collision rate for
+// arena-sequential pointer hashing under heavy GLR workloads.
 const glrNodeEquivCacheSize = 131072
 
 func (s *glrMergeScratch) beginEquivEpoch() {
