@@ -9,6 +9,14 @@ for tags and release notes while still in `0.x`.
 
 - Nothing yet.
 
+## [0.13.4] - 2026-04-05
+
+### Fixed
+- **Injection parser arena leak** (PR #24 by @vdergachev): `InjectionParser.Parse` and `ParseIncremental` never released previous parse trees, causing the arena pool to allocate new arenas instead of reusing freed ones (~3 MB per parse of a 180-byte HTML+JS document). Fixed by tracking the previous result and releasing it before the next parse. Also fixes a use-after-free in `ParseIncremental` when the caller passes back the previous `Parse` result as `oldResult`.
+
+### Added
+- Injection parser benchmarks: `BenchmarkInjectionParser_Parse`, `BenchmarkInjectionParser_ParseIncremental`, `BenchmarkInjectionParser_ParseReuse`, and arena-reuse regression tests.
+
 ## [0.13.3] - 2026-04-04
 
 ### Added
