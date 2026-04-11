@@ -531,6 +531,12 @@ func generateWithReportCtx(bgCtx context.Context, g *Grammar, opts reportBuildOp
 			sr.GLRBefore = glrBefore
 			sr.GLRAfter = glrAfter
 
+			if os.Getenv("GTS_GRAMMARGEN_DIAG_LR_SPLIT") == "1" {
+				fmt.Printf("lr-split: grammar=%s candidates=%d states_split=%d new_states=%d conflicts=%d→%d glr=%d→%d err=%v\n",
+					g.Name, len(splitCandidates), splitCount, tables.StateCount-statesBefore,
+					len(diags), len(diagsAfter), glrBefore, glrAfter, splitErr)
+			}
+
 			keepSplit := glrAfter < glrBefore || len(diagsAfter) < len(diags) ||
 				(extTokenCandidates > 0 && splitCount > 0)
 
