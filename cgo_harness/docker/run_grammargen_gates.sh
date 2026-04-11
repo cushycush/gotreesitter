@@ -14,7 +14,7 @@
 #     "The parser is still correct."
 #
 #   Gate 2 — Promotion Board (only after Gate 1)
-#     Reduced frontier (7-language breaker set), full parity, perf trio.
+#     Reduced frontier (6-language breaker set), full parity, perf trio.
 #     "Grammargen earns promotion into the parser-locked lane."
 #
 # The key rule: a grammargen change must never "fix" parser correctness by
@@ -50,7 +50,7 @@ CPUS_LIMIT="4"
 PIDS_LIMIT="4096"
 LABEL=""
 BUILD_IMAGE=1
-FRONTIER_LANGS="bash,c,c_sharp,cpp,dart,python,scala"
+FRONTIER_LANGS="bash,c,c_sharp,dart,python,scala"
 IMAGE_TAG="gotreesitter/cgo-harness:go1.24-local"
 
 PARSER_LOCK_COMMIT="ff0bf8d"
@@ -73,7 +73,7 @@ Options:
   --cpus <count>          CPU limit (default: 4)
   --label <name>          Run label suffix
   --no-build              Skip docker image build
-  --frontier-langs <list> Override reduced frontier (default: bash,c,c_sharp,cpp,dart,python,scala)
+  --frontier-langs <list> Override reduced frontier (default: bash,c,c_sharp,dart,python,scala)
   -h, --help              Show this help
 
 Policy:

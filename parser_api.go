@@ -106,6 +106,18 @@ func parseWithSnippetParser(lang *Language, source []byte) (*Tree, error) {
 	return parser.Parse(source)
 }
 
+type closeableTokenSource interface {
+	Close()
+}
+
+func manageTokenSourceLifetime(ts TokenSource) func() {
+	closer, ok := ts.(closeableTokenSource)
+	if !ok {
+		return func() {}
+	}
+	return closer.Close
+}
+
 // ParseOption configures ParseWith behavior.
 type ParseOption func(*parseConfig)
 
@@ -311,6 +323,7 @@ func (p *Parser) Parse(source []byte) (*Tree, error) {
 	}()
 	lexer := NewLexer(p.language.LexStates, source)
 	ts := acquireDFATokenSource(lexer, p.language, p.lookupActionIndex, p.hasKeywordState)
+	defer ts.Close()
 	deterministicExternalConflicts := fullParseUsesDeterministicExternalConflicts(p.language)
 	initialMaxStacks := fullParseInitialMaxStacks(p.language, p.maxConflictWidth)
 	tree := p.parseInternal(source, p.wrapIncludedRanges(ts), nil, nil, arenaClassFull, nil, initialMaxStacks, 0, 0, deterministicExternalConflicts)
@@ -329,6 +342,8 @@ func (p *Parser) ParseWithTokenSource(source []byte, ts TokenSource) (*Tree, err
 	if err := p.checkLanguageCompatible(); err != nil {
 		return nil, err
 	}
+	releaseTS := manageTokenSourceLifetime(ts)
+	defer releaseTS()
 	prevFactory := p.reparseFactory
 	p.reparseFactory = p.tokenSourceReparseFactory(ts)
 	defer func() {
@@ -365,6 +380,7 @@ func (p *Parser) ParseIncremental(source []byte, oldTree *Tree) (*Tree, error) {
 	}()
 	lexer := NewLexer(p.language.LexStates, source)
 	ts := acquireDFATokenSource(lexer, p.language, p.lookupActionIndex, p.hasKeywordState)
+	defer ts.Close()
 	tree := p.parseIncrementalInternal(source, oldTree, p.wrapIncludedRanges(ts), nil)
 	normalizeReturnedIncrementalTree(tree, oldTree, source, p.language)
 	return tree, nil
@@ -376,6 +392,8 @@ func (p *Parser) ParseIncrementalWithTokenSource(source []byte, oldTree *Tree, t
 	if err := p.checkLanguageCompatible(); err != nil {
 		return nil, err
 	}
+	releaseTS := manageTokenSourceLifetime(ts)
+	defer releaseTS()
 	if canReuseUnchangedTree(source, oldTree, p.language) {
 		return oldTree, nil
 	}
@@ -408,6 +426,7 @@ func (p *Parser) ParseIncrementalProfiled(source []byte, oldTree *Tree) (*Tree, 
 	}()
 	lexer := NewLexer(p.language.LexStates, source)
 	ts := acquireDFATokenSource(lexer, p.language, p.lookupActionIndex, p.hasKeywordState)
+	defer ts.Close()
 	timing := &incrementalParseTiming{}
 	tree := p.parseIncrementalInternal(source, oldTree, p.wrapIncludedRanges(ts), timing)
 	normalizeReturnedIncrementalTree(tree, oldTree, source, p.language)
@@ -420,6 +439,8 @@ func (p *Parser) ParseIncrementalWithTokenSourceProfiled(source []byte, oldTree 
 	if err := p.checkLanguageCompatible(); err != nil {
 		return nil, IncrementalParseProfile{}, err
 	}
+	releaseTS := manageTokenSourceLifetime(ts)
+	defer releaseTS()
 	if canReuseUnchangedTree(source, oldTree, p.language) {
 		return oldTree, IncrementalParseProfile{}, nil
 	}

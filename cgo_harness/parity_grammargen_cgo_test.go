@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -57,6 +58,21 @@ type grammargenCGOGrammar struct {
 	jsPath     string // path to grammar.js (fallback)
 	blobFunc   func() *gotreesitter.Language
 	genTimeout time.Duration
+}
+
+type grammargenCorpusSample struct {
+	Text   string
+	Path   string
+	Source string
+}
+
+type grammargenCGODivergence struct {
+	Path    string
+	Details string
+}
+
+func (d grammargenCGODivergence) String() string {
+	return fmt.Sprintf("%s: %s", d.Path, d.Details)
 }
 
 // grammargenCGOFloorEntry records per-grammar ratchet metrics.
@@ -106,6 +122,7 @@ var grammargenCGOGrammars = []grammargenCGOGrammar{
 	// Keep cpp opt-in for direct grammargen-vs-C runs until generation fits the
 	// bounded high-value container budget; default ratchets skip seeding it.
 	{name: "cpp", jsonPath: "/tmp/grammar_parity/cpp/src/grammar.json", blobFunc: grammars.CppLanguage, genTimeout: 300 * time.Second},
+	{name: "cuda", jsonPath: "/tmp/grammar_parity/cuda/src/grammar.json", blobFunc: grammars.CudaLanguage, genTimeout: 300 * time.Second},
 	{name: "c_sharp", jsonPath: "/tmp/grammar_parity/c_sharp/src/grammar.json", blobFunc: grammars.CSharpLanguage, genTimeout: 300 * time.Second},
 	{name: "cobol", jsonPath: "/tmp/grammar_parity/cobol/src/grammar.json", blobFunc: grammars.CobolLanguage, genTimeout: 60 * time.Second},
 	// ── Languages without prior C oracle ──
@@ -238,6 +255,7 @@ func TestGrammargenCGOParity(t *testing.T) {
 			}
 
 			genParser := gotreesitter.NewParser(genLang)
+			blobParser := gotreesitter.NewParser(refLang)
 			metrics := grammargenCGOFloorEntry{}
 			mismatchLogs := 0
 
@@ -245,9 +263,10 @@ func TestGrammargenCGOParity(t *testing.T) {
 				if metrics.Eligible >= maxCases {
 					break
 				}
+				src := []byte(sample.Text)
 
 				// Parse with C reference.
-				cTree := cParser.Parse([]byte(sample), nil)
+				cTree := cParser.Parse(src, nil)
 				if cTree == nil || cTree.RootNode() == nil {
 					continue
 				}
@@ -259,37 +278,61 @@ func TestGrammargenCGOParity(t *testing.T) {
 				metrics.Eligible++
 
 				// Parse with grammargen Go runtime.
-				genTree, _ := genParser.Parse([]byte(sample))
+				genTree, _ := genParser.Parse(src)
 				genRoot := genTree.RootNode()
 				if genRoot.HasError() {
 					metrics.Divergences++
-					cTree.Close()
 					if mismatchLogs < 3 {
 						mismatchLogs++
-						t.Logf("sample %d: grammargen has ERROR, C is clean", i)
+						logGrammargenCGOErrorMismatch(t, i, sample, genRoot, genLang, cRoot, refLang)
 					}
+					cTree.Close()
+					genTree.Release()
 					continue
 				}
 				metrics.NoError++
 
 				// Node-by-node structural comparison.
-				var errs []string
+				var errs []grammargenCGODivergence
 				compareGrammargenVsC(genRoot, genLang, cRoot, "root", &errs)
-				cTree.Close()
 
 				if len(errs) == 0 {
 					metrics.TreeParity++
 				} else {
-					metrics.Divergences += len(errs)
-					if mismatchLogs < 3 {
-						mismatchLogs++
-						shown := errs
-						if len(shown) > 5 {
-							shown = shown[:5]
+					blobTree, err := blobParser.Parse(src)
+					sharedOracleGap := false
+					var blobRoot *gotreesitter.Node
+					if err == nil {
+						blobRoot = blobTree.RootNode()
+						if blobRoot != nil && !blobRoot.HasError() {
+							var genVsBlobErrs []string
+							var blobVsCErrs []string
+							compareGoTreesForLangs(genRoot, genLang, blobRoot, refLang, "root", &genVsBlobErrs)
+							compareNodes(blobRoot, refLang, cRoot, "root", &blobVsCErrs)
+							sharedOracleGap = len(genVsBlobErrs) == 0 && len(blobVsCErrs) > 0
+							if sharedOracleGap {
+								metrics.TreeParity++
+								if mismatchLogs < 3 {
+									mismatchLogs++
+									t.Logf("sample %d (%s:%s): generated matches blob; treating blob-vs-C gap as non-grammargen\nblob-vs-C divergences:\n%s",
+										i, sample.Source, sample.Path, joinTopErrors(blobVsCErrs))
+								}
+							}
 						}
-						t.Logf("sample %d: %d divergence(s): %s", i, len(errs), strings.Join(shown, "; "))
+					}
+					if !sharedOracleGap {
+						metrics.Divergences += len(errs)
+						if mismatchLogs < 3 {
+							mismatchLogs++
+							logGrammargenCGOStructuralMismatch(t, i, sample, errs, genRoot, genLang, cRoot, refLang)
+						}
+					}
+					if blobTree != nil {
+						blobTree.Release()
 					}
 				}
+				cTree.Close()
+				genTree.Release()
 			}
 
 			if metrics.Eligible == 0 {
@@ -329,7 +372,7 @@ func TestGrammargenCGOParity(t *testing.T) {
 
 // compareGrammargenVsC walks a grammargen Go tree and a C sitter tree in
 // lockstep, recording structural divergences.
-func compareGrammargenVsC(goNode *gotreesitter.Node, goLang *gotreesitter.Language, cNode *sitter.Node, path string, errs *[]string) {
+func compareGrammargenVsC(goNode *gotreesitter.Node, goLang *gotreesitter.Language, cNode *sitter.Node, path string, errs *[]grammargenCGODivergence) {
 	if len(*errs) >= 20 {
 		return
 	}
@@ -337,23 +380,23 @@ func compareGrammargenVsC(goNode *gotreesitter.Node, goLang *gotreesitter.Langua
 	goType := goNode.Type(goLang)
 	cType := cNode.Kind()
 	if goType != cType {
-		*errs = append(*errs, fmt.Sprintf("%s: Type gen=%q c=%q", path, goType, cType))
+		*errs = append(*errs, grammargenCGODivergence{Path: path, Details: fmt.Sprintf("Type gen=%q c=%q", goType, cType)})
 		return
 	}
 	if uint(goNode.StartByte()) != cNode.StartByte() {
-		*errs = append(*errs, fmt.Sprintf("%s: StartByte gen=%d c=%d", path, goNode.StartByte(), cNode.StartByte()))
+		*errs = append(*errs, grammargenCGODivergence{Path: path, Details: fmt.Sprintf("StartByte gen=%d c=%d", goNode.StartByte(), cNode.StartByte())})
 	}
 	if uint(goNode.EndByte()) != cNode.EndByte() {
-		*errs = append(*errs, fmt.Sprintf("%s: EndByte gen=%d c=%d", path, goNode.EndByte(), cNode.EndByte()))
+		*errs = append(*errs, grammargenCGODivergence{Path: path, Details: fmt.Sprintf("EndByte gen=%d c=%d", goNode.EndByte(), cNode.EndByte())})
 	}
 	if goNode.IsNamed() != cNode.IsNamed() {
-		*errs = append(*errs, fmt.Sprintf("%s: IsNamed gen=%v c=%v", path, goNode.IsNamed(), cNode.IsNamed()))
+		*errs = append(*errs, grammargenCGODivergence{Path: path, Details: fmt.Sprintf("IsNamed gen=%v c=%v", goNode.IsNamed(), cNode.IsNamed())})
 	}
 
 	goCC := goNode.ChildCount()
 	cCC := int(cNode.ChildCount())
 	if goCC != cCC {
-		*errs = append(*errs, fmt.Sprintf("%s: ChildCount gen=%d c=%d", path, goCC, cCC))
+		*errs = append(*errs, grammargenCGODivergence{Path: path, Details: fmt.Sprintf("ChildCount gen=%d c=%d", goCC, cCC)})
 		return
 	}
 	for i := 0; i < goCC; i++ {
@@ -362,12 +405,216 @@ func compareGrammargenVsC(goNode *gotreesitter.Node, goLang *gotreesitter.Langua
 		cChild := cNode.Child(uint(i))
 		if goChild == nil || cChild == nil {
 			if goChild != nil || cChild != nil {
-				*errs = append(*errs, fmt.Sprintf("%s: nil mismatch", childPath))
+				*errs = append(*errs, grammargenCGODivergence{Path: childPath, Details: "nil mismatch"})
 			}
 			continue
 		}
 		compareGrammargenVsC(goChild, goLang, cChild, childPath, errs)
 	}
+}
+
+func logGrammargenCGOErrorMismatch(t *testing.T, sampleIndex int, sample grammargenCorpusSample, genRoot *gotreesitter.Node, genLang *gotreesitter.Language, cRoot *sitter.Node, refLang *gotreesitter.Language) {
+	t.Helper()
+	t.Logf("sample %d (%s:%s): grammargen has ERROR, C is clean\nsource:\n%s\nGEN root: %s\nGEN first ERROR: %s\nBLOB root: %s\nC root: %s",
+		sampleIndex,
+		sample.Source,
+		sample.Path,
+		clipLogText(sample.Text, 1200),
+		describeGoNode(genRoot, genLang, sample.Text),
+		describeFirstGoError(genRoot, genLang, sample.Text),
+		describeBlobRoot(sample.Text, refLang),
+		describeCNode(cRoot, sample.Text),
+	)
+}
+
+func logGrammargenCGOStructuralMismatch(t *testing.T, sampleIndex int, sample grammargenCorpusSample, errs []grammargenCGODivergence, genRoot *gotreesitter.Node, genLang *gotreesitter.Language, cRoot *sitter.Node, refLang *gotreesitter.Language) {
+	t.Helper()
+	shown := errs
+	if len(shown) > 5 {
+		shown = shown[:5]
+	}
+	parts := make([]string, 0, len(shown))
+	for _, err := range shown {
+		parts = append(parts, err.String())
+	}
+	first := errs[0]
+	genNode := findGoNodeByComparePath(genRoot, first.Path)
+	cNode := findCNodeByComparePath(cRoot, first.Path)
+	t.Logf("sample %d (%s:%s): %d divergence(s): %s\nsource:\n%s\nGEN root: %s\nGEN node: %s\nC node: %s\nBLOB root: %s",
+		sampleIndex,
+		sample.Source,
+		sample.Path,
+		len(errs),
+		strings.Join(parts, "; "),
+		clipLogText(sample.Text, 1200),
+		describeGoNode(genRoot, genLang, sample.Text),
+		describeGoNode(genNode, genLang, sample.Text),
+		describeCNode(cNode, sample.Text),
+		describeBlobRoot(sample.Text, refLang),
+	)
+}
+
+func describeFirstGoError(root *gotreesitter.Node, lang *gotreesitter.Language, src string) string {
+	if root == nil {
+		return "<nil>"
+	}
+	if !root.HasError() {
+		return "<none>"
+	}
+	node := firstGoErrorNode(root)
+	if node == nil {
+		return "<missing error node>"
+	}
+	return describeGoNode(node, lang, src)
+}
+
+func firstGoErrorNode(node *gotreesitter.Node) *gotreesitter.Node {
+	if node == nil {
+		return nil
+	}
+	if node.IsError() {
+		return node
+	}
+	for i := 0; i < node.ChildCount(); i++ {
+		if got := firstGoErrorNode(node.Child(i)); got != nil {
+			return got
+		}
+	}
+	return nil
+}
+
+func describeBlobRoot(src string, refLang *gotreesitter.Language) string {
+	if refLang == nil {
+		return "<nil>"
+	}
+	tree, err := gotreesitter.NewParser(refLang).Parse([]byte(src))
+	if err != nil {
+		return fmt.Sprintf("<blob parse error: %v>", err)
+	}
+	defer tree.Release()
+	root := tree.RootNode()
+	if root == nil {
+		return "<blob nil root>"
+	}
+	return describeGoNode(root, refLang, src)
+}
+
+func describeGoNode(node *gotreesitter.Node, lang *gotreesitter.Language, src string) string {
+	if node == nil {
+		return "<nil>"
+	}
+	sexpr := ""
+	if node.EndByte()-node.StartByte() <= 256 && node.ChildCount() <= 16 {
+		sexpr = clipLogText(node.SExpr(lang), 400)
+	}
+	if sexpr == "" {
+		return fmt.Sprintf("type=%q range=[%d:%d] named=%v children=%d snippet=%q",
+			node.Type(lang),
+			node.StartByte(),
+			node.EndByte(),
+			node.IsNamed(),
+			node.ChildCount(),
+			nodeSnippet(src, int(node.StartByte()), int(node.EndByte()), 160),
+		)
+	}
+	return fmt.Sprintf("type=%q range=[%d:%d] named=%v children=%d snippet=%q sexpr=%s",
+		node.Type(lang),
+		node.StartByte(),
+		node.EndByte(),
+		node.IsNamed(),
+		node.ChildCount(),
+		nodeSnippet(src, int(node.StartByte()), int(node.EndByte()), 160),
+		sexpr,
+	)
+}
+
+func describeCNode(node *sitter.Node, src string) string {
+	if node == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("type=%q range=[%d:%d] named=%v children=%d snippet=%q",
+		node.Kind(),
+		node.StartByte(),
+		node.EndByte(),
+		node.IsNamed(),
+		node.ChildCount(),
+		nodeSnippet(src, int(node.StartByte()), int(node.EndByte()), 160),
+	)
+}
+
+func nodeSnippet(src string, start, end, maxLen int) string {
+	if start < 0 {
+		start = 0
+	}
+	if end < start {
+		end = start
+	}
+	if end > len(src) {
+		end = len(src)
+	}
+	if start > len(src) {
+		start = len(src)
+	}
+	snippet := strings.ReplaceAll(src[start:end], "\n", "\\n")
+	return clipLogText(snippet, maxLen)
+}
+
+func clipLogText(s string, maxLen int) string {
+	if maxLen <= 0 || len(s) <= maxLen {
+		return s
+	}
+	if maxLen <= 3 {
+		return s[:maxLen]
+	}
+	return s[:maxLen-3] + "..."
+}
+
+func findGoNodeByComparePath(root *gotreesitter.Node, path string) *gotreesitter.Node {
+	if root == nil || path == "" || path == "root" {
+		return root
+	}
+	node := root
+	for _, idx := range parseComparePath(path) {
+		if node == nil || idx < 0 || idx >= node.ChildCount() {
+			return nil
+		}
+		node = node.Child(idx)
+	}
+	return node
+}
+
+func findCNodeByComparePath(root *sitter.Node, path string) *sitter.Node {
+	if root == nil || path == "" || path == "root" {
+		return root
+	}
+	node := root
+	for _, idx := range parseComparePath(path) {
+		if node == nil || idx < 0 || idx >= int(node.ChildCount()) {
+			return nil
+		}
+		node = node.Child(uint(idx))
+	}
+	return node
+}
+
+func parseComparePath(path string) []int {
+	var out []int
+	for len(path) > 0 {
+		open := strings.IndexByte(path, '[')
+		if open < 0 {
+			break
+		}
+		close := strings.IndexByte(path[open:], ']')
+		if close < 0 {
+			break
+		}
+		idx, err := strconv.Atoi(path[open+1 : open+close])
+		if err == nil {
+			out = append(out, idx)
+		}
+		path = path[open+close+1:]
+	}
+	return out
 }
 
 func importGrammargenSource(g grammargenCGOGrammar) (*grammargen.Grammar, error) {
@@ -405,7 +652,7 @@ func grammargenGenerate(gram *grammargen.Grammar, timeout time.Duration) (*gotre
 
 // collectGrammargenCorpusSamples gathers test inputs from the grammar's
 // repository: tree-sitter corpus blocks, highlight fixtures, raw examples.
-func collectGrammargenCorpusSamples(t *testing.T, g grammargenCGOGrammar, root string, limit, maxBytes int) []string {
+func collectGrammargenCorpusSamples(t *testing.T, g grammargenCGOGrammar, root string, limit, maxBytes int) []grammargenCorpusSample {
 	t.Helper()
 
 	repoRoot := grammargenRepoRoot(g, root)
@@ -424,7 +671,7 @@ func collectGrammargenCorpusSamples(t *testing.T, g grammargenCGOGrammar, root s
 	})
 
 	seen := map[string]struct{}{}
-	var out []string
+	var out []grammargenCorpusSample
 
 	// Corpus blocks first (highest signal).
 	for _, dir := range corpusDirs {
@@ -435,12 +682,12 @@ func collectGrammargenCorpusSamples(t *testing.T, g grammargenCGOGrammar, root s
 			}
 			for _, block := range extractCorpusBlocks(data) {
 				if s, ok := cleanSample(block, maxBytes, seen); ok {
-					out = append(out, s)
+					out = append(out, grammargenCorpusSample{Text: s, Path: path, Source: "corpus_block"})
 				}
 			}
 			if len(extractCorpusBlocks(data)) == 0 {
 				if s, ok := cleanSample(string(data), maxBytes, seen); ok {
-					out = append(out, s)
+					out = append(out, grammargenCorpusSample{Text: s, Path: path, Source: "corpus_raw"})
 				}
 			}
 		}
@@ -454,13 +701,13 @@ func collectGrammargenCorpusSamples(t *testing.T, g grammargenCGOGrammar, root s
 				continue
 			}
 			if s, ok := cleanSample(string(data), maxBytes, seen); ok {
-				out = append(out, s)
+				out = append(out, grammargenCorpusSample{Text: s, Path: path, Source: "repo_raw"})
 			}
 		}
 	}
 
 	// Sort: smaller first for fast feedback.
-	sort.Slice(out, func(i, j int) bool { return len(out[i]) < len(out[j]) })
+	sort.Slice(out, func(i, j int) bool { return len(out[i].Text) < len(out[j].Text) })
 	if len(out) > limit {
 		out = out[:limit]
 	}

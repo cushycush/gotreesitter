@@ -3536,6 +3536,9 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 		if isRepeatHelperReduce(reduce, ng) && !shift.repeat {
 			return []lrAction{reduce}, nil
 		}
+		if shouldPreferAssignmentExpressionShift(lookaheadSym, shifts, reduces, ng) {
+			return []lrAction{shift}, nil
+		}
 
 		// Tree-sitter keeps S/R as GLR when the reduce LHS and a shift LHS
 		// are both in the same declared conflict group.
@@ -3651,9 +3654,6 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 
 		shiftPrec := int(shift.prec)
 		reducePrec := prod.Prec
-		shiftHasPrec := shift.hasPrec || shift.assocValue() != AssocNone
-		reduceHasPrec := prod.HasExplicitPrec || prod.Assoc != AssocNone
-
 		// Consult the precedences table for SYMBOL-level ordering.
 		// Only apply when:
 		// 1. The reduce production's LHS is a SYMBOL entry in the table
@@ -3682,24 +3682,6 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 			if cmp < 0 {
 				return []lrAction{reduce}, nil
 			}
-		}
-		shiftLHSName := ""
-		if int(shift.lhsSym) >= 0 && int(shift.lhsSym) < len(ng.Symbols) {
-			shiftLHSName = ng.Symbols[int(shift.lhsSym)].Name
-		}
-		lookaheadName := ""
-		if lookaheadSym >= 0 && lookaheadSym < len(ng.Symbols) {
-			lookaheadName = ng.Symbols[lookaheadSym].Name
-		}
-		// Assignment-expression conflicts need one extra distinction that the
-		// raw integer precedence cannot encode: an explicit negative shift prec
-		// on assignment_expression should not lose to an implicit default-zero
-		// reduce when the lookahead is an assignment operator. Keep this
-		// targeted so unrelated negative-precedence conflicts still use the
-		// normal resolver path.
-		if shiftLHSName == "assignment_expression" && isAssignmentOperatorLookahead(lookaheadName) &&
-			shiftHasPrec && shiftPrec < 0 && reducePrec == 0 && !reduceHasPrec {
-			return []lrAction{shift}, nil
 		}
 		// Apply precedence/associativity resolution when either side has a
 		// non-zero precedence OR the production declares explicit associativity.
@@ -3774,6 +3756,35 @@ func isAssignmentOperatorLookahead(name string) bool {
 	default:
 		return true
 	}
+}
+
+func shouldPreferAssignmentExpressionShift(lookaheadSym int, shifts, reduces []lrAction, ng *NormalizedGrammar) bool {
+	if ng == nil || len(shifts) != 1 || len(reduces) == 0 {
+		return false
+	}
+	shift := shifts[0]
+	if shift.lhsSym < 0 || int(shift.lhsSym) >= len(ng.Symbols) {
+		return false
+	}
+	if ng.Symbols[shift.lhsSym].Name != "assignment_expression" {
+		return false
+	}
+	if lookaheadSym < 0 || lookaheadSym >= len(ng.Symbols) {
+		return false
+	}
+	if !isAssignmentOperatorLookahead(ng.Symbols[lookaheadSym].Name) {
+		return false
+	}
+	for _, reduce := range reduces {
+		if reduce.kind != lrReduce || reduce.prodIdx < 0 || int(reduce.prodIdx) >= len(ng.Productions) {
+			return false
+		}
+		prod := &ng.Productions[reduce.prodIdx]
+		if prod.Prec != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func repetitionShiftActions(lookaheadSym int, shifts, reduces []lrAction, ng *NormalizedGrammar) ([]lrAction, bool) {

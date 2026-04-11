@@ -24,7 +24,7 @@ FORTRAN_SAFE_LR0_CORE_BUDGET="585000000"
 FORTRAN_SAFE_GENERATE_TIMEOUT="15m"
 
 MODE="all"
-LANGS_CSV="css,javascript,typescript,tsx,c,cpp,c_sharp,cobol,fortran"
+LANGS_CSV="css,javascript,typescript,tsx,c,c_sharp,cobol,fortran"
 MEMORY_LIMIT="$DEFAULT_MEMORY_LIMIT"
 CPUS_LIMIT="$DEFAULT_CPUS_LIMIT"
 PIDS_LIMIT="$DEFAULT_PIDS_LIMIT"
@@ -58,7 +58,7 @@ usage() {
 Usage: run_grammargen_focus_targets.sh [options]
 
 Run the high-value grammargen targets only, with safe isolation by default:
-  css, javascript, typescript, tsx, c, cpp, c_sharp, cobol, fortran
+  css, javascript, typescript, tsx, c, c_sharp, cobol, fortran
 
 Modes:
   all          Run real-corpus parity and direct grammargen-vs-C parity
@@ -101,6 +101,8 @@ Notes:
   - Direct C parity also runs one language per container via run_grammargen_c_parity.sh.
   - The default lane is single-worker by design: one grammar, one container,
     cpus=1, GOMAXPROCS=1, GOFLAGS=-p=1.
+  - cpp remains supported via --langs cpp, but stays off the default lane
+    until its focused perf signal is trustworthy again.
   - fortran real-corpus runs also default to a tighter bounded envelope
     unless you override it or pass --unsafe-fortran-defaults.
   - fortran is currently real-corpus-only; the direct grammargen-vs-C harness
@@ -124,7 +126,7 @@ canonical_lang() {
 
 is_supported_focus_lang() {
   case "$1" in
-    css|javascript|typescript|tsx|c|cpp|c_sharp|cobol|fortran) return 0 ;;
+    css|javascript|typescript|tsx|c|cpp|cuda|c_sharp|cobol|fortran) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -138,7 +140,7 @@ real_corpus_lang() {
 
 supports_cgo_parity() {
   case "$1" in
-    css|javascript|typescript|tsx|c|cpp|c_sharp|cobol) return 0 ;;
+    css|javascript|typescript|tsx|c|cpp|cuda|c_sharp|cobol) return 0 ;;
     *) return 1 ;;
   esac
 }

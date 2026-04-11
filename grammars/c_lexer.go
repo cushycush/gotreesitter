@@ -5,7 +5,6 @@ package grammars
 import (
 	"fmt"
 	"sync"
-	"unsafe"
 
 	"github.com/odvcencio/gotreesitter"
 )
@@ -48,7 +47,7 @@ type CTokenSource struct {
 	keywordSymbols    map[string]gotreesitter.Symbol
 	literalSymbols    map[string]gotreesitter.Symbol
 	literalAlternates map[string][]gotreesitter.Symbol
-	maxLiteralLen     int
+	literalByFirst    [256][]literalMatchCandidate
 
 	stringOpeners []prefixedToken
 	charOpeners   []prefixedToken
@@ -58,7 +57,7 @@ type cLexerTables struct {
 	keywordSymbols    map[string]gotreesitter.Symbol
 	literalSymbols    map[string]gotreesitter.Symbol
 	literalAlternates map[string][]gotreesitter.Symbol
-	maxLiteralLen     int
+	literalByFirst    [256][]literalMatchCandidate
 	stringOpeners     []prefixedToken
 	charOpeners       []prefixedToken
 }
@@ -68,7 +67,22 @@ type literalCandidate struct {
 	escapes int
 }
 
+type literalMatchCandidate struct {
+	lexeme     string
+	sym        gotreesitter.Symbol
+	alternates []gotreesitter.Symbol
+}
+
 var cLexerTablesCache sync.Map // map[*gotreesitter.Language]*cLexerTables
+
+var cTokenSourcePool = sync.Pool{
+	New: func() any {
+		return &CTokenSource{
+			lastSyntheticOffset:  -1,
+			preprocDefineNameEnd: -1,
+		}
+	},
+}
 
 const (
 	cPreprocNormal = iota
@@ -79,13 +93,6 @@ const (
 	cPreprocAfterInclude
 	cPreprocConditionalExpr
 )
-
-func bytesToStringNoCopy(b []byte) string {
-	if len(b) == 0 {
-		return ""
-	}
-	return unsafe.String(unsafe.SliceData(b), len(b))
-}
 
 type prefixedToken struct {
 	lexeme string
@@ -98,13 +105,18 @@ func NewCTokenSource(src []byte, lang *gotreesitter.Language) (*CTokenSource, er
 		return nil, fmt.Errorf("c lexer: language is nil")
 	}
 
-	ts := &CTokenSource{
+	ts := cTokenSourcePool.Get().(*CTokenSource)
+	savedPending := ts.pending[:0]
+	savedGLRStates := ts.glrStates[:0]
+	*ts = CTokenSource{
 		src:                  src,
 		lang:                 lang,
 		cur:                  newSourceCursor(src),
 		lastSyntheticOffset:  -1,
 		preprocDefineNameEnd: -1,
 	}
+	ts.pending = savedPending
+	ts.glrStates = savedGLRStates
 
 	tl := newTokenLookup(lang, "c")
 	ts.identifierSymbol = tl.require("identifier")
@@ -163,6 +175,48 @@ func (ts *CTokenSource) Reset(src []byte) {
 	ts.preprocDefineNameEnd = -1
 }
 
+// Close clears parser-owned state and returns this token source to the pool.
+func (ts *CTokenSource) Close() {
+	if ts == nil {
+		return
+	}
+	ts.src = nil
+	ts.lang = nil
+	ts.cur = sourceCursor{}
+	ts.done = false
+	ts.pending = ts.pending[:0]
+	ts.eofSymbol = 0
+	ts.identifierSymbol = 0
+	ts.numberSymbol = 0
+	ts.commentSymbol = 0
+	ts.quoteSymbol = 0
+	ts.apostropheSymbol = 0
+	ts.stringContentSymbol = 0
+	ts.systemLibStringSymbol = 0
+	ts.escapeSymbol = 0
+	ts.characterSymbol = 0
+	ts.primitiveTypeSymbol = 0
+	ts.preprocParamLParen = 0
+	ts.preprocEndSymbol = 0
+	ts.preprocArgSymbol = 0
+	ts.preprocDirectiveSymbol = 0
+	ts.newlineSymbol = 0
+	ts.endifSymbol = 0
+	ts.rBraceSymbol = 0
+	ts.preprocState = cPreprocNormal
+	ts.parserState = 0
+	ts.glrStates = ts.glrStates[:0]
+	ts.lastSyntheticOffset = -1
+	ts.preprocDefineNameEnd = -1
+	ts.keywordSymbols = nil
+	ts.literalSymbols = nil
+	ts.literalAlternates = nil
+	ts.literalByFirst = [256][]literalMatchCandidate{}
+	ts.stringOpeners = nil
+	ts.charOpeners = nil
+	cTokenSourcePool.Put(ts)
+}
+
 // SupportsIncrementalReuse reports that CTokenSource preserves stable token
 // boundaries across edits and supports deterministic SkipToByte behavior.
 func (ts *CTokenSource) SupportsIncrementalReuse() bool {
@@ -218,12 +272,6 @@ func (ts *CTokenSource) Next() gotreesitter.Token {
 			ts.cur.advanceByte()
 			continue
 		}
-		if b == '#' {
-			if tok, ok := ts.directiveToken(); ok {
-				return tok
-			}
-		}
-
 		if b == '#' {
 			if tok, ok := ts.directiveToken(); ok {
 				return tok
@@ -336,7 +384,7 @@ func (ts *CTokenSource) buildSymbolTables() {
 	keywordSymbols := make(map[string]gotreesitter.Symbol)
 	literalSymbols := make(map[string]gotreesitter.Symbol)
 	literalAlternates := make(map[string][]gotreesitter.Symbol)
-	maxLiteralLen := 0
+	var literalByFirst [256][]literalMatchCandidate
 
 	limit := int(ts.lang.TokenCount)
 	if limit > len(ts.lang.SymbolNames) {
@@ -385,9 +433,6 @@ func (ts *CTokenSource) buildSymbolTables() {
 				escapes: escapes,
 			})
 		}
-		if len(lexeme) > maxLiteralLen {
-			maxLiteralLen = len(lexeme)
-		}
 	}
 
 	for lexeme, candidates := range literalCandidates {
@@ -400,9 +445,18 @@ func (ts *CTokenSource) buildSymbolTables() {
 			ordered = append(ordered, candidate.sym)
 		}
 		literalSymbols[lexeme] = ordered[0]
+		matchCandidate := literalMatchCandidate{
+			lexeme: lexeme,
+			sym:    ordered[0],
+		}
 		if len(ordered) > 1 {
 			literalAlternates[lexeme] = ordered
+			matchCandidate.alternates = ordered
 		}
+		literalByFirst[lexeme[0]] = append(literalByFirst[lexeme[0]], matchCandidate)
+	}
+	for i := range literalByFirst {
+		sortLiteralMatchCandidates(literalByFirst[i])
 	}
 
 	base := &CTokenSource{
@@ -418,7 +472,7 @@ func (ts *CTokenSource) buildSymbolTables() {
 		keywordSymbols:    keywordSymbols,
 		literalSymbols:    literalSymbols,
 		literalAlternates: literalAlternates,
-		maxLiteralLen:     maxLiteralLen,
+		literalByFirst:    literalByFirst,
 		stringOpeners:     stringOpeners,
 		charOpeners:       charOpeners,
 	}
@@ -436,7 +490,7 @@ func (ts *CTokenSource) applyLexerTables(tables *cLexerTables) {
 	ts.keywordSymbols = tables.keywordSymbols
 	ts.literalSymbols = tables.literalSymbols
 	ts.literalAlternates = tables.literalAlternates
-	ts.maxLiteralLen = tables.maxLiteralLen
+	ts.literalByFirst = tables.literalByFirst
 	ts.stringOpeners = tables.stringOpeners
 	ts.charOpeners = tables.charOpeners
 }
@@ -464,6 +518,24 @@ func preferLiteralCandidate(lexeme string, a, b literalCandidate) bool {
 		return a.sym > b.sym
 	}
 	return a.sym < b.sym
+}
+
+func sortLiteralMatchCandidates(candidates []literalMatchCandidate) {
+	for i := 0; i < len(candidates); i++ {
+		best := i
+		for j := i + 1; j < len(candidates); j++ {
+			if len(candidates[j].lexeme) > len(candidates[best].lexeme) {
+				best = j
+				continue
+			}
+			if len(candidates[j].lexeme) == len(candidates[best].lexeme) && candidates[j].lexeme < candidates[best].lexeme {
+				best = j
+			}
+		}
+		if best != i {
+			candidates[i], candidates[best] = candidates[best], candidates[i]
+		}
+	}
 }
 
 func (ts *CTokenSource) collectOpeners(lexemes []string, fallback gotreesitter.Symbol) []prefixedToken {
@@ -900,34 +972,30 @@ func (ts *CTokenSource) preprocDirectiveState(text string) int {
 }
 
 func (ts *CTokenSource) matchLiteral() (gotreesitter.Symbol, int) {
-	remaining := len(ts.src) - ts.cur.offset
-	maxN := ts.maxLiteralLen
-	if maxN > remaining {
-		maxN = remaining
+	if ts.cur.eof() {
+		return 0, 0
 	}
-
+	candidates := ts.literalByFirst[ts.cur.peekByte()]
 	var fallbackSym gotreesitter.Symbol
 	var fallbackN int
-	for n := maxN; n >= 1; n-- {
-		lex := bytesToStringNoCopy(ts.src[ts.cur.offset : ts.cur.offset+n])
-		sym, ok := ts.literalSymbols[lex]
-		if !ok {
+	for _, candidate := range candidates {
+		lexeme := candidate.lexeme
+		if !ts.matchAt(lexeme) {
 			continue
-		}
-		if lexemeNeedsBoundary(lex) && !hasWordBoundaryAfter(ts.src, ts.cur.offset+n) {
-			continue
-		}
-		candidates := ts.literalAlternates[lex]
-		if len(candidates) == 0 {
-			candidates = []gotreesitter.Symbol{sym}
 		}
 		if fallbackSym == 0 {
-			fallbackSym = candidates[0]
-			fallbackN = n
+			fallbackSym = candidate.sym
+			fallbackN = len(lexeme)
 		}
-		for _, candidate := range candidates {
-			if ts.hasAction(candidate) {
-				return candidate, n
+		if len(candidate.alternates) == 0 {
+			if ts.hasAction(candidate.sym) {
+				return candidate.sym, len(lexeme)
+			}
+			continue
+		}
+		for _, sym := range candidate.alternates {
+			if ts.hasAction(sym) {
+				return sym, len(lexeme)
 			}
 		}
 	}

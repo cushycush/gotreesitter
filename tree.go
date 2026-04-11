@@ -5,6 +5,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 )
@@ -797,6 +798,12 @@ type Tree struct {
 	released       bool
 }
 
+var treePool = sync.Pool{
+	New: func() any {
+		return &Tree{}
+	},
+}
+
 // NewTree creates a new Tree.
 func NewTree(root *Node, source []byte, lang *Language) *Tree {
 	return &Tree{
@@ -807,7 +814,8 @@ func NewTree(root *Node, source []byte, lang *Language) *Tree {
 }
 
 func newTreeWithArenas(root *Node, source []byte, lang *Language, arena *nodeArena, borrowed []*nodeArena) *Tree {
-	tree := &Tree{
+	tree := treePool.Get().(*Tree)
+	*tree = Tree{
 		root:          root,
 		source:        source,
 		language:      lang,
@@ -859,12 +867,20 @@ func (t *Tree) Release() {
 	for _, a := range t.borrowedArena {
 		a.Release()
 	}
-	t.borrowedArena = nil
+	if len(t.borrowedArena) > 0 {
+		clear(t.borrowedArena)
+		t.borrowedArena = t.borrowedArena[:0]
+	}
 	if t.arena != nil {
 		t.arena.Release()
 		t.arena = nil
 	}
 	t.root = nil
+	t.source = nil
+	t.language = nil
+	t.edits = nil
+	t.parseRuntime = ParseRuntime{}
+	treePool.Put(t)
 }
 
 // RootNode returns the tree's root node.

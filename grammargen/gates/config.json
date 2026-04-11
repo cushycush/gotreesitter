@@ -6,8 +6,8 @@
     "locked_at": "2026-03-08"
   },
   "reduced_frontier": {
-    "description": "7-language breaker set: small enough to run constantly, ugly enough to catch regressions.",
-    "languages": ["bash", "c", "c_sharp", "cpp", "dart", "python", "scala"]
+    "description": "6-language breaker set: small enough to run constantly, ugly enough to catch regressions. cpp stays opt-in until its focused perf lane is trustworthy.",
+    "languages": ["bash", "c", "c_sharp", "dart", "python", "scala"]
   },
   "gate0_compiler_health": {
     "description": "The compiler still works: import, generate, emit, no panics/OOM.",

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/odvcencio/gotreesitter"
 )
@@ -203,12 +204,19 @@ func hasWordBoundaryAfter(src []byte, endOffset int) bool {
 func makeToken(sym gotreesitter.Symbol, src []byte, startOffset, endOffset int, startPoint, endPoint gotreesitter.Point) gotreesitter.Token {
 	return gotreesitter.Token{
 		Symbol:     sym,
-		Text:       string(src[startOffset:endOffset]),
+		Text:       bytesToStringNoCopy(src[startOffset:endOffset]),
 		StartByte:  uint32(startOffset),
 		EndByte:    uint32(endOffset),
 		StartPoint: startPoint,
 		EndPoint:   endPoint,
 	}
+}
+
+func bytesToStringNoCopy(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	return unsafe.String(unsafe.SliceData(b), len(b))
 }
 
 type tokenLookup struct {

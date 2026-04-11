@@ -1174,9 +1174,6 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		p.logf(ParserLogParse, "start len=%d incremental=%t", len(source), reuse != nil || oldTree != nil)
 	}
 	deferParentLinks := reuse == nil && oldTree == nil
-	if closer, ok := ts.(interface{ Close() }); ok {
-		defer closer.Close()
-	}
 	scratch := acquireParserScratch()
 	scratch.merge.beginEquivEpoch()
 	if deferParentLinks {

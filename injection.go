@@ -39,6 +39,8 @@ type InjectionParser struct {
 	parsers map[string]*Parser
 	// maxDepth limits nested injection recursion. Zero means use default.
 	maxDepth int
+	// prevResult holds the previous parse result for reuse.
+	prevResult *InjectionResult
 }
 
 // NewInjectionParser creates an InjectionParser.
@@ -71,8 +73,25 @@ func (ip *InjectionParser) RegisterInjectionQuery(parentLang string, query strin
 	return nil
 }
 
+// releaseResult releases all parse trees held by r. Safe to call with nil.
+func releaseResult(r *InjectionResult) {
+	if r == nil {
+		return
+	}
+	r.Tree.Release()
+	for _, inj := range r.Injections {
+		if inj.Tree != nil {
+			inj.Tree.Release()
+		}
+	}
+}
+
 // Parse parses source as parentLang, then recursively parses injected regions.
 func (ip *InjectionParser) Parse(source []byte, parentLang string) (*InjectionResult, error) {
+	// Release previous result to allow arena reuse.
+	releaseResult(ip.prevResult)
+	ip.prevResult = nil
+
 	lang, ok := ip.languages[parentLang]
 	if !ok {
 		return nil, fmt.Errorf("injection: language %q not registered", parentLang)
@@ -89,15 +108,23 @@ func (ip *InjectionParser) Parse(source []byte, parentLang string) (*InjectionRe
 		return nil, err
 	}
 
-	return &InjectionResult{
+	ip.prevResult = &InjectionResult{
 		Tree:       tree,
 		Injections: injections,
-	}, nil
+	}
+
+	return ip.prevResult, nil
 }
 
 // ParseIncremental re-parses after edits, reusing unchanged child trees.
 func (ip *InjectionParser) ParseIncremental(source []byte, parentLang string,
 	oldResult *InjectionResult) (*InjectionResult, error) {
+
+	// Detach prevResult now; release it after parsing so that oldResult.Tree
+	// (which may be the same object) remains valid throughout the parse.
+	prev := ip.prevResult
+	ip.prevResult = nil
+	defer releaseResult(prev)
 
 	lang, ok := ip.languages[parentLang]
 	if !ok {
@@ -170,10 +197,12 @@ func (ip *InjectionParser) ParseIncremental(source []byte, parentLang string,
 		injections = append(injections, det)
 	}
 
-	return &InjectionResult{
+	ip.prevResult = &InjectionResult{
 		Tree:       newTree,
 		Injections: injections,
-	}, nil
+	}
+
+	return ip.prevResult, nil
 }
 
 // defaultMaxInjectionDepth limits recursion to prevent infinite loops.

@@ -239,6 +239,47 @@ func makeMDWithGoBlocks(n int) []byte {
 	return []byte(sb.String())
 }
 
+// BenchmarkParserPoolSerial measures checkout→parse→release in a single goroutine.
+// This isolates pool overhead (sync.Pool Get/Put + applyDefaults) from parse time.
+func BenchmarkParserPoolSerial(b *testing.B) {
+	lang := grammars.GoLanguage()
+	pool := gotreesitter.NewParserPool(lang)
+	src := makeGoBenchmarkSource(benchmarkFuncCount(b))
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(src)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tree, err := pool.Parse(src)
+		if err != nil || tree == nil {
+			b.Fatalf("ParserPool.Parse: %v", err)
+		}
+	}
+}
+
+// BenchmarkParserPoolConcurrentThroughput measures throughput under goroutine
+// contention — the scenario that justifies pooling over per-request allocation.
+// RunParallel drives GOMAXPROCS goroutines simultaneously; sync.Pool shines here
+// because each OS thread maintains a per-P free list, minimising cross-core
+// cache traffic on the Parser's reuse cursor and arena hint fields.
+func BenchmarkParserPoolConcurrentThroughput(b *testing.B) {
+	lang := grammars.GoLanguage()
+	pool := gotreesitter.NewParserPool(lang)
+	src := makeGoBenchmarkSource(benchmarkFuncCount(b))
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(src)))
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			tree, err := pool.Parse(src)
+			if err != nil || tree == nil {
+				b.Fatalf("ParserPool.Parse: %v", err)
+			}
+		}
+	})
+}
+
 func itoa(n int) string {
 	return strconv.Itoa(n)
 }

@@ -1292,7 +1292,11 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 			continue
 		}
 		spanStart := len(scratch.nodes)
-		appendFlattenedHiddenChildrenWithFieldScratch(scratch, n, symbolMeta)
+		if hiddenTreeHasFieldIDs(n) {
+			appendFlattenedHiddenChildrenWithFieldScratch(scratch, n, symbolMeta)
+		} else {
+			appendFlattenedHiddenChildrenToScratch(scratch, n, symbolMeta)
+		}
 		if scratch.trackFields {
 			fieldEnd := len(scratch.fieldIDs)
 			// Apply the parent's inherited field assignment to the

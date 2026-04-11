@@ -66,7 +66,7 @@ ALL_GRAMMARS=(
   properties proto python regex requirements ron scala scheme sql ssh_config
   swift todotxt toml yaml
   # Large grammars (previously skipped):
-  rust c_sharp java ruby cpp kotlin
+  rust c_sharp java ruby cpp kotlin cuda
   # TypeScript family:
   typescript tsx
   # Legacy/enterprise languages:
@@ -361,6 +361,7 @@ make_clone_block() {
     [ruby]="https://github.com/tree-sitter/tree-sitter-ruby.git"
     [cpp]="https://github.com/tree-sitter/tree-sitter-cpp.git"
     [kotlin]="https://github.com/fwcd/tree-sitter-kotlin.git"
+    [cuda]="https://github.com/theHamsta/tree-sitter-cuda.git"
     [typescript]="https://github.com/tree-sitter/tree-sitter-typescript.git"
     [tsx]="https://github.com/tree-sitter/tree-sitter-typescript.git"
     [cobol]="https://github.com/yutaro-sakamoto/tree-sitter-cobol.git"

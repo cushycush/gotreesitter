@@ -262,6 +262,14 @@ func effectiveFullParseInitialMaxStacks(lang *Language, initialMaxStacks int) in
 		if initialMaxStacks == maxGLRStacks {
 			initialMaxStacks = 2
 		}
+	case "go":
+		// Go's grammar triggers GLR ambiguity on type assertions, composite
+		// literals, and generic-like syntax in generated protobuf files.
+		// The default cap of 8 causes exponential stack blowup on large files.
+		// A tight default keeps parsing fast; retry widening handles edge cases.
+		if initialMaxStacks == maxGLRStacks {
+			initialMaxStacks = 2
+		}
 	case "ruby":
 		// Ruby's ambiguous syntax (optional parentheses, flexible method calls,
 		// complex string/regex literals) requires wider GLR stacks than the
@@ -436,6 +444,7 @@ func (p *Parser) retryFullParseWithDFA(source []byte, initialMaxStacks int, dete
 	return p.retryFullParse(source, initialMaxStacks, tree, func(maxStacks int, maxMergePerKeyOverride int, maxNodes int) *Tree {
 		retryLexer := NewLexer(p.language.LexStates, source)
 		retryTS := acquireDFATokenSource(retryLexer, p.language, p.lookupActionIndex, p.hasKeywordState)
+		defer retryTS.Close()
 		return p.parseInternal(
 			source,
 			p.wrapIncludedRanges(retryTS),

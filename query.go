@@ -117,10 +117,10 @@ type QueryPredicate struct {
 	leftCapture  string
 	rightCapture string // optional for #eq? / #not-eq?
 	// optional property/name token for #is? / #is-not?.
-	property string
-	literal  string // literal or regex source
-	values   []string
-	regex    *regexp.Regexp
+	property   string
+	literal    string // literal or regex source
+	values     []string
+	regex      *regexp.Regexp
 	offset     [4]int // #offset! start_row start_col end_row end_col
 	countOp    string // for #count?: ">", "<", ">=", "<=", "==", "!="
 	countValue int    // for #count?
@@ -222,6 +222,12 @@ type QueryCursor struct {
 type queryCursorWorkItem struct {
 	node  *Node
 	depth uint32
+}
+
+type queryExecBuffer struct {
+	matches  []QueryMatch
+	captures []QueryCapture
+	worklist []queryCursorWorkItem
 }
 
 // NewQuery compiles query source (tree-sitter .scm format) against a language.
@@ -402,6 +408,70 @@ func (q *Query) executeNodeInto(root *Node, lang *Language, source []byte, dst [
 		dst = append(dst, m)
 	}
 	return dst
+}
+
+func (q *Query) executeNodeIntoBuffer(root *Node, lang *Language, source []byte, buf *queryExecBuffer) []QueryMatch {
+	if root == nil || lang == nil {
+		if buf == nil {
+			return nil
+		}
+		buf.matches = buf.matches[:0]
+		buf.captures = buf.captures[:0]
+		buf.worklist = buf.worklist[:0]
+		return buf.matches
+	}
+	if buf == nil {
+		return q.executeNode(root, lang, source)
+	}
+	if q.rootCandidatesBySymbol == nil && q.rootFallbackCandidates == nil {
+		q.buildRootPatternIndex()
+	}
+
+	buf.matches = buf.matches[:0]
+	buf.captures = buf.captures[:0]
+	buf.worklist = append(buf.worklist[:0], queryCursorWorkItem{node: root, depth: 0})
+
+	for len(buf.worklist) > 0 {
+		last := len(buf.worklist) - 1
+		item := buf.worklist[last]
+		buf.worklist = buf.worklist[:last]
+
+		n := item.node
+		if n == nil {
+			continue
+		}
+
+		for i := n.ChildCount() - 1; i >= 0; i-- {
+			child := n.Child(i)
+			if child == nil {
+				continue
+			}
+			buf.worklist = append(buf.worklist, queryCursorWorkItem{
+				node:  child,
+				depth: item.depth + 1,
+			})
+		}
+
+		candidates := q.rootPatternCandidates(lang.PublicSymbol(n.Symbol()))
+		for _, pi := range candidates {
+			if q.isPatternDisabled(pi) {
+				continue
+			}
+			pat := q.patterns[pi]
+			nextCaptures, ok := q.matchPatternIntoBuffer(&pat, n, lang, source, buf.captures)
+			if !ok {
+				continue
+			}
+			start := len(buf.captures)
+			buf.captures = nextCaptures
+			buf.matches = append(buf.matches, QueryMatch{
+				PatternIndex: pi,
+				Captures:     buf.captures[start:len(buf.captures):len(buf.captures)],
+			})
+		}
+	}
+
+	return buf.matches
 }
 
 func (q *Query) rootPatternCandidates(sym Symbol) []int {
@@ -678,6 +748,25 @@ func (q *Query) matchPattern(pat *Pattern, node *Node, lang *Language, source []
 	}
 	captures = q.applyDirectives(pat.predicates, captures, source)
 	return captures, true
+}
+
+func (q *Query) matchPatternIntoBuffer(pat *Pattern, node *Node, lang *Language, source []byte, captures []QueryCapture) ([]QueryCapture, bool) {
+	if len(pat.steps) == 0 {
+		return captures, false
+	}
+
+	start := len(captures)
+	if !q.matchSteps(pat.steps, 0, node, lang, source, &captures) {
+		return captures[:start], false
+	}
+
+	matchCaptures := captures[start:]
+	if !q.matchesPredicates(pat.predicates, matchCaptures, lang, source) {
+		return captures[:start], false
+	}
+
+	matchCaptures = q.applyDirectives(pat.predicates, matchCaptures, source)
+	return captures[:start+len(matchCaptures)], true
 }
 
 func (q *Query) matchStepWithRollback(steps []QueryStep, stepIdx int, node *Node, lang *Language, source []byte, captures *[]QueryCapture) bool {

@@ -343,7 +343,7 @@ func applySelectAdjacent(pred QueryPredicate, captures []QueryCapture) []QueryCa
 		return false
 	}
 
-	out := make([]QueryCapture, 0, len(captures))
+	out := captures[:0]
 	for _, c := range captures {
 		if c.Name == itemsName {
 			if isAdjacent(c.Node) {
