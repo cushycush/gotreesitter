@@ -119,7 +119,58 @@ func ImportGrammarJSON(data []byte) (*Grammar, error) {
 	// Import supertypes.
 	g.Supertypes = raw.Supertypes
 
+	applyPostImportShapeHints(g)
+
 	return g, nil
+}
+
+// applyPostImportShapeHints runs after all rules, extras, conflicts, and
+// externals have been imported. This is where rule-mutating shape hints go
+// (distinct from applyImportGrammarShapeHints which only touches flags
+// before rules exist).
+func applyPostImportShapeHints(g *Grammar) {
+	if g == nil {
+		return
+	}
+	switch g.Name {
+	case "fortran":
+		// Wrap SELECT-body statement rules with a positive precedence so
+		// their completing reduce outranks the closure-derived identifier-
+		// as-keyword shift at the end of a case body.
+		//
+		// Context (diagnosed 2026-04-11 via GLR trace + kernel item dump):
+		// State 8608 (gen) has two actions on lookahead `end`:
+		//   REDUCE case_statement → case default _case_statement_seq_choice116
+		//          case_statement_repeat123 .  (from kernel item dot=4)
+		//   SHIFT end → <identifier-reduce state>  (from closure item
+		//          identifier → . end, one of identifier's 66 keyword alts)
+		// Both productions carry prec=0 so default-yacc behavior picks
+		// shift, landing us in a state that only reduces to identifier on
+		// every lookahead including `select`. With no action on `select`
+		// beyond that, all GLR stacks die.
+		//
+		// Wrapping case_statement / type_statement / rank_statement with
+		// PREC gives the reduce a nonzero precedence so it wins the S/R
+		// conflict. The body-statement productions then close cleanly
+		// before `end` is shifted, letting the parser enter the
+		// end_select_statement continuation state with `end select`
+		// properly matched.
+		// Must outrank prec=100 which propagates to the identifier shift
+		// via the expression wrapper chain.
+		wrapRuleWithPrec(g, "case_statement", 200)
+		wrapRuleWithPrec(g, "type_statement", 200)
+		wrapRuleWithPrec(g, "rank_statement", 200)
+	}
+}
+
+// wrapRuleWithPrec wraps g.Rules[name] in a Prec(n, ...) wrapper, preserving
+// any existing outer wrappers. No-op if the rule is missing.
+func wrapRuleWithPrec(g *Grammar, name string, prec int) {
+	rule, ok := g.Rules[name]
+	if !ok || rule == nil {
+		return
+	}
+	g.Rules[name] = Prec(prec, rule)
 }
 
 // buildPrecMaps builds two precedence maps from the precedences array:
