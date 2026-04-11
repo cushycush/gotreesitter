@@ -866,22 +866,74 @@ func propagateEntryShiftMetadataForState(tables *LRTables, stateIdx int, itemSet
 	if tables == nil || ctx == nil || itemSet == nil {
 		return
 	}
+	debugEntryShift := os.Getenv("GOT_DEBUG_ENTRY_SHIFT") == "1"
+	debugState := -1
+	if s := os.Getenv("GOT_DEBUG_ENTRY_SHIFT_STATE"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil {
+			debugState = n
+		}
+	}
 	tokenCount := ctx.tokenCount
-	for _, ce := range itemSet.cores {
+	if debugEntryShift && (debugState < 0 || debugState == stateIdx) {
+		fmt.Fprintf(os.Stderr, "[entry-shift-prop] state=%d coreCount=%d\n", stateIdx, len(itemSet.cores))
+	}
+
+	// Closure-chain prec propagation must run in two passes.
+	//
+	// The shift action on a terminal originates from the innermost dot=0
+	// closure item (e.g. `_argument_list → . ( _expression )`). Its initial
+	// lhsSym is that innermost LHS (_argument_list). Intermediate closure
+	// items (argument_list → _argument_list, call_expression_repeat150 →
+	// argument_list, ...) accumulate their own LHS into the shift's lhsSyms
+	// list during propagation via addAction's merge logic.
+	//
+	// The enclosing kernel item (e.g. `call_expression[prec=80] → _expression
+	// . call_expression_repeat150`) only matches the shift once
+	// call_expression_repeat150 is in lhsSyms. If kernel items are processed
+	// before the dot=0 closure items that populate lhsSyms, the match fails
+	// and the kernel precedence never propagates.
+	//
+	// Pass 1: process all dot=0 closure items. These build up the lhsSyms
+	// chain bottom-up.
+	//
+	// Pass 2: process all dot>0 kernel items. They now see the fully-built
+	// lhsSyms and can match correctly.
+	runCore := func(ce coreEntry) {
 		prod := &ng.Productions[int(ce.prodIdx)]
 		if int(ce.dot) >= len(prod.RHS) {
-			continue
+			return
 		}
 		nextSym := prod.RHS[ce.dot]
 		if nextSym < tokenCount {
-			continue
+			return
+		}
+
+		if debugEntryShift && (debugState < 0 || debugState == stateIdx) {
+			fmt.Fprintf(os.Stderr, "[entry-shift-prop] state=%d core prod=%d lhs=%s dot=%d nextSym=%s prodPrec=%d\n",
+				stateIdx, ce.prodIdx, ng.Symbols[prod.LHS].Name, ce.dot, ng.Symbols[nextSym].Name, prod.Prec)
 		}
 
 		ctx.firstSets[nextSym].forEach(func(la int) {
 			acts := tables.ActionTable[stateIdx][la]
 			for _, act := range acts {
 				if act.kind != lrShift || !shiftMatchesSymbol(act, nextSym) {
+					if debugEntryShift && (debugState < 0 || debugState == stateIdx) && act.kind == lrShift {
+						lhsName := ""
+						if int(act.lhsSym) >= 0 && int(act.lhsSym) < len(ng.Symbols) {
+							lhsName = ng.Symbols[act.lhsSym].Name
+						}
+						fmt.Fprintf(os.Stderr, "[entry-shift-prop]   la=%s shift lhsSym=%s lhsSyms=%v prec=%d NO MATCH for nextSym=%s\n",
+							ng.Symbols[la].Name, lhsName, act.lhsSyms, act.prec, ng.Symbols[nextSym].Name)
+					}
 					continue
+				}
+				if debugEntryShift && (debugState < 0 || debugState == stateIdx) {
+					lhsName := ""
+					if int(act.lhsSym) >= 0 && int(act.lhsSym) < len(ng.Symbols) {
+						lhsName = ng.Symbols[act.lhsSym].Name
+					}
+					fmt.Fprintf(os.Stderr, "[entry-shift-prop]   la=%s UPGRADE shift lhsSym=%s oldPrec=%d → newPrec=%d (from enclosing %s)\n",
+						ng.Symbols[la].Name, lhsName, act.prec, prod.Prec, ng.Symbols[prod.LHS].Name)
 				}
 				tables.addAction(stateIdx, la, lrAction{
 					kind:    lrShift,
@@ -895,6 +947,20 @@ func propagateEntryShiftMetadataForState(tables *LRTables, stateIdx int, itemSet
 				})
 			}
 		})
+	}
+
+	// Pass 1: dot=0 closure items build up lhsSyms chains.
+	for _, ce := range itemSet.cores {
+		if ce.dot == 0 {
+			runCore(ce)
+		}
+	}
+	// Pass 2: dot>0 kernel items now see the fully-built lhsSyms and can
+	// match through multi-level closure chains.
+	for _, ce := range itemSet.cores {
+		if ce.dot != 0 {
+			runCore(ce)
+		}
 	}
 }
 
