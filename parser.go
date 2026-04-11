@@ -3,6 +3,7 @@ package gotreesitter
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -207,6 +208,7 @@ type parseReuseState struct {
 // NewParser creates a new Parser for the given language.
 func NewParser(lang *Language) *Parser {
 	p := &Parser{language: lang}
+	p.glrTrace = os.Getenv("GOT_GLR_TRACE") == "1"
 	if lang != nil {
 		p.forceRawSpanAll = lang.Name == "yaml"
 		for i, name := range lang.SymbolNames {
@@ -308,7 +310,7 @@ func resetSnippetParser(parser *Parser) {
 	parser.incrementalGSSHint = 0
 	parser.included = nil
 	parser.logger = nil
-	parser.glrTrace = false
+	parser.glrTrace = os.Getenv("GOT_GLR_TRACE") == "1"
 	parser.timeoutMicros = 0
 	parser.cancellationFlag = nil
 }

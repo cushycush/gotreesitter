@@ -263,6 +263,9 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 		gCopy.Rules[k] = v
 	}
 	g = &gCopy
+	// Auto-inject declared conflicts for label-wrapper vs expression-wrapper
+	// pairs. See autoInjectLabelExpressionConflicts for rationale.
+	autoInjectLabelExpressionConflicts(g)
 
 	// Phase 0: Expand inline rules. Rules listed in Grammar.Inline are replaced
 	// at all usage sites with their rule body, then removed as nonterminals.
@@ -1843,6 +1846,187 @@ func liftLargeSeqChoices(seq *Rule, parentName string, st *symbolTable, auxRules
 	result := *seq
 	result.Children = newChildren
 	return &result
+}
+
+// autoInjectLabelExpressionConflicts scans the grammar for the common
+// "label-wrapper vs expression-wrapper" R/R pattern:
+//
+//   - A "label" rule like `statement_label` is defined as
+//     `prec(N, alias($.X, 'name'))` where X is a single terminal (typically
+//     an external _integer_literal or similar).
+//
+//   - An "expression wrapper" rule like `number_literal` is defined as
+//     `seq(choice(X, Y, ...), optional(_kind))` where the same terminal X
+//     is one of the alternatives and the suffix `_kind` allows the terminal
+//     to continue into a larger construct.
+//
+// LALR merges the statement-label context (first-token-on-line) with the
+// expression-RHS context (inside `foo = 1_SZ1`), and the prec-based default
+// picks the label everywhere — breaking expression parses that need the
+// kind continuation.
+//
+// The fix is to mark these rule pairs as a declared conflict so grammargen
+// retains both reduces in the final parse table; the runtime GLR then
+// forks on the conflict and disambiguates from follow context.
+//
+// This runs automatically at normalization time and does nothing if the
+// pattern doesn't match.
+func autoInjectLabelExpressionConflicts(g *Grammar) {
+	if g == nil || len(g.Rules) == 0 {
+		return
+	}
+	// Find candidate label rules: name ends in "_label" AND rule is a
+	// prec-wrapped alias of a single symbol reference.
+	var labels []labelRuleInfo
+	for name, rule := range g.Rules {
+		if !strings.HasSuffix(name, "_label") {
+			continue
+		}
+		target, hasPrec := detectLabelAliasTarget(rule)
+		if target == "" {
+			continue
+		}
+		labels = append(labels, labelRuleInfo{
+			name:        name,
+			targetRHS:   target,
+			hasExplicit: hasPrec,
+		})
+	}
+	if len(labels) == 0 {
+		return
+	}
+
+	// Find candidate expression wrapper rules: the rule body is a SEQ that
+	// contains the target symbol AND references `_kind` or similar suffix.
+	exprWrappers := collectExpressionWrappersUsingTarget(g, labels)
+	if len(exprWrappers) == 0 {
+		return
+	}
+
+	// Build a set of already-declared pairs to avoid duplicates.
+	already := make(map[string]bool)
+	for _, group := range g.Conflicts {
+		key := strings.Join(append([]string(nil), group...), "|")
+		already[key] = true
+	}
+
+	for _, label := range labels {
+		wrappers := exprWrappers[label.targetRHS]
+		for _, w := range wrappers {
+			group := []string{label.name, w}
+			// Canonical key (sorted).
+			sortedKey := strings.Join(sortedCopy(group), "|")
+			if already[sortedKey] {
+				continue
+			}
+			already[sortedKey] = true
+			g.Conflicts = append(g.Conflicts, group)
+		}
+	}
+}
+
+func sortedCopy(a []string) []string {
+	b := make([]string, len(a))
+	copy(b, a)
+	sort.Strings(b)
+	return b
+}
+
+// detectLabelAliasTarget inspects a rule and, if the rule is a prec-wrapped
+// alias of a single Symbol reference, returns the referenced symbol name and
+// whether the prec wrapper is explicit (non-zero). Returns "" if the pattern
+// doesn't match.
+func detectLabelAliasTarget(r *Rule) (string, bool) {
+	if r == nil {
+		return "", false
+	}
+	hasPrec := false
+	for {
+		switch r.Kind {
+		case RulePrec, RulePrecLeft, RulePrecRight, RulePrecDynamic:
+			hasPrec = hasPrec || r.Prec != 0
+			if len(r.Children) == 0 {
+				return "", false
+			}
+			r = r.Children[0]
+			continue
+		case RuleAlias:
+			if len(r.Children) == 0 {
+				return "", false
+			}
+			r = r.Children[0]
+			continue
+		case RuleSymbol:
+			return r.Value, hasPrec
+		default:
+			return "", false
+		}
+	}
+}
+
+// collectExpressionWrappersUsingTarget walks all rules and finds those whose
+// body is a SEQ containing the target symbol and a reference to `_kind`
+// (or a rule whose name contains "kind"). Returns a map from target symbol
+// name to list of wrapper rule names.
+func collectExpressionWrappersUsingTarget(g *Grammar, labels []labelRuleInfo) map[string][]string {
+	result := make(map[string][]string)
+	targetSet := make(map[string]bool, len(labels))
+	for _, l := range labels {
+		targetSet[l.targetRHS] = true
+	}
+
+	for name, rule := range g.Rules {
+		// Skip rules that look like labels themselves.
+		if strings.HasSuffix(name, "_label") {
+			continue
+		}
+		// Walk the rule body looking for (a) a Symbol ref to any target
+		// AND (b) a Symbol ref to a "kind" rule in the same SEQ path.
+		targetsFound := make(map[string]bool)
+		kindFound := false
+		walkRuleLeaves(rule, func(leaf *Rule) {
+			if leaf.Kind != RuleSymbol {
+				return
+			}
+			if targetSet[leaf.Value] {
+				targetsFound[leaf.Value] = true
+			}
+			if leaf.Value == "_kind" || strings.Contains(leaf.Value, "_kind") {
+				kindFound = true
+			}
+		})
+		if !kindFound || len(targetsFound) == 0 {
+			continue
+		}
+		for target := range targetsFound {
+			result[target] = append(result[target], name)
+		}
+	}
+	return result
+}
+
+// labelRuleInfo describes a detected label rule (internal helper type
+// used by autoInjectLabelExpressionConflicts).
+type labelRuleInfo struct {
+	name        string
+	targetRHS   string
+	hasExplicit bool
+}
+
+// walkRuleLeaves walks a rule tree and calls visit on every leaf-ish node
+// (Symbol, String, Pattern, Blank).
+func walkRuleLeaves(r *Rule, visit func(*Rule)) {
+	if r == nil {
+		return
+	}
+	switch r.Kind {
+	case RuleSymbol, RuleString, RulePattern, RuleBlank:
+		visit(r)
+		return
+	}
+	for _, c := range r.Children {
+		walkRuleLeaves(c, visit)
+	}
 }
 
 // collectConflictGroupRules returns the set of rule names that appear in any

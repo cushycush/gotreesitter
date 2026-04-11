@@ -3,6 +3,7 @@ package gotreesitter
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 	"unicode"
@@ -173,6 +174,12 @@ func (d *dfaTokenSource) Close() {
 // Use `DebugDFA.Store(true/false)` to toggle at runtime.
 var DebugDFA atomic.Bool
 
+func init() {
+	if os.Getenv("GOT_DEBUG_DFA") == "1" {
+		DebugDFA.Store(true)
+	}
+}
+
 func (d *dfaTokenSource) Next() Token {
 	startPos := 0
 	if perfCountersEnabled {
@@ -306,6 +313,14 @@ func (d *dfaTokenSource) nextDFAToken() Token {
 		return Token{}
 	}
 	tok, endPos, endRow, endCol := d.scanPreferredTokenForState(d.state)
+	if DebugDFA.Load() {
+		var lexStateID uint16
+		if int(d.state) < len(d.language.LexModes) {
+			lexStateID = d.language.LexModes[d.state].LexState
+		}
+		fmt.Printf("  nextDFA: state=%d lexState=%d startPos=%d endPos=%d symbol=%d\n",
+			d.state, lexStateID, d.lexer.pos, endPos, tok.Symbol)
+	}
 	d.lexer.pos = endPos
 	d.lexer.row = endRow
 	d.lexer.col = endCol
