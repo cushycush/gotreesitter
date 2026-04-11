@@ -300,6 +300,12 @@ func loadImportedParityLanguages(t *testing.T, grammarName string) (*gotreesitte
 
 	gram, err := importParityGrammarSource(grammarSpec)
 	if err != nil {
+		// Skip rather than fatal when the upstream grammar source is
+		// unavailable (test repos not cloned). Lets the gate runner
+		// distinguish "missing infra" from "real test failure".
+		if os.IsNotExist(err) || strings.Contains(err.Error(), "no such file") {
+			t.Skipf("import %s grammar: source unavailable (%v)", grammarName, err)
+		}
 		t.Fatalf("import %s grammar: %v", grammarName, err)
 	}
 

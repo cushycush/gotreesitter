@@ -38,6 +38,9 @@ func TestTypeScriptGenericCallParity(t *testing.T) {
 
 	gram, err := importParityGrammarSource(grammarSpec)
 	if err != nil {
+		if os.IsNotExist(err) || strings.Contains(err.Error(), "no such file") {
+			t.Skipf("import typescript grammar: source unavailable (%v)", err)
+		}
 		t.Fatalf("import typescript grammar: %v", err)
 	}
 
