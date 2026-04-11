@@ -20,17 +20,17 @@ func TestDisasmLexColon(t *testing.T) {
 	lang := entry.Language()
 
 	// Try lexing ":" at every lex state
-	for ls := uint16(0); ls < uint16(len(lang.LexStates)); ls++ {
+	for ls := uint32(0); ls < uint32(len(lang.LexStates)); ls++ {
 		lexer := gotreesitter.NewLexer(lang.LexStates, []byte(":"))
 		tok := lexer.Next(ls)
 		if tok.Symbol != 0 {
 			fmt.Printf("  colon: lexState=%d → sym %d %q text=%q\n", ls, tok.Symbol, lang.SymbolNames[tok.Symbol], tok.Text)
 		}
 	}
-	
+
 	// Check _new_line
 	fmt.Println("\n--- newline ---")
-	for ls := uint16(0); ls < uint16(len(lang.LexStates)); ls++ {
+	for ls := uint32(0); ls < uint32(len(lang.LexStates)); ls++ {
 		lexer := gotreesitter.NewLexer(lang.LexStates, []byte("\n"))
 		tok := lexer.Next(ls)
 		if tok.Symbol != 0 {

@@ -32,8 +32,8 @@ func TestRepairNoLookaheadLexModes(t *testing.T) {
 			if tc.state >= len(lexModes) {
 				t.Fatalf("state %d out of range for %s", tc.state, tc.name)
 			}
-			if got := lexModes[tc.state].LexState; got != ^uint16(0) {
-				t.Fatalf("LexModes[%d].LexState = %d, want %d", tc.state, got, ^uint16(0))
+			if got := lexModes[tc.state].LexState; got != ^uint32(0) {
+				t.Fatalf("LexModes[%d].LexState = %d, want %d", tc.state, got, ^uint32(0))
 			}
 		})
 	}
