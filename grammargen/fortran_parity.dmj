@@ -115,4 +115,75 @@ unit "Fortran.parity" {
 			}
 		}
 	}
+
+	given "labeled block constructs" {
+		when "parsing labeled DO loop with numeric statement label" {
+			src := "program test\n  do 10 i = 1, 10\n    foo(i) = i\n10 continue\nend program test\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
+
+		when "parsing labeled WHERE block" {
+			src := "program test\ncond1: WHERE(PRESSURE .GE. 1.0)\n  PRESSURE = PRESSURE + 1.0\nENDWHERE cond1\nend program\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
+
+		when "parsing labeled DO block with CYCLE" {
+			src := "PROGRAM TEST\n  out44: DO i = 1,10\n    CYCLE out44\n  END DO out44\nEND PROGRAM\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
+
+		when "parsing labeled IF block" {
+			src := "PROGRAM TEST\n  cond1: IF (y < 0) THEN\n    y = 9\n  END IF cond1\nEND PROGRAM\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
+
+		// TODO(fortran): labeled SELECT CASE and SELECT TYPE still fail due
+		// to LALR state-merge ambiguity in `end select` tokenization. The
+		// grammar allows `end` to be reduced as an identifier or shifted as
+		// the `end_select_statement` keyword; LALR merges the contexts and
+		// grammargen resolves the wrong way. Needs LR state splitting or
+		// declared conflict between identifier and end_select_statement.
+	}
+
+	given "generic operator bindings" {
+		when "parsing assignment(=) generic" {
+			src := "program test\n  type, public :: t\n    real :: x\n    contains\n       generic, private :: assignment(=) => assign_method\n  end type\nend program\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
+
+		when "parsing operator(+) generic" {
+			src := "program test\n  type, public :: t\n    real :: x\n    contains\n       generic, private :: operator(+) => add_method\n  end type\nend program\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
+	}
 }

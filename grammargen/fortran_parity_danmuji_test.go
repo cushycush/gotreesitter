@@ -206,5 +206,119 @@ assert.True(t, len(mismatches) <= 2, "danmuji:114: given generated Fortran gramm
 			})
 		})
 })
+	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:119
+t.Run("labeled block constructs", func(t *testing.T) {
+	const grammarPath = "/home/draco/grammar_parity_ro/fortran/src/grammar.json"
+	data, err := os.ReadFile(grammarPath)
+	if err != nil {
+			t.Skipf("skip: %s not available", grammarPath)
+		}
+	g, gerr := ImportGrammarJSON(data)
+	if gerr != nil {
+			t.Fatalf("ImportGrammarJSON: %v", gerr)
+		}
+	lang, lerr := GenerateLanguage(g)
+	if lerr != nil {
+			t.Fatalf("GenerateLanguage: %v", lerr)
+		}
+	grammars.AdaptScannerForLanguage("fortran", lang)
+	parser := gotreesitter.NewParser(lang)
+	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:120
+t.Run("parsing labeled DO loop with numeric statement label", func(t *testing.T) {
+			src := "program test\n  do 10 i = 1, 10\n    foo(i) = i\n10 continue\nend program test\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:124
+t.Run("parse succeeds", func(t *testing.T) {
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:125
+require.NoError(t, perr, "danmuji:125: given labeled block constructs > when parsing labeled DO loop with numeric statement label > then parse succeeds | expect (expect perr == nil)")
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:126
+assert.Equal(t, false, tree.RootNode().HasError(), "danmuji:126: given labeled block constructs > when parsing labeled DO loop with numeric statement label > then parse succeeds | expect (expect tree.RootNode().HasError() == false)")
+			})
+		})
+	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:130
+t.Run("parsing labeled WHERE block", func(t *testing.T) {
+			src := "program test\ncond1: WHERE(PRESSURE .GE. 1.0)\n  PRESSURE = PRESSURE + 1.0\nENDWHERE cond1\nend program\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:134
+t.Run("parse succeeds", func(t *testing.T) {
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:135
+require.NoError(t, perr, "danmuji:135: given labeled block constructs > when parsing labeled WHERE block > then parse succeeds | expect (expect perr == nil)")
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:136
+assert.Equal(t, false, tree.RootNode().HasError(), "danmuji:136: given labeled block constructs > when parsing labeled WHERE block > then parse succeeds | expect (expect tree.RootNode().HasError() == false)")
+			})
+		})
+	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:140
+t.Run("parsing labeled DO block with CYCLE", func(t *testing.T) {
+			src := "PROGRAM TEST\n  out44: DO i = 1,10\n    CYCLE out44\n  END DO out44\nEND PROGRAM\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:144
+t.Run("parse succeeds", func(t *testing.T) {
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:145
+require.NoError(t, perr, "danmuji:145: given labeled block constructs > when parsing labeled DO block with CYCLE > then parse succeeds | expect (expect perr == nil)")
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:146
+assert.Equal(t, false, tree.RootNode().HasError(), "danmuji:146: given labeled block constructs > when parsing labeled DO block with CYCLE > then parse succeeds | expect (expect tree.RootNode().HasError() == false)")
+			})
+		})
+	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:150
+t.Run("parsing labeled IF block", func(t *testing.T) {
+			src := "PROGRAM TEST\n  cond1: IF (y < 0) THEN\n    y = 9\n  END IF cond1\nEND PROGRAM\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:154
+t.Run("parse succeeds", func(t *testing.T) {
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:155
+require.NoError(t, perr, "danmuji:155: given labeled block constructs > when parsing labeled IF block > then parse succeeds | expect (expect perr == nil)")
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:156
+assert.Equal(t, false, tree.RootNode().HasError(), "danmuji:156: given labeled block constructs > when parsing labeled IF block > then parse succeeds | expect (expect tree.RootNode().HasError() == false)")
+			})
+		})
+})
+	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:168
+t.Run("generic operator bindings", func(t *testing.T) {
+	const grammarPath = "/home/draco/grammar_parity_ro/fortran/src/grammar.json"
+	data, err := os.ReadFile(grammarPath)
+	if err != nil {
+			t.Skipf("skip: %s not available", grammarPath)
+		}
+	g, gerr := ImportGrammarJSON(data)
+	if gerr != nil {
+			t.Fatalf("ImportGrammarJSON: %v", gerr)
+		}
+	lang, lerr := GenerateLanguage(g)
+	if lerr != nil {
+			t.Fatalf("GenerateLanguage: %v", lerr)
+		}
+	grammars.AdaptScannerForLanguage("fortran", lang)
+	parser := gotreesitter.NewParser(lang)
+	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:169
+t.Run("parsing assignment(=) generic", func(t *testing.T) {
+			src := "program test\n  type, public :: t\n    real :: x\n    contains\n       generic, private :: assignment(=) => assign_method\n  end type\nend program\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:173
+t.Run("parse succeeds", func(t *testing.T) {
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:174
+require.NoError(t, perr, "danmuji:174: given generic operator bindings > when parsing assignment(=) generic > then parse succeeds | expect (expect perr == nil)")
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:175
+assert.Equal(t, false, tree.RootNode().HasError(), "danmuji:175: given generic operator bindings > when parsing assignment(=) generic > then parse succeeds | expect (expect tree.RootNode().HasError() == false)")
+			})
+		})
+	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:179
+t.Run("parsing operator(+) generic", func(t *testing.T) {
+			src := "program test\n  type, public :: t\n    real :: x\n    contains\n       generic, private :: operator(+) => add_method\n  end type\nend program\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:183
+t.Run("parse succeeds", func(t *testing.T) {
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:184
+require.NoError(t, perr, "danmuji:184: given generic operator bindings > when parsing operator(+) generic > then parse succeeds | expect (expect perr == nil)")
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:185
+assert.Equal(t, false, tree.RootNode().HasError(), "danmuji:185: given generic operator bindings > when parsing operator(+) generic > then parse succeeds | expect (expect tree.RootNode().HasError() == false)")
+			})
+		})
+})
 }
 
