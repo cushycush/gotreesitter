@@ -157,12 +157,58 @@ unit "Fortran.parity" {
 			}
 		}
 
-		// TODO(fortran): labeled SELECT CASE and SELECT TYPE still fail due
-		// to LALR state-merge ambiguity in `end select` tokenization. The
-		// grammar allows `end` to be reduced as an identifier or shifted as
-		// the `end_select_statement` keyword; LALR merges the contexts and
-		// grammargen resolves the wrong way. Needs LR state splitting or
-		// declared conflict between identifier and end_select_statement.
+		// Control: unlabeled SELECT CASE is expected to already parse.
+		// If this test fails, the end-of-block conflict is not label-specific.
+		when "parsing unlabeled SELECT CASE" {
+			src := "program t\n  SELECT CASE (n)\n  CASE DEFAULT\n    m = 0\n  END SELECT\nend program\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
+
+		// Failing repro (as of 2026-04-11): unlabeled SELECT TYPE with
+		// type is / class default bodies. Baseline sample 11 essence.
+		// Triggers body-statement-vs-end_select_statement conflict on `end`.
+		when "parsing unlabeled SELECT TYPE" {
+			src := "program t\n  select type(x)\n    type is (integer)\n      y = 1\n    class default\n      y = 0\n  end select\nend program\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
+
+		// Failing repro (as of 2026-04-11): labeled SELECT CASE. Baseline
+		// sample 13 essence, minimized. The trailing `sign_case` after
+		// END SELECT is the key signal — parser must keep `end select`
+		// shift path alive rather than reducing the inner statement list
+		// with `end` as a trailing identifier.
+		when "parsing labeled SELECT CASE" {
+			src := "program t\n  sign_case: SELECT CASE (n)\n  CASE DEFAULT\n    m = 0\n  END SELECT sign_case\nend program\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
+
+		// Failing repro (as of 2026-04-11): labeled SELECT TYPE. Combined
+		// shape for the split oracle fix target — if this passes, both s11
+		// and s13 shapes are covered by the same state split.
+		when "parsing labeled SELECT TYPE" {
+			src := "program t\n  sel: select type(x)\n    type is (integer)\n      y = 1\n  end select sel\nend program\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
 	}
 
 	given "generic operator bindings" {
