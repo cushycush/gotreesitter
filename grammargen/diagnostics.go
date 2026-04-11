@@ -182,6 +182,69 @@ type GenerateReport struct {
 	TokenCount      int
 }
 
+// dumpSymbolsByID prints the symbol name for each comma-separated ID in
+// GTS_GRAMMARGEN_DIAG_SYMBOL_IDS. Useful for cross-referencing numeric sym
+// values in parser runtime traces against their generation-time names.
+func dumpSymbolsByID(ng *NormalizedGrammar) {
+	ids := parseDiagConflictStates(os.Getenv("GTS_GRAMMARGEN_DIAG_SYMBOL_IDS"))
+	if len(ids) == 0 {
+		return
+	}
+	for id := range ids {
+		if id >= 0 && id < len(ng.Symbols) {
+			info := &ng.Symbols[id]
+			fmt.Printf("diag-sym: id=%d name=%q kind=%d visible=%v named=%v\n",
+				id, info.Name, info.Kind, info.Visible, info.Named)
+		} else {
+			fmt.Printf("diag-sym: id=%d (out of range; symbolCount=%d)\n", id, len(ng.Symbols))
+		}
+	}
+}
+
+// dumpKernelItemsForState prints the raw core (kernel+closure) items for a
+// single LR item set. Used by the build loop when the state ID matches
+// GTS_GRAMMARGEN_DIAG_KERNEL_STATES. Each core item is printed as
+// "prodIdx dot lookaheads" and the production is annotated with the dot
+// position using `.` as a marker in the RHS.
+func dumpKernelItemsForState(stateIdx int, itemSet *lrItemSet, ng *NormalizedGrammar) {
+	symName := func(id int) string {
+		if id >= 0 && id < len(ng.Symbols) {
+			return ng.Symbols[id].Name
+		}
+		return fmt.Sprintf("sym_%d", id)
+	}
+	fmt.Printf("diag-kernel-items: state=%d cores=%d\n", stateIdx, len(itemSet.cores))
+	for i, ce := range itemSet.cores {
+		if int(ce.prodIdx) < 0 || int(ce.prodIdx) >= len(ng.Productions) {
+			fmt.Printf("  [%d] prodIdx=%d (out of range)\n", i, int(ce.prodIdx))
+			continue
+		}
+		p := &ng.Productions[int(ce.prodIdx)]
+		parts := make([]string, 0, len(p.RHS)+1)
+		for j, s := range p.RHS {
+			if j == int(ce.dot) {
+				parts = append(parts, ".")
+			}
+			parts = append(parts, symName(s))
+		}
+		if int(ce.dot) >= len(p.RHS) {
+			parts = append(parts, ".")
+		}
+		var lookaheadNames []string
+		ce.lookaheads.forEach(func(la int) {
+			if len(lookaheadNames) < 16 {
+				lookaheadNames = append(lookaheadNames, symName(la))
+			}
+		})
+		laStr := strings.Join(lookaheadNames, ",")
+		if len(lookaheadNames) == 16 {
+			laStr += ",..."
+		}
+		fmt.Printf("  [%d] prodIdx=%d dot=%d  %s → %s  la={%s}\n",
+			i, int(ce.prodIdx), int(ce.dot), symName(p.LHS), strings.Join(parts, " "), laStr)
+	}
+}
+
 // dumpProductionsBySubstr prints every production whose LHS symbol name
 // contains any of the substrings in GTS_GRAMMARGEN_DIAG_DUMP_PRODUCTION_LHS.
 // Runs once per call site (e.g. from resolveConflicts top). Useful for
@@ -774,6 +837,7 @@ func generateWithReportCtx(bgCtx context.Context, g *Grammar, opts reportBuildOp
 		return nil, fmt.Errorf("normalize: %w", err)
 	}
 	dumpProductionsBySubstr(ng)
+	dumpSymbolsByID(ng)
 
 	needDiagnostics := opts.includeDiagnostics || g.EnableLRSplitting
 	tables, lrCtx, err := buildLRTablesInternal(bgCtx, ng, needDiagnostics)

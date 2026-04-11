@@ -772,6 +772,7 @@ func buildLRTablesInternal(bgCtx context.Context, ng *NormalizedGrammar, trackPr
 		ExtraChainStateStart: -1,
 	}
 
+	dumpKernelStates := parseDiagConflictStates(os.Getenv("GTS_GRAMMARGEN_DIAG_KERNEL_STATES"))
 	for stateIdx := 0; stateIdx < stateCount; stateIdx++ {
 		if debugLALR && stateIdx > 0 && stateIdx%256 == 0 {
 			debugLALRProgress("lalr_table_build_progress", "state=%d states=%d", stateIdx, stateCount)
@@ -779,6 +780,9 @@ func buildLRTablesInternal(bgCtx context.Context, ng *NormalizedGrammar, trackPr
 		itemSet, ok := ctx.builtItemSet(stateIdx)
 		if !ok {
 			return nil, ctx, fmt.Errorf("missing LR item set for state %d", stateIdx)
+		}
+		if dumpKernelStates[stateIdx] {
+			dumpKernelItemsForState(stateIdx, &itemSet, ng)
 		}
 
 		for _, ce := range itemSet.cores {
