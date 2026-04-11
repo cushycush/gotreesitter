@@ -50,6 +50,13 @@ func TestFortranIntegerKindSuffix(t *testing.T) {
 		{"int-kind-num", "program t\n  int_val = 1_4\nend program\n"},
 		{"float-kind-sz1", "program t\n  flt_val = 1.0_SZ1\nend program\n"},
 		{"boz-hex", "program t\n  b = Z'09AF'\nend program\n"},
+		// Parametric derived types — regression test for the lexer
+		// zero-width accept fix. State 2837 (runtime) has only identifier
+		// in its valid lex mode; before the fix, the DFA would produce
+		// a zero-width identifier at the post-comma whitespace, wedging
+		// the parser with a phantom (identifier) child.
+		{"parametric-type-2param", "program test\n  type, abstract :: matrix(k, d)\n    integer :: x\n  end type\nend program\n"},
+		{"parametric-type-1param", "program test\n  type :: vec(n)\n    integer :: x\n  end type\nend program\n"},
 	}
 	parser := gotreesitter.NewParser(lang)
 	for _, c := range cases {

@@ -1876,14 +1876,17 @@ func autoInjectLabelExpressionConflicts(g *Grammar) {
 		return
 	}
 	// Find candidate label rules: name ends in "_label" AND rule is a
-	// prec-wrapped alias of a single symbol reference.
+	// prec-wrapped alias of a single symbol reference. The explicit prec
+	// wrapper is required — it's the marker that distinguishes label
+	// wrappers (which need higher-than-default resolution) from ordinary
+	// identifier aliases that are used for tree-level naming only.
 	var labels []labelRuleInfo
 	for name, rule := range g.Rules {
 		if !strings.HasSuffix(name, "_label") {
 			continue
 		}
 		target, hasPrec := detectLabelAliasTarget(rule)
-		if target == "" {
+		if target == "" || !hasPrec {
 			continue
 		}
 		labels = append(labels, labelRuleInfo{

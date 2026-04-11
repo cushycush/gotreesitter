@@ -219,6 +219,18 @@ func (l *Lexer) scan(startState uint16, startPos int, startRow, startCol uint32)
 		return Token{}, false
 	}
 
+	// Reject zero-width non-skip matches. Every DFA pattern in tree-sitter-
+	// style grammars matches at least one character (regex patterns require
+	// 1+ chars, literal tokens are non-empty). A zero-width accept means the
+	// DFA's entry state had AcceptToken set without actually consuming any
+	// input — typically because grammargen's DFA construction collapsed
+	// the "consumed 1 char" accept state with the entry state. Returning
+	// such a token wedges the parser: it either loops forever on the same
+	// position or creates phantom zero-width identifier nodes in the tree.
+	if acceptSymbol != 0 && acceptPos == acceptStartPos {
+		return Token{}, false
+	}
+
 	// Rewind (or advance) to the accept position.
 	l.pos = acceptPos
 	l.row = acceptRow
