@@ -264,6 +264,32 @@ unit "Fortran.parity" {
 				expect tree.RootNode().HasError() == false
 			}
 		}
+
+		// Real-corpus sample 7: keyword `data` used as a variable name in
+		// `data(n) = 54`. The parser must keep both interpretations (data
+		// statement vs identifier-as-keyword call expression) as a runtime
+		// GLR fork.
+		when "parsing data(n) = 54 keyword as identifier" {
+			src := "program t\n  data(n) = 54\nend program\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
+
+		// Real-corpus sample 7 (full): mix of data statements and
+		// keyword-as-identifier expression `data(n) = 54`.
+		when "parsing data statements with keyword-as-identifier mix (sample 7 full)" {
+			src := "program test\n  data a, b /1, 2/, c /3, 4/d/5,6/\n  data list / null() /\n  data bool / .true. /\n  data foo%bar / \"hello\" /\n  DATA person / Person_t(42, \"Test Name\") /\n  DATA (array(1,k),k=1,n) /3.14e-3, -42.5/\n  DATA array(:, N) / &\n    54.45_fp, 200.01_fp /\n  DATA complex_array / ( 0, 1 ), ( 1, 0 ) /\n  DATA foo / 3 * 0.0, 4 * bar, 1.0, 2.0 /\n  data params/ param1, param2/\n\n  ! comment block\n  x = 4\n\n  ! Check data is still ok as identifier\n  data(n) = 54\nend program test\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
 	}
 
 	given "generic operator bindings" {

@@ -182,8 +182,22 @@ func applyPostImportShapeHints(g *Grammar) {
 		deprioritizeKeywordIdentifierAlts(g)
 		// Strip `identifier` from declared conflict groups so precedence
 		// (above) actually fires instead of being short-circuited by the
-		// shiftReduceInConflictGroup fallback.
+		// shiftReduceInConflictGroup fallback. (Order matters: this must
+		// run BEFORE we re-add identifier-conflict groups for keyword-as-
+		// variable cases below.)
 		removeIdentifierFromConflictGroups(g)
+		// Declare a conflict group between statement-keyword rules and
+		// identifier so that the post-shift state for `data` (and similar
+		// keywords usable as identifiers in expression contexts like
+		// `data(n) = 54`) keeps the `(` shift/reduce conflict as GLR.
+		// Without this, precedence resolution drops the
+		// `identifier → data` reduce in favor of the shift, killing the
+		// expression-context parse. Tested 2026-04-11 to fix sample 7
+		// without affecting normal `data` statement parsing.
+		g.Conflicts = append(g.Conflicts,
+			[]string{"data_statement", "identifier"},
+			[]string{"call_expression", "identifier"},
+		)
 		// inline_preproc_comment uses `\/\/.*` upstream which collides with
 		// Fortran's `//` string concat operator. Narrow it.
 		narrowInlinePreprocComment(g)

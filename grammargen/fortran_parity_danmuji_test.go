@@ -407,8 +407,40 @@ require.NoError(t, perr, "danmuji:263: given labeled block constructs > when par
 assert.Equal(t, false, tree.RootNode().HasError(), "danmuji:264: given labeled block constructs > when parsing multi-IF block with labels (sample 23 full) > then parse succeeds | expect (expect tree.RootNode().HasError() == false)")
 			})
 		})
+	// Real-corpus sample 7: keyword `data` used as a variable name in
+	// `data(n) = 54`. The parser must keep both interpretations (data
+	// statement vs identifier-as-keyword call expression) as a runtime
+	// GLR fork.
+	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:272
+t.Run("parsing data(n) = 54 keyword as identifier", func(t *testing.T) {
+			src := "program t\n  data(n) = 54\nend program\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:276
+t.Run("parse succeeds", func(t *testing.T) {
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:277
+require.NoError(t, perr, "danmuji:277: given labeled block constructs > when parsing data(n) = 54 keyword as identifier > then parse succeeds | expect (expect perr == nil)")
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:278
+assert.Equal(t, false, tree.RootNode().HasError(), "danmuji:278: given labeled block constructs > when parsing data(n) = 54 keyword as identifier > then parse succeeds | expect (expect tree.RootNode().HasError() == false)")
+			})
+		})
+	// Real-corpus sample 7 (full): mix of data statements and
+	// keyword-as-identifier expression `data(n) = 54`.
+	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:284
+t.Run("parsing data statements with keyword-as-identifier mix (sample 7 full)", func(t *testing.T) {
+			src := "program test\n  data a, b /1, 2/, c /3, 4/d/5,6/\n  data list / null() /\n  data bool / .true. /\n  data foo%bar / \"hello\" /\n  DATA person / Person_t(42, \"Test Name\") /\n  DATA (array(1,k),k=1,n) /3.14e-3, -42.5/\n  DATA array(:, N) / &\n    54.45_fp, 200.01_fp /\n  DATA complex_array / ( 0, 1 ), ( 1, 0 ) /\n  DATA foo / 3 * 0.0, 4 * bar, 1.0, 2.0 /\n  data params/ param1, param2/\n\n  ! comment block\n  x = 4\n\n  ! Check data is still ok as identifier\n  data(n) = 54\nend program test\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:288
+t.Run("parse succeeds", func(t *testing.T) {
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:289
+require.NoError(t, perr, "danmuji:289: given labeled block constructs > when parsing data statements with keyword-as-identifier mix (sample 7 full) > then parse succeeds | expect (expect perr == nil)")
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:290
+assert.Equal(t, false, tree.RootNode().HasError(), "danmuji:290: given labeled block constructs > when parsing data statements with keyword-as-identifier mix (sample 7 full) > then parse succeeds | expect (expect tree.RootNode().HasError() == false)")
+			})
+		})
 })
-	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:269
+	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:295
 t.Run("generic operator bindings", func(t *testing.T) {
 	const grammarPath = "/home/draco/grammar_parity_ro/fortran/src/grammar.json"
 	data, err := os.ReadFile(grammarPath)
@@ -425,30 +457,30 @@ t.Run("generic operator bindings", func(t *testing.T) {
 		}
 	grammars.AdaptScannerForLanguage("fortran", lang)
 	parser := gotreesitter.NewParser(lang)
-	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:270
+	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:296
 t.Run("parsing assignment(=) generic", func(t *testing.T) {
 			src := "program test\n  type, public :: t\n    real :: x\n    contains\n       generic, private :: assignment(=) => assign_method\n  end type\nend program\n"
 			tree, perr := parser.Parse([]byte(src))
 
-			//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:274
+			//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:300
 t.Run("parse succeeds", func(t *testing.T) {
-				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:275
-require.NoError(t, perr, "danmuji:275: given generic operator bindings > when parsing assignment(=) generic > then parse succeeds | expect (expect perr == nil)")
-				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:276
-assert.Equal(t, false, tree.RootNode().HasError(), "danmuji:276: given generic operator bindings > when parsing assignment(=) generic > then parse succeeds | expect (expect tree.RootNode().HasError() == false)")
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:301
+require.NoError(t, perr, "danmuji:301: given generic operator bindings > when parsing assignment(=) generic > then parse succeeds | expect (expect perr == nil)")
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:302
+assert.Equal(t, false, tree.RootNode().HasError(), "danmuji:302: given generic operator bindings > when parsing assignment(=) generic > then parse succeeds | expect (expect tree.RootNode().HasError() == false)")
 			})
 		})
-	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:280
+	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:306
 t.Run("parsing operator(+) generic", func(t *testing.T) {
 			src := "program test\n  type, public :: t\n    real :: x\n    contains\n       generic, private :: operator(+) => add_method\n  end type\nend program\n"
 			tree, perr := parser.Parse([]byte(src))
 
-			//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:284
+			//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:310
 t.Run("parse succeeds", func(t *testing.T) {
-				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:285
-require.NoError(t, perr, "danmuji:285: given generic operator bindings > when parsing operator(+) generic > then parse succeeds | expect (expect perr == nil)")
-				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:286
-assert.Equal(t, false, tree.RootNode().HasError(), "danmuji:286: given generic operator bindings > when parsing operator(+) generic > then parse succeeds | expect (expect tree.RootNode().HasError() == false)")
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:311
+require.NoError(t, perr, "danmuji:311: given generic operator bindings > when parsing operator(+) generic > then parse succeeds | expect (expect perr == nil)")
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:312
+assert.Equal(t, false, tree.RootNode().HasError(), "danmuji:312: given generic operator bindings > when parsing operator(+) generic > then parse succeeds | expect (expect tree.RootNode().HasError() == false)")
 			})
 		})
 })
