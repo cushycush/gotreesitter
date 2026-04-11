@@ -182,9 +182,311 @@ type GenerateReport struct {
 	TokenCount      int
 }
 
+// dumpProductionsBySubstr prints every production whose LHS symbol name
+// contains any of the substrings in GTS_GRAMMARGEN_DIAG_DUMP_PRODUCTION_LHS.
+// Runs once per call site (e.g. from resolveConflicts top). Useful for
+// understanding what alternatives an auxiliary nonterminal was expanded to.
+func dumpProductionsBySubstr(ng *NormalizedGrammar) {
+	substrs := parseDiagConflictSubstrs(os.Getenv("GTS_GRAMMARGEN_DIAG_DUMP_PRODUCTION_LHS"))
+	if len(substrs) == 0 {
+		return
+	}
+	symName := func(id int) string {
+		if id >= 0 && id < len(ng.Symbols) {
+			return ng.Symbols[id].Name
+		}
+		return fmt.Sprintf("sym_%d", id)
+	}
+	seen := make(map[string]bool)
+	for idx := range ng.Productions {
+		p := &ng.Productions[idx]
+		if p.LHS < 0 || p.LHS >= len(ng.Symbols) {
+			continue
+		}
+		name := strings.ToLower(ng.Symbols[p.LHS].Name)
+		matched := false
+		for _, s := range substrs {
+			if strings.Contains(name, s) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		key := ng.Symbols[p.LHS].Name
+		if !seen[key] {
+			seen[key] = true
+			fmt.Printf("diag-production-lhs: %s\n", key)
+		}
+		rhs := make([]string, len(p.RHS))
+		for i, s := range p.RHS {
+			rhs[i] = symName(s)
+		}
+		fmt.Printf("  [prodIdx=%d prec=%d assoc=%d] %s → %s\n",
+			idx, p.Prec, p.Assoc, key, strings.Join(rhs, " "))
+	}
+}
+
+// parseDiagConflictStates parses a comma-separated list of state IDs from
+// the GTS_GRAMMARGEN_DIAG_CONFLICT_STATES env var into a set.
+func parseDiagConflictStates(raw string) map[int]bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	out := make(map[int]bool)
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		var n int
+		if _, err := fmt.Sscanf(part, "%d", &n); err == nil {
+			out[n] = true
+		}
+	}
+	return out
+}
+
+// dumpConflictStateIfRequestedSingle prints the raw action table for a
+// state when any of these match:
+//   - state ID in GTS_GRAMMARGEN_DIAG_CONFLICT_STATES (comma-separated ids)
+//   - any conflict lookahead symbol name contains a substring in
+//     GTS_GRAMMARGEN_DIAG_CONFLICT_LOOKAHEAD_SUBSTR
+//   - any conflict action's production LHS (reduce) or shift LHS contains a
+//     substring in GTS_GRAMMARGEN_DIAG_CONFLICT_PRODUCTION_SUBSTR
+//
+// This is the per-state entry point used by resolveConflictsForState, which
+// runs inline during LR table construction. Filters are AND-combined with
+// state IDs (state IDs are ORed against the substring matches).
+func dumpConflictStateIfRequestedSingle(state int, actions map[int][]lrAction, ng *NormalizedGrammar) {
+	dumpStates := parseDiagConflictStates(os.Getenv("GTS_GRAMMARGEN_DIAG_CONFLICT_STATES"))
+	laSubstrs := parseDiagConflictSubstrs(os.Getenv("GTS_GRAMMARGEN_DIAG_CONFLICT_LOOKAHEAD_SUBSTR"))
+	prodSubstrs := parseDiagConflictSubstrs(os.Getenv("GTS_GRAMMARGEN_DIAG_CONFLICT_PRODUCTION_SUBSTR"))
+	if !dumpStates[state] && len(laSubstrs) == 0 && len(prodSubstrs) == 0 {
+		return
+	}
+	matched := dumpStates[state]
+	if !matched && len(laSubstrs) > 0 {
+		for sym, acts := range actions {
+			if len(acts) < 2 {
+				continue
+			}
+			if sym >= 0 && sym < len(ng.Symbols) {
+				name := strings.ToLower(ng.Symbols[sym].Name)
+				for _, s := range laSubstrs {
+					if strings.Contains(name, s) {
+						matched = true
+						break
+					}
+				}
+			}
+			if matched {
+				break
+			}
+		}
+	}
+	if !matched && len(prodSubstrs) > 0 {
+		for _, acts := range actions {
+			if len(acts) < 2 {
+				continue
+			}
+			for _, a := range acts {
+				var name string
+				switch a.kind {
+				case lrShift:
+					if int(a.lhsSym) >= 0 && int(a.lhsSym) < len(ng.Symbols) {
+						name = strings.ToLower(ng.Symbols[int(a.lhsSym)].Name)
+					}
+				case lrReduce:
+					p := &ng.Productions[int(a.prodIdx)]
+					if p.LHS >= 0 && p.LHS < len(ng.Symbols) {
+						name = strings.ToLower(ng.Symbols[p.LHS].Name)
+					}
+				}
+				for _, s := range prodSubstrs {
+					if strings.Contains(name, s) {
+						matched = true
+						break
+					}
+				}
+				if matched {
+					break
+				}
+			}
+			if matched {
+				break
+			}
+		}
+	}
+	if !matched {
+		return
+	}
+	symName, prodStr := makeSymPrintersForDiag(ng)
+	fmt.Printf("diag-conflict-state: state=%d (per-state)\n", state)
+	printConflictStateActions(actions, symName, prodStr, ng)
+}
+
+// parseDiagConflictSubstrs parses comma-separated substrings, lowercased.
+func parseDiagConflictSubstrs(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(strings.ToLower(part))
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+// makeSymPrintersForDiag builds symbol and production formatter closures.
+func makeSymPrintersForDiag(ng *NormalizedGrammar) (func(int) string, func(int) string) {
+	symName := func(id int) string {
+		if id >= 0 && id < len(ng.Symbols) {
+			return ng.Symbols[id].Name
+		}
+		return fmt.Sprintf("sym_%d", id)
+	}
+	prodStr := func(prodIdx int) string {
+		if prodIdx < 0 || prodIdx >= len(ng.Productions) {
+			return fmt.Sprintf("prod_%d", prodIdx)
+		}
+		p := &ng.Productions[prodIdx]
+		rhs := make([]string, len(p.RHS))
+		for i, s := range p.RHS {
+			rhs[i] = symName(s)
+		}
+		return fmt.Sprintf("%s → %s", symName(p.LHS), strings.Join(rhs, " "))
+	}
+	return symName, prodStr
+}
+
+// printConflictStateActions prints action entries for a state. By default
+// only multi-action (conflict) entries are shown; set
+// GTS_GRAMMARGEN_DIAG_CONFLICT_ALL=1 to print singleton actions too.
+func printConflictStateActions(actions map[int][]lrAction, symName func(int) string, prodStr func(int) string, ng *NormalizedGrammar) {
+	showSingletons := os.Getenv("GTS_GRAMMARGEN_DIAG_CONFLICT_ALL") == "1"
+	syms := make([]int, 0, len(actions))
+	for sym := range actions {
+		syms = append(syms, sym)
+	}
+	sort.Ints(syms)
+	for _, sym := range syms {
+		acts := actions[sym]
+		if len(acts) < 2 && !showSingletons {
+			continue
+		}
+		fmt.Printf("  sym=%d(%s) actions=%d:\n", sym, symName(sym), len(acts))
+		for i, a := range acts {
+			switch a.kind {
+			case lrShift:
+				lhsName := symName(int(a.lhsSym))
+				extraLhs := ""
+				if len(a.lhsSyms) > 0 {
+					names := make([]string, len(a.lhsSyms))
+					for j, s := range a.lhsSyms {
+						names[j] = symName(int(s))
+					}
+					extraLhs = " lhsSyms=[" + strings.Join(names, ",") + "]"
+				}
+				fmt.Printf("    [%d] SHIFT → state %d (prec=%d, assoc=%d, lhs=%s%s)\n",
+					i, int(a.state), a.prec, a.assoc, lhsName, extraLhs)
+			case lrReduce:
+				prod := &ng.Productions[int(a.prodIdx)]
+				fmt.Printf("    [%d] REDUCE %s (prodIdx=%d, prec=%d, assoc=%d)\n",
+					i, prodStr(int(a.prodIdx)), int(a.prodIdx), prod.Prec, prod.Assoc)
+			}
+		}
+	}
+}
+
+// dumpConflictStatesIfRequested prints the raw, pre-resolution action table
+// (with full symbol names, production RHS, precedence, and LHS info) for any
+// states listed in GTS_GRAMMARGEN_DIAG_CONFLICT_STATES. It's called before
+// conflict resolution so the reader sees the competing actions before
+// precedence/associativity collapses them. No-op if the env var is unset.
+func dumpConflictStatesIfRequested(tables *LRTables, ng *NormalizedGrammar, prov *mergeProvenance) {
+	dumpStates := parseDiagConflictStates(os.Getenv("GTS_GRAMMARGEN_DIAG_CONFLICT_STATES"))
+	if len(dumpStates) == 0 {
+		return
+	}
+	symName := func(id int) string {
+		if id >= 0 && id < len(ng.Symbols) {
+			return ng.Symbols[id].Name
+		}
+		return fmt.Sprintf("sym_%d", id)
+	}
+	prodStr := func(prodIdx int) string {
+		if prodIdx < 0 || prodIdx >= len(ng.Productions) {
+			return fmt.Sprintf("prod_%d", prodIdx)
+		}
+		p := &ng.Productions[prodIdx]
+		rhs := make([]string, len(p.RHS))
+		for i, s := range p.RHS {
+			rhs[i] = symName(s)
+		}
+		return fmt.Sprintf("%s → %s", symName(p.LHS), strings.Join(rhs, " "))
+	}
+	for state := range dumpStates {
+		actions, ok := tables.ActionTable[state]
+		if !ok {
+			fmt.Printf("diag-conflict-state: state=%d NOT FOUND in action table\n", state)
+			continue
+		}
+		mergeInfo := "canonical"
+		if prov != nil && prov.isMerged(state) {
+			mergeInfo = fmt.Sprintf("merged(origins=%d)", len(prov.origins(state)))
+		}
+		fmt.Printf("diag-conflict-state: state=%d %s\n", state, mergeInfo)
+		syms := make([]int, 0, len(actions))
+		for sym := range actions {
+			syms = append(syms, sym)
+		}
+		sort.Ints(syms)
+		for _, sym := range syms {
+			acts := actions[sym]
+			// Print all syms with >=1 action (not just conflicts — the dump
+			// happens BEFORE resolution, but for conflict investigation we
+			// want to see competing alternatives AND singletons for the
+			// same state so the reader understands the context).
+			if len(acts) < 2 {
+				continue
+			}
+			fmt.Printf("  sym=%d(%s) actions=%d:\n", sym, symName(sym), len(acts))
+			for i, a := range acts {
+				switch a.kind {
+				case lrShift:
+					lhsName := symName(int(a.lhsSym))
+					extraLhs := ""
+					if len(a.lhsSyms) > 0 {
+						names := make([]string, len(a.lhsSyms))
+						for j, s := range a.lhsSyms {
+							names[j] = symName(int(s))
+						}
+						extraLhs = " lhsSyms=[" + strings.Join(names, ",") + "]"
+					}
+					fmt.Printf("    [%d] SHIFT → state %d (prec=%d, assoc=%d, lhs=%s%s)\n",
+						i, int(a.state), a.prec, a.assoc, lhsName, extraLhs)
+				case lrReduce:
+					prod := &ng.Productions[int(a.prodIdx)]
+					fmt.Printf("    [%d] REDUCE %s (prodIdx=%d, prec=%d, assoc=%d)\n",
+						i, prodStr(int(a.prodIdx)), int(a.prodIdx), prod.Prec, prod.Assoc)
+				}
+			}
+		}
+	}
+}
+
 // resolveConflictsWithDiag is like resolveConflicts but collects diagnostics.
 func resolveConflictsWithDiag(tables *LRTables, ng *NormalizedGrammar, prov *mergeProvenance) ([]ConflictDiag, error) {
 	var diags []ConflictDiag
+
+	dumpConflictStatesIfRequested(tables, ng, prov)
 
 	// Sort states and syms for deterministic conflict resolution order.
 	states := make([]int, 0, len(tables.ActionTable))
@@ -471,6 +773,7 @@ func generateWithReportCtx(bgCtx context.Context, g *Grammar, opts reportBuildOp
 	if err != nil {
 		return nil, fmt.Errorf("normalize: %w", err)
 	}
+	dumpProductionsBySubstr(ng)
 
 	needDiagnostics := opts.includeDiagnostics || g.EnableLRSplitting
 	tables, lrCtx, err := buildLRTablesInternal(bgCtx, ng, needDiagnostics)

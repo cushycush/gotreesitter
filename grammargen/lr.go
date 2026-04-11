@@ -3490,6 +3490,7 @@ func (ctx *lrContext) mergeInto(
 // resolveConflicts resolves shift/reduce and reduce/reduce conflicts
 // using precedence and associativity.
 func resolveConflicts(tables *LRTables, ng *NormalizedGrammar) error {
+	dumpConflictStatesIfRequested(tables, ng, nil)
 	states := make([]int, 0, len(tables.ActionTable))
 	for state := range tables.ActionTable {
 		states = append(states, state)
@@ -3527,6 +3528,7 @@ func resolveConflictsForState(tables *LRTables, ng *NormalizedGrammar, state int
 	if !ok {
 		return nil
 	}
+	dumpConflictStateIfRequestedSingle(state, actions, ng)
 	syms := make([]int, 0, len(actions))
 	for sym := range actions {
 		syms = append(syms, sym)
