@@ -209,6 +209,61 @@ unit "Fortran.parity" {
 				expect tree.RootNode().HasError() == false
 			}
 		}
+
+		// Real-corpus sample 23: labeled IF with nested ELSE IF branches
+		// and an internal labeled-IF-start-expression on the ELSE IF line.
+		// The critical shape is `ELSE IF (...) THEN cond1` where `cond1`
+		// is the trailing label, NOT a new block label start.
+		when "parsing labeled IF with ELSE IF chain and trailing label" {
+			src := "PROGRAM TEST\n  cond1: IF (y < 0) THEN\n     y = 9\n  ELSE IF (x > 0) THEN cond1\n     r = 9\n  ELSE cond1\n    y = 10\n  END IF cond1\nEND PROGRAM\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
+
+		// Real-corpus sample 22: SELECT CASE body containing preproc #ifdef
+		// blocks that wrap case branches. The preproc blocks must not
+		// interfere with the shift/reduce decision at the case-body
+		// completion state.
+		when "parsing SELECT CASE with preproc ifdef inside body" {
+			src := "program t\n  select case (x)\n#ifdef FOO\n  case (1)\n    y = 1\n#endif\n  case default\n    y = 0\n  end select\nend program\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
+
+		// Real-corpus sample 22 (full): multiple #ifdef/#if branches inside
+		// a SELECT CASE body, including one with a relational expression
+		// in the preproc condition (#if TEST > 0). The parser fails here
+		// on the preproc relational expression inside case body.
+		when "parsing SELECT CASE with multiple preproc conditions (sample 22 full)" {
+			src := "program case_preprocessor\n    implicit none\n    character(len=256) :: multidata_item\n    integer :: dim\n    multidata_item = \"test\"\n\n    select case (multidata_item)\n#ifdef UM_PHYSICS\n        case ('plant_func_types')\n                dim = 1\n#endif\n#if TEST > 0\n        case ('test')\n                dim = 1\n#endif\n        case default\n#ifdef HAVE_DEFAULT_BODY\n                dim = 1\n#endif\n    end select\n\nend program\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
+
+		// Real-corpus sample 23 (full): multiple IF variants, labeled and
+		// unlabeled, with nested ELSE IF branches. Full text from the
+		// tree-sitter-fortran test corpus.
+		when "parsing multi-IF block with labels (sample 23 full)" {
+			src := "PROGRAM TEST\n  IF (x<7) y = 9\n  if(ix.ge.1.and.2.le.nx)x=1.4\n\n  IF (arg(1:1) == ADJUSTL(' r')) THEN\n    r = 0\n  ELSE IF (arg(1:1) .NE. CHAR(l(1))) THEN\n    l = 67\n  ELSE IF (arg(1:1) .NE. CHAR(m(1))) THEN\n  ELSE\n    n = 0\n  ENDIF\n\n  cond1: IF (y < 0) THEN\n     y = 9\n  ELSE  IF (x > 0) THEN cond1\n   r = 9\n   IF (arg(1:1)) THEN\n     r = 0\n   ELSE\n     n = 0\n   END IF\n  ELSE cond1\n    y = 10\n  END IF cond1\nEND PROGRAM\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
 	}
 
 	given "generic operator bindings" {

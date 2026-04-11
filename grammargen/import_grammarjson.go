@@ -156,10 +156,38 @@ func applyPostImportShapeHints(g *Grammar) {
 		// end_select_statement continuation state with `end select`
 		// properly matched.
 		// Must outrank prec=100 which propagates to the identifier shift
-		// via the expression wrapper chain.
+		// via the expression wrapper chain. The same conflict shape appears
+		// at every "block body intermediate" nonterminal whose completing
+		// reduce races with an identifier-as-keyword shift on `end`.
 		wrapRuleWithPrec(g, "case_statement", 200)
 		wrapRuleWithPrec(g, "type_statement", 200)
 		wrapRuleWithPrec(g, "rank_statement", 200)
+		wrapRuleWithPrec(g, "else_clause", 200)
+		wrapRuleWithPrec(g, "elseif_clause", 200)
+		wrapRuleWithPrec(g, "elsewhere_clause", 200)
+		// Block-statement rules: outrank inline-IF / inline-WHERE GLR forks
+		// so the parser commits to the block interpretation when THEN/keyword
+		// is seen, instead of letting the inline interpretation linger and
+		// later misparse the body.
+		wrapRuleWithPrec(g, "_block_if_statement", 200)
+		wrapRuleWithPrec(g, "_block_where_statement", 200)
+		wrapRuleWithPrec(g, "_block_forall_statement", 200)
+		// Inline forms get LOW prec so the block form wins any GLR fork
+		// where both interpretations are alive at the same parse point.
+		wrapRuleWithPrec(g, "_inline_if_statement", -10)
+		wrapRuleWithPrec(g, "_inline_where_statement", -10)
+		wrapRuleWithPrec(g, "_inline_forall_statement", -10)
+		// Identifier keyword aliases (`if`, `then`, `endif`, ...) get strongly
+		// negative prec so any other interpretation wins GLR forks.
+		deprioritizeKeywordIdentifierAlts(g)
+		// Strip `identifier` from declared conflict groups so precedence
+		// (above) actually fires instead of being short-circuited by the
+		// shiftReduceInConflictGroup fallback.
+		removeIdentifierFromConflictGroups(g)
+		// inline_preproc_comment uses `\/\/.*` upstream which collides with
+		// Fortran's `//` string concat operator. Narrow it.
+		narrowInlinePreprocComment(g)
+		replaceNewlineLiteralInPreprocIfs(g)
 	}
 }
 
@@ -171,6 +199,147 @@ func wrapRuleWithPrec(g *Grammar, name string, prec int) {
 		return
 	}
 	g.Rules[name] = Prec(prec, rule)
+}
+
+// narrowInlinePreprocComment effectively disables the `inline_preproc_comment`
+// rule by replacing its PATTERN with one that cannot match. The upstream rule
+// uses `\/\/.*` to recognize C-style line comments inside preproc directives,
+// but in Fortran `//` is also the string concatenation operator. The
+// over-broad pattern eats `// "b"` mid-expression, killing parses that use
+// string concat. References to this rule appear in CHOICE positions with
+// BLANK alternatives (i.e. the comment is optional), so disabling the
+// pattern means those positions silently take BLANK and parsing continues.
+// Real preproc line comments (rare in practice) are then unrecognized but
+// no Fortran corpus we test relies on them.
+func narrowInlinePreprocComment(g *Grammar) {
+	rule, ok := g.Rules["inline_preproc_comment"]
+	if !ok || rule == nil || rule.Kind != RulePattern {
+		return
+	}
+	// Pattern that never matches anything (impossible position assertion).
+	g.Rules["inline_preproc_comment"] = Pat(`a^never_matches`)
+}
+
+// removeIdentifierFromConflictGroups strips `identifier` from any declared
+// conflict group. The upstream Fortran grammar declares
+// `[_inline_if_statement, arithmetic_if_statement, _block_if_statement, identifier]`
+// as a conflict group, which causes grammargen's shiftReduceInConflictGroup
+// fallback to keep S/R conflicts between IF rules and `identifier → keyword`
+// reduces as GLR. Combined with the keyword-as-identifier ambiguity, this
+// makes the wrong fork survive in cases like `IF (a==1) THEN r = 0 ENDIF`.
+// Removing `identifier` from these groups lets precedence (set by
+// deprioritizeKeywordIdentifierAlts) cleanly resolve the conflicts.
+func removeIdentifierFromConflictGroups(g *Grammar) {
+	for i, group := range g.Conflicts {
+		if len(group) <= 1 {
+			continue
+		}
+		hasIdentifier := false
+		for _, name := range group {
+			if name == "identifier" {
+				hasIdentifier = true
+				break
+			}
+		}
+		if !hasIdentifier {
+			continue
+		}
+		var filtered []string
+		for _, name := range group {
+			if name != "identifier" {
+				filtered = append(filtered, name)
+			}
+		}
+		g.Conflicts[i] = filtered
+	}
+}
+
+// deprioritizeKeywordIdentifierAlts walks the `identifier` rule (a CHOICE
+// of N alternatives, mostly ALIAS(pattern, "keyword") alts of Fortran
+// keywords-as-identifiers) and wraps every alt whose alias value is in the
+// fortranKeywordAliasesToDeprioritize set with PREC(-100). The intent: in
+// any GLR fork or shift/reduce conflict where identifier-as-keyword vs
+// real-keyword interpretation compete, the identifier path loses. Fortran
+// allows keywords as variable names, but in practice block-statement
+// keywords (`if`, `then`, `else`, `endif`, `end`, `select`, `case`, ...)
+// almost never appear as identifiers — and when they do, the parser fall
+// back via runtime GLR works because precedence-tied reduces are kept.
+func deprioritizeKeywordIdentifierAlts(g *Grammar) {
+	rule, ok := g.Rules["identifier"]
+	if !ok || rule == nil || rule.Kind != RuleChoice {
+		return
+	}
+	deprioritize := map[string]bool{
+		"if": true, "then": true, "else": true, "elseif": true, "endif": true,
+		"end": true, "endprogram": true, "endmodule": true, "endsubroutine": true,
+		"endfunction": true, "endsubmodule": true, "endinterface": true,
+		"endtype": true, "enddo": true, "endwhere": true, "endselect": true,
+		"endenum": true, "endenumeration": true, "endassociate": true,
+		"endblock": true, "endblockdata": true, "endcritical": true,
+		"endforall": true, "endprocedure": true,
+		"select": true, "selectcase": true, "selecttype": true, "selectrank": true,
+		"case": true, "where": true, "elsewhere": true, "endwhere2": true,
+		"do": true, "while": true, "forall": true,
+	}
+	newAlts := make([]*Rule, len(rule.Children))
+	for i, alt := range rule.Children {
+		if alt != nil && alt.Kind == RuleAlias && deprioritize[alt.Value] {
+			newAlts[i] = Prec(-100, alt)
+		} else {
+			newAlts[i] = alt
+		}
+	}
+	out := *rule
+	out.Children = newAlts
+	g.Rules["identifier"] = &out
+}
+
+// replaceNewlineLiteralInPreprocIfs walks every preproc_if_in_*  and
+// preproc_ifdef_in_* rule and replaces the literal "\n" STRING terminator
+// (used by tree-sitter-fortran upstream as the header terminator after the
+// condition expression) with a CHOICE between that literal and the
+// _external_end_of_statement SYMBOL. Fortran's external scanner produces
+// _external_end_of_statement when it sees a newline in these contexts, and
+// without this rewrite the parser state's lookahead lacks
+// _external_end_of_statement, killing the parse as soon as the condition
+// line ends. The equivalent substitution is already implicit in how
+// `_end_of_statement → ; | _external_end_of_statement` is used elsewhere.
+func replaceNewlineLiteralInPreprocIfs(g *Grammar) {
+	for name, rule := range g.Rules {
+		if !strings.HasPrefix(name, "preproc_if") && !strings.HasPrefix(name, "preproc_ifdef") {
+			continue
+		}
+		g.Rules[name] = replaceNewlineLiteralInRule(rule)
+	}
+}
+
+// replaceNewlineLiteralInRule recursively walks a rule tree and substitutes
+// any top-level STRING("\n") leaf with CHOICE(STRING("\n"), SYMBOL("_external_end_of_statement")).
+func replaceNewlineLiteralInRule(r *Rule) *Rule {
+	if r == nil {
+		return nil
+	}
+	if r.Kind == RuleString && r.Value == "\n" {
+		return Choice(Str("\n"), Sym("_external_end_of_statement"))
+	}
+	if len(r.Children) == 0 {
+		return r
+	}
+	changed := false
+	newChildren := make([]*Rule, len(r.Children))
+	for i, c := range r.Children {
+		nc := replaceNewlineLiteralInRule(c)
+		if nc != c {
+			changed = true
+		}
+		newChildren[i] = nc
+	}
+	if !changed {
+		return r
+	}
+	out := *r
+	out.Children = newChildren
+	return &out
 }
 
 // buildPrecMaps builds two precedence maps from the precedences array:

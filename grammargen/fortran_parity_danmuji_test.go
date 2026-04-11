@@ -340,8 +340,75 @@ require.NoError(t, perr, "danmuji:208: given labeled block constructs > when par
 assert.Equal(t, false, tree.RootNode().HasError(), "danmuji:209: given labeled block constructs > when parsing labeled SELECT TYPE > then parse succeeds | expect (expect tree.RootNode().HasError() == false)")
 			})
 		})
+	// Real-corpus sample 23: labeled IF with nested ELSE IF branches
+	// and an internal labeled-IF-start-expression on the ELSE IF line.
+	// The critical shape is `ELSE IF (...) THEN cond1` where `cond1`
+	// is the trailing label, NOT a new block label start.
+	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:217
+t.Run("parsing labeled IF with ELSE IF chain and trailing label", func(t *testing.T) {
+			src := "PROGRAM TEST\n  cond1: IF (y < 0) THEN\n     y = 9\n  ELSE IF (x > 0) THEN cond1\n     r = 9\n  ELSE cond1\n    y = 10\n  END IF cond1\nEND PROGRAM\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:221
+t.Run("parse succeeds", func(t *testing.T) {
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:222
+require.NoError(t, perr, "danmuji:222: given labeled block constructs > when parsing labeled IF with ELSE IF chain and trailing label > then parse succeeds | expect (expect perr == nil)")
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:223
+assert.Equal(t, false, tree.RootNode().HasError(), "danmuji:223: given labeled block constructs > when parsing labeled IF with ELSE IF chain and trailing label > then parse succeeds | expect (expect tree.RootNode().HasError() == false)")
+			})
+		})
+	// Real-corpus sample 22: SELECT CASE body containing preproc #ifdef
+	// blocks that wrap case branches. The preproc blocks must not
+	// interfere with the shift/reduce decision at the case-body
+	// completion state.
+	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:231
+t.Run("parsing SELECT CASE with preproc ifdef inside body", func(t *testing.T) {
+			src := "program t\n  select case (x)\n#ifdef FOO\n  case (1)\n    y = 1\n#endif\n  case default\n    y = 0\n  end select\nend program\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:235
+t.Run("parse succeeds", func(t *testing.T) {
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:236
+require.NoError(t, perr, "danmuji:236: given labeled block constructs > when parsing SELECT CASE with preproc ifdef inside body > then parse succeeds | expect (expect perr == nil)")
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:237
+assert.Equal(t, false, tree.RootNode().HasError(), "danmuji:237: given labeled block constructs > when parsing SELECT CASE with preproc ifdef inside body > then parse succeeds | expect (expect tree.RootNode().HasError() == false)")
+			})
+		})
+	// Real-corpus sample 22 (full): multiple #ifdef/#if branches inside
+	// a SELECT CASE body, including one with a relational expression
+	// in the preproc condition (#if TEST > 0). The parser fails here
+	// on the preproc relational expression inside case body.
+	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:245
+t.Run("parsing SELECT CASE with multiple preproc conditions (sample 22 full)", func(t *testing.T) {
+			src := "program case_preprocessor\n    implicit none\n    character(len=256) :: multidata_item\n    integer :: dim\n    multidata_item = \"test\"\n\n    select case (multidata_item)\n#ifdef UM_PHYSICS\n        case ('plant_func_types')\n                dim = 1\n#endif\n#if TEST > 0\n        case ('test')\n                dim = 1\n#endif\n        case default\n#ifdef HAVE_DEFAULT_BODY\n                dim = 1\n#endif\n    end select\n\nend program\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:249
+t.Run("parse succeeds", func(t *testing.T) {
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:250
+require.NoError(t, perr, "danmuji:250: given labeled block constructs > when parsing SELECT CASE with multiple preproc conditions (sample 22 full) > then parse succeeds | expect (expect perr == nil)")
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:251
+assert.Equal(t, false, tree.RootNode().HasError(), "danmuji:251: given labeled block constructs > when parsing SELECT CASE with multiple preproc conditions (sample 22 full) > then parse succeeds | expect (expect tree.RootNode().HasError() == false)")
+			})
+		})
+	// Real-corpus sample 23 (full): multiple IF variants, labeled and
+	// unlabeled, with nested ELSE IF branches. Full text from the
+	// tree-sitter-fortran test corpus.
+	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:258
+t.Run("parsing multi-IF block with labels (sample 23 full)", func(t *testing.T) {
+			src := "PROGRAM TEST\n  IF (x<7) y = 9\n  if(ix.ge.1.and.2.le.nx)x=1.4\n\n  IF (arg(1:1) == ADJUSTL(' r')) THEN\n    r = 0\n  ELSE IF (arg(1:1) .NE. CHAR(l(1))) THEN\n    l = 67\n  ELSE IF (arg(1:1) .NE. CHAR(m(1))) THEN\n  ELSE\n    n = 0\n  ENDIF\n\n  cond1: IF (y < 0) THEN\n     y = 9\n  ELSE  IF (x > 0) THEN cond1\n   r = 9\n   IF (arg(1:1)) THEN\n     r = 0\n   ELSE\n     n = 0\n   END IF\n  ELSE cond1\n    y = 10\n  END IF cond1\nEND PROGRAM\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:262
+t.Run("parse succeeds", func(t *testing.T) {
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:263
+require.NoError(t, perr, "danmuji:263: given labeled block constructs > when parsing multi-IF block with labels (sample 23 full) > then parse succeeds | expect (expect perr == nil)")
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:264
+assert.Equal(t, false, tree.RootNode().HasError(), "danmuji:264: given labeled block constructs > when parsing multi-IF block with labels (sample 23 full) > then parse succeeds | expect (expect tree.RootNode().HasError() == false)")
+			})
+		})
 })
-	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:214
+	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:269
 t.Run("generic operator bindings", func(t *testing.T) {
 	const grammarPath = "/home/draco/grammar_parity_ro/fortran/src/grammar.json"
 	data, err := os.ReadFile(grammarPath)
@@ -358,30 +425,30 @@ t.Run("generic operator bindings", func(t *testing.T) {
 		}
 	grammars.AdaptScannerForLanguage("fortran", lang)
 	parser := gotreesitter.NewParser(lang)
-	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:215
+	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:270
 t.Run("parsing assignment(=) generic", func(t *testing.T) {
 			src := "program test\n  type, public :: t\n    real :: x\n    contains\n       generic, private :: assignment(=) => assign_method\n  end type\nend program\n"
 			tree, perr := parser.Parse([]byte(src))
 
-			//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:219
+			//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:274
 t.Run("parse succeeds", func(t *testing.T) {
-				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:220
-require.NoError(t, perr, "danmuji:220: given generic operator bindings > when parsing assignment(=) generic > then parse succeeds | expect (expect perr == nil)")
-				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:221
-assert.Equal(t, false, tree.RootNode().HasError(), "danmuji:221: given generic operator bindings > when parsing assignment(=) generic > then parse succeeds | expect (expect tree.RootNode().HasError() == false)")
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:275
+require.NoError(t, perr, "danmuji:275: given generic operator bindings > when parsing assignment(=) generic > then parse succeeds | expect (expect perr == nil)")
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:276
+assert.Equal(t, false, tree.RootNode().HasError(), "danmuji:276: given generic operator bindings > when parsing assignment(=) generic > then parse succeeds | expect (expect tree.RootNode().HasError() == false)")
 			})
 		})
-	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:225
+	//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:280
 t.Run("parsing operator(+) generic", func(t *testing.T) {
 			src := "program test\n  type, public :: t\n    real :: x\n    contains\n       generic, private :: operator(+) => add_method\n  end type\nend program\n"
 			tree, perr := parser.Parse([]byte(src))
 
-			//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:229
+			//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:284
 t.Run("parse succeeds", func(t *testing.T) {
-				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:230
-require.NoError(t, perr, "danmuji:230: given generic operator bindings > when parsing operator(+) generic > then parse succeeds | expect (expect perr == nil)")
-				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:231
-assert.Equal(t, false, tree.RootNode().HasError(), "danmuji:231: given generic operator bindings > when parsing operator(+) generic > then parse succeeds | expect (expect tree.RootNode().HasError() == false)")
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:285
+require.NoError(t, perr, "danmuji:285: given generic operator bindings > when parsing operator(+) generic > then parse succeeds | expect (expect perr == nil)")
+				//line /home/draco/work/gotreesitter/.claude/worktrees/fortran/grammargen/fortran_parity.dmj:286
+assert.Equal(t, false, tree.RootNode().HasError(), "danmuji:286: given generic operator bindings > when parsing operator(+) generic > then parse succeeds | expect (expect tree.RootNode().HasError() == false)")
 			})
 		})
 })
