@@ -660,7 +660,7 @@ func generateWithReportCtx(bgCtx context.Context, g *Grammar, opts reportBuildOp
 	// Set after-whitespace lex states for states that need IMMTOKEN exclusion.
 	for _, entry := range afterWSModes {
 		if entry.stateIdx < len(lang.LexModes) && entry.modeIdx < len(lexModeOffsets) {
-			lang.LexModes[entry.stateIdx].AfterWhitespaceLexState = uint16(lexModeOffsets[entry.modeIdx])
+			lang.LexModes[entry.stateIdx].AfterWhitespaceLexState = uint32(lexModeOffsets[entry.modeIdx])
 		}
 	}
 

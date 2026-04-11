@@ -441,7 +441,7 @@ func repairNoLookaheadLexModes(lang *gotreesitter.Language) {
 		return
 	}
 	for state := 0; state < len(lang.LexModes) && state < int(lang.StateCount); state++ {
-		if lang.LexModes[state].LexState == ^uint16(0) {
+		if lang.LexModes[state].LexState == ^uint32(0) {
 			continue
 		}
 		eofIdx := grammarLookupActionIndex(lang, gotreesitter.StateID(state), 0)
@@ -471,7 +471,7 @@ func repairNoLookaheadLexModes(lang *gotreesitter.Language) {
 			}
 		}
 		if onlyEOF {
-			lang.LexModes[state].LexState = ^uint16(0)
+			lang.LexModes[state].LexState = ^uint32(0)
 		}
 	}
 }

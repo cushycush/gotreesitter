@@ -77,11 +77,18 @@ type LexTransition struct {
 }
 
 // LexMode maps a parser state to its lexer configuration.
+//
+// LexState and AfterWhitespaceLexState are uint32 because large grammars
+// (Fortran, COBOL) have more than 65k DFA lex states combined across all
+// modes. Truncation to uint16 silently corrupts the lex mode pointer,
+// causing the parser to jump into a random intermediate DFA state and
+// fail to match valid tokens. ExternalLexState stays uint16 because
+// external scanner state counts are always small.
 type LexMode struct {
-	LexState              uint16
-	ExternalLexState      uint16
-	ReservedWordSetID     uint16
-	AfterWhitespaceLexState uint16 // DFA start state to use after whitespace (0 = same as LexState)
+	LexState                uint32
+	AfterWhitespaceLexState uint32 // DFA start state to use after whitespace (0 = same as LexState)
+	ExternalLexState        uint16
+	ReservedWordSetID       uint16
 }
 
 // LanguageMetadata holds the grammar's semantic version (ABI 15+).
@@ -169,7 +176,7 @@ type Language struct {
 	// LayoutFallbackLexState is an optional broad DFA start state used only in
 	// layout-entry parser states. It lets the runtime avoid skipping over
 	// zero-width external layout markers before the layout scanner fires.
-	LayoutFallbackLexState    uint16
+	LayoutFallbackLexState    uint32
 	HasLayoutFallbackLexState bool
 
 	// Field mapping

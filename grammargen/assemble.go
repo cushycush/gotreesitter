@@ -29,7 +29,7 @@ func assemble(
 		LanguageVersion:    14,
 	}
 	if len(lexModeOffsets) > 0 {
-		lang.LayoutFallbackLexState = uint16(lexModeOffsets[0])
+		lang.LayoutFallbackLexState = uint32(lexModeOffsets[0])
 		lang.HasLayoutFallbackLexState = true
 	}
 
@@ -62,7 +62,7 @@ func assemble(
 			offset = lexModeOffsets[modeIdx]
 		}
 		lang.LexModes[i] = gotreesitter.LexMode{
-			LexState: uint16(offset),
+			LexState: uint32(offset),
 		}
 	}
 

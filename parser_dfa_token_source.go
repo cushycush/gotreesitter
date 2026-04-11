@@ -56,7 +56,7 @@ type dfaTokenSource struct {
 const maxConsecutiveZeroWidthTokens = 4
 const maxConsecutiveZeroWidthTokensExternal = 128
 const maxConsecutiveZeroWidthTokensRepeatableExternal = 4096
-const noLookaheadLexState = ^uint16(0)
+const noLookaheadLexState uint32 = ^uint32(0)
 const externalScannerSerializationBufferSize = 4096
 
 var dfaTokenSourcePool = sync.Pool{
@@ -314,7 +314,7 @@ func (d *dfaTokenSource) nextDFAToken() Token {
 	}
 	tok, endPos, endRow, endCol := d.scanPreferredTokenForState(d.state)
 	if DebugDFA.Load() {
-		var lexStateID uint16
+		var lexStateID uint32
 		if int(d.state) < len(d.language.LexModes) {
 			lexStateID = d.language.LexModes[d.state].LexState
 		}
@@ -338,11 +338,11 @@ func (d *dfaTokenSource) syntheticEOFLookaheadToken() Token {
 	return d.nextTokenForLexState(noLookaheadLexState)
 }
 
-func (d *dfaTokenSource) nextTokenForLexState(lexState uint16) Token {
+func (d *dfaTokenSource) nextTokenForLexState(lexState uint32) Token {
 	if d == nil || d.lexer == nil {
 		return Token{}
 	}
-	if lexState == ^uint16(0) {
+	if lexState == noLookaheadLexState {
 		tok := d.eofTokenAtLexerPos()
 		tok.NoLookahead = true
 		return tok
@@ -394,8 +394,8 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 	bestOriginActions := 0
 
 	type lexModeKey struct {
-		lexState                uint16
-		afterWhitespaceLexState uint16
+		lexState                uint32
+		afterWhitespaceLexState uint32
 	}
 
 	// Deduplicate equivalent lex mode pairs to avoid redundant scans.
@@ -470,7 +470,7 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 	return bestTok, true
 }
 
-func (d *dfaTokenSource) lexStateForState(state StateID) uint16 {
+func (d *dfaTokenSource) lexStateForState(state StateID) uint32 {
 	if d == nil || d.language == nil || int(state) >= len(d.language.LexModes) {
 		return 0
 	}
@@ -501,7 +501,7 @@ func (d *dfaTokenSource) scanPreferredTokenForState(state StateID) (Token, int, 
 	return afterTok, afterEndPos, afterEndRow, afterEndCol
 }
 
-func (d *dfaTokenSource) scanDFATokenForState(state StateID, lexState uint16) (Token, int, uint32, uint32) {
+func (d *dfaTokenSource) scanDFATokenForState(state StateID, lexState uint32) (Token, int, uint32, uint32) {
 	if d == nil || d.lexer == nil {
 		return Token{}, 0, 0, 0
 	}

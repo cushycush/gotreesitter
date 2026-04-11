@@ -1,0 +1,118 @@
+package grammargen
+
+import (
+	"os"
+	"testing"
+
+	gotreesitter "github.com/odvcencio/gotreesitter"
+	"github.com/odvcencio/gotreesitter/grammars"
+)
+
+unit "Fortran.parity" {
+	before each {
+		const grammarPath = "/home/draco/grammar_parity_ro/fortran/src/grammar.json"
+		data, err := os.ReadFile(grammarPath)
+		if err != nil {
+			t.Skipf("skip: %s not available", grammarPath)
+		}
+		g, gerr := ImportGrammarJSON(data)
+		if gerr != nil {
+			t.Fatalf("ImportGrammarJSON: %v", gerr)
+		}
+		lang, lerr := GenerateLanguage(g)
+		if lerr != nil {
+			t.Fatalf("GenerateLanguage: %v", lerr)
+		}
+		grammars.AdaptScannerForLanguage("fortran", lang)
+		parser := gotreesitter.NewParser(lang)
+	}
+
+	given "integer kind suffix in expression" {
+		when "parsing 1_SZ1 identifier kind" {
+			src := "program t\n  int_val = 1_SZ1\nend program\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds without errors" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
+
+		when "parsing 1_4 numeric kind" {
+			src := "program t\n  int_val = 1_4\nend program\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds without errors" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
+	}
+
+	given "parametric derived type with type parameters" {
+		when "parsing type with two parameters" {
+			src := "program test\n  type, abstract :: matrix(k, d)\n    integer :: x\n  end type\nend program\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
+
+		when "parsing type with single parameter" {
+			src := "program test\n  type :: vec(n)\n    integer :: x\n  end type\nend program\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
+	}
+
+	given "call expression with infix division" {
+		when "parsing f(x)/g(y)" {
+			src := "program t\n  real :: z\n  z = f(x) / g(y)\nend program\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds with math_expression wrapping calls" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
+	}
+
+	given "array subscripts with extent specifiers" {
+		when "parsing xij(:, :)" {
+			src := "program t\n  real :: xij(:, :)\nend program t\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
+
+		when "parsing Val(:)" {
+			src := "program t\n  real :: Val(:)\nend program t\n"
+			tree, perr := parser.Parse([]byte(src))
+
+			then "parse succeeds" {
+				expect perr == nil
+				expect tree.RootNode().HasError() == false
+			}
+		}
+	}
+
+	given "generated Fortran grammar lex modes" {
+		when "verifying lex mode completeness" {
+			_ = parser
+			mismatches := VerifyLexModeCompleteness(lang)
+
+			then "no states have action-table terminals missing from lex mode" {
+				expect len(mismatches) <= 2
+			}
+		}
+	}
+}

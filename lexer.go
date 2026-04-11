@@ -55,7 +55,7 @@ func NewLexer(states []LexState, source []byte) *Lexer {
 // Next lexes the next token starting from the given lex state index.
 // It automatically skips tokens from states where Skip=true (whitespace).
 // Returns a zero-Symbol token with StartByte==EndByte at EOF.
-func (l *Lexer) Next(startState uint16) Token {
+func (l *Lexer) Next(startState uint32) Token {
 	for {
 		// EOF check.
 		if l.pos >= len(l.source) {
@@ -71,7 +71,7 @@ func (l *Lexer) Next(startState uint16) Token {
 		tokenStartRow := l.row
 		tokenStartCol := l.col
 
-		tok, ok := l.scan(startState, tokenStartPos, tokenStartRow, tokenStartCol)
+		tok, ok := l.scan(uint32(startState), tokenStartPos, tokenStartRow, tokenStartCol)
 		if ok {
 			if tok.Symbol == 0 {
 				// Skip token (whitespace). Verify the lexer actually
@@ -93,8 +93,8 @@ func (l *Lexer) Next(startState uint16) Token {
 // scan runs the DFA from the given start state and position. It returns
 // a token and true if an accepting state was reached, or false if not.
 // On a skip (whitespace) match, it returns a zero-Symbol token and true.
-func (l *Lexer) scan(startState uint16, startPos int, startRow, startCol uint32) (Token, bool) {
-	curState := int32(startState)
+func (l *Lexer) scan(startState uint32, startPos int, startRow, startCol uint32) (Token, bool) {
+	curState := int64(startState)
 	if curState < 0 || int(curState) >= len(l.states) {
 		return Token{}, false
 	}
@@ -148,7 +148,7 @@ func (l *Lexer) scan(startState uint16, startPos int, startRow, startCol uint32)
 
 		if scanPos >= len(l.source) {
 			if st.EOF >= 0 && eofHops <= len(l.states) {
-				curState = int32(st.EOF)
+				curState = int64(st.EOF)
 				eofHops++
 				continue
 			}
@@ -212,7 +212,7 @@ func (l *Lexer) scan(startState uint16, startPos int, startRow, startCol uint32)
 			acceptSkip = false
 		}
 
-		curState = nextState
+		curState = int64(nextState)
 	}
 
 	if acceptPos < 0 {

@@ -94,7 +94,7 @@ func BuildLanguage(g *ExtractedGrammar) *gotreesitter.Language {
 		lang.LexModes = make([]gotreesitter.LexMode, len(g.LexModes))
 		for i, lm := range g.LexModes {
 			lang.LexModes[i] = gotreesitter.LexMode{
-				LexState:          uint16(lm.LexState),
+				LexState:          uint32(lm.LexState),
 				ExternalLexState:  uint16(lm.ExternalLexState),
 				ReservedWordSetID: uint16(lm.ReservedWordSetID),
 			}

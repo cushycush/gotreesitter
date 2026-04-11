@@ -3,6 +3,7 @@ package grammargen
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -38,6 +39,7 @@ func buildLexDFA(ctx context.Context, patterns []TerminalPattern, extraSymbols [
 
 	var allStates []gotreesitter.LexState
 	modeOffsets := make([]int, len(lexModes))
+	debugLexDFA := os.Getenv("GOT_DEBUG_LEXMODE_BUILD") == "1"
 
 	for mi, mode := range lexModes {
 		modeOffsets[mi] = len(allStates)
@@ -47,6 +49,10 @@ func buildLexDFA(ctx context.Context, patterns []TerminalPattern, extraSymbols [
 			if mode.validSymbols[p.SymbolID] || extraSet[p.SymbolID] {
 				modePatterns = append(modePatterns, p)
 			}
+		}
+		if debugLexDFA {
+			fmt.Fprintf(os.Stderr, "[lexmode-build] mode=%d validSyms=%d modePatterns=%d offset=%d\n",
+				mi, len(mode.validSymbols), len(modePatterns), modeOffsets[mi])
 		}
 
 		// Build combined NFA for this mode's terminals.
@@ -1127,6 +1133,8 @@ func computeLexModes(
 	stateToMode := make([]int, stateCount)
 	var afterWSModeMap []afterWSModeEntry
 
+	debugLexMode := os.Getenv("GOT_DEBUG_LEXMODE_COMPUTE") == "1"
+
 	for state := 0; state < stateCount; state++ {
 		isExtraChainState := extraChainStateStart >= 0 && state >= extraChainStateStart
 		// Collect valid terminal symbols for this state.
@@ -1208,6 +1216,19 @@ func computeLexModes(
 		// must never be skipped — the grammar handles all whitespace explicitly.
 		// Otherwise, skip whitespace unless ALL valid tokens are immediate.
 		skipWS := stateHasTerminalExtras && (!hasImmediate || len(validSyms) > countImmediate(validSyms, immediateTokens))
+
+		if debugLexMode {
+			actionSyms := 0
+			for sym := 1; sym < tokenCount; sym++ {
+				if !extSet[sym] && actionLookup(state, sym) {
+					actionSyms++
+				}
+			}
+			if actionSyms > len(validSyms)+5 {
+				fmt.Fprintf(os.Stderr, "[lexmode-compute] state=%d actionSyms=%d validSyms=%d directValid=%d (potential mismatch)\n",
+					state, actionSyms, len(validSyms), len(directValid))
+			}
+		}
 
 		key := buildModeKey(validSyms, skipWS)
 

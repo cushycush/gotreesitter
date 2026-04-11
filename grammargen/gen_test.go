@@ -203,7 +203,7 @@ func TestJSONLexer(t *testing.T) {
 	}
 
 	// Check unique lex modes.
-	seenModes := make(map[uint16]bool)
+	seenModes := make(map[uint32]bool)
 	for i, lm := range lang.LexModes {
 		if !seenModes[lm.LexState] {
 			seenModes[lm.LexState] = true

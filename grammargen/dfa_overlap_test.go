@@ -28,7 +28,7 @@ func TestBuildLexDFAPrefersLongerStringOverSingleCharPattern(t *testing.T) {
 	}
 
 	lexer := gotreesitter.NewLexer(lexStates, []byte("*/"))
-	tok := lexer.Next(uint16(modeOffsets[0]))
+	tok := lexer.Next(uint32(modeOffsets[0]))
 	if got, want := tok.Symbol, gotreesitter.Symbol(2); got != want {
 		t.Fatalf("token symbol = %d, want %d", got, want)
 	}
