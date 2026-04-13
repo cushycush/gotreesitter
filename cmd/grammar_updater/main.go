@@ -62,10 +62,14 @@ type updateReport struct {
 	ManifestPath      string         `json:"manifest_path,omitempty"`
 	WriteApplied      bool           `json:"write_applied"`
 	SyncManifest      bool           `json:"sync_manifest"`
+	SyncManifestOnly  bool           `json:"sync_manifest_only"`
+	VerifyPins        bool           `json:"verify_pins"`
 	FilterAllowList   string         `json:"filter_allow_list,omitempty"`
 	MaxUpdates        int            `json:"max_updates"`
 	TotalEntries      int            `json:"total_entries"`
 	CheckedEntries    int            `json:"checked_entries"`
+	VerifiedPinCount  int            `json:"verified_pin_count,omitempty"`
+	MissingPinCount   int            `json:"missing_pin_count,omitempty"`
 	AppliedCount      int            `json:"applied_count"`
 	AvailableCount    int            `json:"available_count"`
 	UnchangedCount    int            `json:"unchanged_count"`
@@ -84,11 +88,20 @@ func main() {
 		workers       = flag.Int("workers", 8, "number of concurrent remote HEAD lookups")
 		failOnError   = flag.Bool("fail-on-error", true, "exit non-zero if any repo lookup fails")
 		failOnChange  = flag.Bool("fail-on-change", false, "exit non-zero when updates are available")
+		verifyPins    = flag.Bool("verify-pins", false, "validate that existing locked commits are fetchable before updating")
 		syncManifest  = flag.Bool("sync-manifest", false, "add manifest languages missing from lock")
+		syncOnly      = flag.Bool("sync-manifest-only", false, "with -sync-manifest, only check/update entries newly added from the manifest")
 		manifestPath  = flag.String("manifest", "grammars/languages.manifest", "path to manifest (used when -sync-manifest)")
 		allowListPath = flag.String("allow-list", "", "optional newline-delimited language allow-list")
 	)
 	flag.Parse()
+
+	if *syncOnly && !*syncManifest {
+		exitf("-sync-manifest-only requires -sync-manifest")
+	}
+	if *syncOnly && strings.TrimSpace(*allowListPath) != "" {
+		exitf("-sync-manifest-only cannot be combined with -allow-list")
+	}
 
 	lf, err := parseLockFile(*lockPath)
 	if err != nil {
@@ -96,38 +109,46 @@ func main() {
 	}
 
 	report := updateReport{
-		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
-		LockPath:     *lockPath,
-		ManifestPath: "",
-		WriteApplied: *writeChanges,
-		SyncManifest: *syncManifest,
-		MaxUpdates:   *maxUpdates,
-		Results:      make([]updateResult, 0),
+		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
+		LockPath:         *lockPath,
+		ManifestPath:     "",
+		WriteApplied:     *writeChanges,
+		SyncManifest:     *syncManifest,
+		SyncManifestOnly: *syncOnly,
+		VerifyPins:       *verifyPins,
+		MaxUpdates:       *maxUpdates,
+		Results:          make([]updateResult, 0),
 	}
 
 	allowSet := map[string]struct{}{}
+	restrictToAllowSet := false
 	if strings.TrimSpace(*allowListPath) != "" {
 		allowSet, err = parseAllowList(*allowListPath)
 		if err != nil {
 			exitf("parse allow-list: %v", err)
 		}
 		report.FilterAllowList = *allowListPath
+		restrictToAllowSet = true
 	}
 
 	if *syncManifest {
 		report.ManifestPath = *manifestPath
-		added, syncErr := syncMissingEntriesFromManifest(lf, *manifestPath)
+		addedNames, syncErr := syncMissingEntriesFromManifest(lf, *manifestPath)
 		if syncErr != nil {
 			exitf("sync manifest: %v", syncErr)
 		}
-		report.AddedFromManifest = added
+		report.AddedFromManifest = len(addedNames)
+		if *syncOnly {
+			allowSet = addedNames
+			restrictToAllowSet = true
+		}
 	}
 
 	entries := lf.entryPointers()
 	report.TotalEntries = len(entries)
 
 	filtered := entries
-	if len(allowSet) > 0 {
+	if restrictToAllowSet {
 		filtered = make([]*lockEntry, 0, len(entries))
 		for _, entry := range entries {
 			if _, ok := allowSet[entry.Name]; ok {
@@ -136,6 +157,14 @@ func main() {
 		}
 	}
 	report.CheckedEntries = len(filtered)
+
+	pinErrs := map[string]error{}
+	if *verifyPins {
+		pinCount := countRemotePins(filtered)
+		pinErrs = verifyRemotePins(filtered, *workers)
+		report.VerifiedPinCount = pinCount - len(pinErrs)
+		report.MissingPinCount = len(pinErrs)
+	}
 
 	heads, headErrs := resolveRepoHeads(filtered, *workers)
 	appliedBudget := 0
@@ -147,7 +176,7 @@ func main() {
 
 	changedInMemory := false
 	for _, entry := range entries {
-		if len(allowSet) > 0 {
+		if restrictToAllowSet {
 			if _, ok := allowSet[entry.Name]; !ok {
 				report.Results = append(report.Results, updateResult{
 					Name:       entry.Name,
@@ -161,6 +190,20 @@ func main() {
 				report.SkippedCount++
 				continue
 			}
+		}
+
+		if pinErr, hasPinErr := pinErrs[pinKey(entry.RepoURL, entry.Commit)]; hasPinErr {
+			report.Results = append(report.Results, updateResult{
+				Name:       entry.Name,
+				RepoURL:    entry.RepoURL,
+				OldRef:     entry.Commit,
+				Subdir:     entry.Subdir,
+				Extensions: append([]string(nil), entry.Extensions...),
+				Status:     updateStatusError,
+				Error:      fmt.Sprintf("pinned commit unavailable: %v", pinErr),
+			})
+			report.ErrorCount++
+			continue
 		}
 
 		headErr, hasErr := headErrs[entry.RepoURL]
@@ -279,17 +322,17 @@ func parseAllowList(path string) (map[string]struct{}, error) {
 	return out, nil
 }
 
-func syncMissingEntriesFromManifest(lf *lockFile, manifestPath string) (int, error) {
+func syncMissingEntriesFromManifest(lf *lockFile, manifestPath string) (map[string]struct{}, error) {
 	manifestEntries, err := parseManifestEntries(manifestPath)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	seen := make(map[string]struct{}, len(lf.entryPointers()))
 	for _, entry := range lf.entryPointers() {
 		seen[entry.Name] = struct{}{}
 	}
 
-	added := 0
+	added := make(map[string]struct{})
 	for _, me := range manifestEntries {
 		if _, ok := seen[me.Name]; ok {
 			continue
@@ -305,7 +348,7 @@ func syncMissingEntriesFromManifest(lf *lockFile, manifestPath string) (int, err
 			},
 		})
 		seen[me.Name] = struct{}{}
-		added++
+		added[me.Name] = struct{}{}
 	}
 	return added, nil
 }
@@ -507,6 +550,106 @@ func resolveRepoHeads(entries []*lockEntry, workers int) (map[string]string, map
 		heads[res.repo] = res.ref
 	}
 	return heads, errs
+}
+
+func verifyRemotePins(entries []*lockEntry, workers int) map[string]error {
+	if workers <= 0 {
+		workers = 1
+	}
+
+	pinSet := make(map[string]lockEntry, len(entries))
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.Commit) == "" {
+			continue
+		}
+		pinSet[pinKey(entry.RepoURL, entry.Commit)] = *entry
+	}
+	pins := make([]lockEntry, 0, len(pinSet))
+	for _, entry := range pinSet {
+		pins = append(pins, entry)
+	}
+	sort.Slice(pins, func(i, j int) bool {
+		if pins[i].RepoURL == pins[j].RepoURL {
+			return pins[i].Commit < pins[j].Commit
+		}
+		return pins[i].RepoURL < pins[j].RepoURL
+	})
+
+	type result struct {
+		key string
+		err error
+	}
+
+	workCh := make(chan lockEntry)
+	resCh := make(chan result, len(pins))
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for entry := range workCh {
+				key := pinKey(entry.RepoURL, entry.Commit)
+				resCh <- result{key: key, err: verifyRemoteCommit(entry.RepoURL, entry.Commit)}
+			}
+		}()
+	}
+
+	go func() {
+		for _, entry := range pins {
+			workCh <- entry
+		}
+		close(workCh)
+		wg.Wait()
+		close(resCh)
+	}()
+
+	errs := make(map[string]error)
+	for res := range resCh {
+		if res.err != nil {
+			errs[res.key] = res.err
+		}
+	}
+	return errs
+}
+
+func countRemotePins(entries []*lockEntry) int {
+	pinSet := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.Commit) == "" {
+			continue
+		}
+		pinSet[pinKey(entry.RepoURL, entry.Commit)] = struct{}{}
+	}
+	return len(pinSet)
+}
+
+func pinKey(repoURL, commit string) string {
+	return repoURL + "\x00" + commit
+}
+
+func verifyRemoteCommit(repoURL, commit string) error {
+	commit = strings.TrimSpace(commit)
+	if commit == "" {
+		return nil
+	}
+	if !looksLikeCommitHash(commit) {
+		return fmt.Errorf("invalid commit hash %q", commit)
+	}
+
+	tmp, err := os.MkdirTemp("", "grammar-updater-pin-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+
+	if out, err := exec.Command("git", "-C", tmp, "init", "-q").CombinedOutput(); err != nil {
+		return fmt.Errorf("git init: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	out, err := exec.Command("git", "-C", tmp, "fetch", "--depth=1", "--quiet", repoURL, commit).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git fetch %s %s: %w (%s)", repoURL, commit, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func resolveRemoteHead(repoURL string) (string, error) {

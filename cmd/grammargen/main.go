@@ -30,12 +30,13 @@ import (
 )
 
 var builtinGrammars = map[string]func() *grammargen.Grammar{
-	"json":    grammargen.JSONGrammar,
-	"calc":    grammargen.CalcGrammar,
-	"glr":     grammargen.GLRGrammar,
-	"keyword": grammargen.KeywordGrammar,
-	"ext":     grammargen.ExtScannerGrammar,
-	"alias":   grammargen.AliasSuperGrammar,
+	"json":               grammargen.JSONGrammar,
+	"calc":               grammargen.CalcGrammar,
+	"glr":                grammargen.GLRGrammar,
+	"keyword":            grammargen.KeywordGrammar,
+	"ext":                grammargen.ExtScannerGrammar,
+	"alias":              grammargen.AliasSuperGrammar,
+	"swift-abi-mangling": grammargen.SwiftABIManglingGrammar,
 }
 
 func main() {

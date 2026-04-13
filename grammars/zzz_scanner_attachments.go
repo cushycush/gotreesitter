@@ -118,6 +118,7 @@ func init() {
 		"cpp":             CppExternalScanner{},
 		"caddy":           CaddyExternalScanner{},
 		"javascript":      JavaScriptExternalScanner{},
+		"qmljs":           QmljsExternalScanner{},
 		"typescript":      TypeScriptExternalScanner{},
 		"rust":            RustExternalScanner{},
 		"hcl":             HclExternalScanner{},
