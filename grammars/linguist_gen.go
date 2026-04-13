@@ -256,6 +256,7 @@ var linguistToGrammar = map[string]string{
 	"python": "python",
 	"python3": "python",
 	"ql": "ql",
+	"qmljs": "qmljs",
 	"r": "r",
 	"racket": "racket",
 	"rake": "ruby",
