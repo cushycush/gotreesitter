@@ -361,7 +361,7 @@ func ForthLanguage() *gotreesitter.Language {
 
 // FortranLanguage returns the fortran language definition.
 func FortranLanguage() *gotreesitter.Language {
-	return loadPreferredLanguage("fortran")
+	return loadEmbeddedLanguage("fortran.bin")
 }
 
 // FsharpLanguage returns the fsharp language definition.
@@ -779,6 +779,11 @@ func QlLanguage() *gotreesitter.Language {
 	return loadEmbeddedLanguage("ql.bin")
 }
 
+// QmljsLanguage returns the qmljs language definition.
+func QmljsLanguage() *gotreesitter.Language {
+	return loadEmbeddedLanguage("qmljs.bin")
+}
+
 // RLanguage returns the r language definition.
 func RLanguage() *gotreesitter.Language {
 	return loadEmbeddedLanguage("r.bin")
@@ -887,11 +892,6 @@ func StarlarkLanguage() *gotreesitter.Language {
 // SvelteLanguage returns the svelte language definition.
 func SvelteLanguage() *gotreesitter.Language {
 	return loadEmbeddedLanguage("svelte.bin")
-}
-
-// SwiftLanguage returns the swift language definition.
-func SwiftLanguage() *gotreesitter.Language {
-	return loadEmbeddedLanguage("swift.bin")
 }
 
 // TablegenLanguage returns the tablegen language definition.
@@ -1033,3 +1033,4 @@ func YuckLanguage() *gotreesitter.Language {
 func ZigLanguage() *gotreesitter.Language {
 	return loadEmbeddedLanguage("zig.bin")
 }
+

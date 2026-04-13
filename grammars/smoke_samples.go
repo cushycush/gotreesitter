@@ -37,6 +37,7 @@ var ParseSmokeSamples = map[string]string{
 	"lua":               "local x = 1\n",
 	"php":               "<?php echo 1;\n",
 	"python":            "def f():\n    return 1\n",
+	"qmljs":             "import QtQuick 2.0\nRectangle {\n    width: 400\n    height: 300\n}\n",
 	"regex":             "a+b*\n",
 	"ruby":              "def f\n  1\nend\n",
 	"rust":              "fn main() { let x = 1; }\n",

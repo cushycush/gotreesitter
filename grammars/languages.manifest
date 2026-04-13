@@ -264,3 +264,6 @@ perl https://github.com/tree-sitter-perl/tree-sitter-perl 0c24d001dd1921e418fb93
 prolog https://github.com/Rukiza/tree-sitter-prolog src .pl,.pro
 mojo https://github.com/HerringtonDarkholme/tree-sitter-mojo src .mojo,.🔥
 wolfram https://github.com/bostick/tree-sitter-wolfram src .wl,.m,.nb
+
+# === QML support ===
+qmljs https://github.com/yuja/tree-sitter-qmljs src .qml
