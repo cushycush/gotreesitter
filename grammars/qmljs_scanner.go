@@ -187,7 +187,7 @@ func qmlScanAutoSemicolon(lexer *gotreesitter.ExternalLexer, validSymbols []bool
 			return true
 		}
 		lexer.Advance(true)
-		if !unicode.IsLetter(lexer.Lookahead()) {
+		if !isQmljsIdentifierChar(lexer.Lookahead()) {
 			return false
 		}
 		stanceof := "stanceof"
@@ -197,7 +197,7 @@ func qmlScanAutoSemicolon(lexer *gotreesitter.ExternalLexer, validSymbols []bool
 			}
 			lexer.Advance(true)
 		}
-		if !unicode.IsLetter(lexer.Lookahead()) {
+		if !isQmljsIdentifierChar(lexer.Lookahead()) {
 			return false
 		}
 	}
@@ -400,4 +400,8 @@ func qmlPreferAutoSemicolonOverJsxText(lexer *gotreesitter.ExternalLexer, validS
 	default:
 		return false
 	}
+}
+
+func isQmljsIdentifierChar(ch rune) bool {
+	return unicode.IsLetter(ch) || unicode.IsDigit(ch) || ch == '_' || ch == '$'
 }
